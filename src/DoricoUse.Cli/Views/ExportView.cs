@@ -68,14 +68,10 @@ internal static class ExportView
     /// <summary>What Dorico's <c>defaultProjectPath</c> preference means for an export, and its limit.</summary>
     public const string DestinationMeaning =
         "Where Dorico's 导出MusicXML dialog writes, as far as a client can know: its 导出到 label is filled with "
-        + "the folder of the active document's own file. Measured on this machine: the project whose file is in "
-        + "C:\\scores opened the dialog at 'C:/scores'; the document saved as .spinney\\myread\\read\\"
-        + "saveas2.dorico opened at '<repo>/.spinney/myread/read'; the one in .spinney\\w1\\t1.dorico "
-        + "opened at '<repo>/.spinney/w1'. For a project that has never been saved there is no such "
-        + "folder, and the label is filled from defaultProjectPath instead (the untitled project in this session "
-        + "opened at 'C:/Users/<you>/Documents/Dorico 工程', this very value). The API exposes no document "
-        + "path at all, so the dialog's label is the only authority and this value is what an unsaved project will "
-        + "really use.";
+        + "the folder of the active document's own file, and with the defaultProjectPath preference below for a "
+        + "project that has never been saved. The 导出到 label is a label, not a field, and the Remote Control API "
+        + "exposes no document path at all, so that label is the only authority on where the files land and no "
+        + "client can compute it.";
 
     /// <summary>
     /// The two suffixes the MusicXML exporter can produce: uncompressed (the dialog's default tab) and the

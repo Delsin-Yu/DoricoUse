@@ -42,15 +42,18 @@ internal static class SaveCopy
     /// <summary>The path parameter of <see cref="SaveAsCommand"/>.</summary>
     public const string PathParameter = "File";
 
-    /// <summary>Where the copy goes when <c>--to</c> is not given: inside the repo's scratch folder.</summary>
-    public const string DefaultFolder = ".spinney/read";
+    /// <summary>
+    /// Where the copy goes when <c>--to</c> is not given: a per-user folder under the system temporary directory,
+    /// so a read never litters the folder the user is working in.
+    /// </summary>
+    public static string DefaultFolder => Path.Combine(Path.GetTempPath(), "dorico-use", "read");
 
     /// <summary>What the report says about the document SaveAs rebinds.</summary>
     public const string SaveDocumentNote =
         "File.SaveAs rebinds the open document to the copy: Dorico logs 'Saving document: <id> to <path>', the "
         + "window title follows the new file name, and later File.Save / autosave / backup go to the copy. Nothing "
-        + "on disk is lost, but the document the agent is editing now points at the copy, so run this only against a "
-        + "scratch project, or expect to re-open the original file afterwards.";
+        + "on disk is lost, but the document being edited now points at the copy, so run this only against a scratch "
+        + "project, or re-open the original file afterwards.";
 
     /// <summary>How long the file is watched before the copy is declared missing or unfinished.</summary>
     public static readonly TimeSpan DefaultWait = TimeSpan.FromSeconds(20);
@@ -60,7 +63,7 @@ internal static class SaveCopy
 
     /// <summary>
     /// The absolute path to save to: <c>--to</c> when given, otherwise a timestamped file under
-    /// <see cref="DefaultFolder"/> in the current directory (the repo, when an agent runs from there).
+    /// <see cref="DefaultFolder"/>, i.e. in the system temporary directory.
     /// </summary>
     public static string Resolve(string? requested, DateTimeOffset now)
     {

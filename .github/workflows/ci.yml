@@ -1,0 +1,60 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    # Windows only for now: that is the platform the tool has been tested on. The code itself uses no
+    # Windows-only API, so a macOS job is a contribution rather than a rewrite - see CONTRIBUTING.md.
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: build
+        run: dotnet build src/DoricoUse.Cli/DoricoUse.Cli.csproj -c Release --nologo
+
+      - name: build the checks
+        run: |
+          dotnet build tests/ProjectFileCheck/ProjectFileCheck.csproj -c Release --nologo
+          dotnet build tests/VocabularyCheck/VocabularyCheck.csproj -c Release --nologo
+
+      - name: run the checks
+        # Both checks report `skip` for a fixture this machine does not have and exit 0, so a missing corpus
+        # (which is deliberately not in the repository - see NOTICE) never fails a build. Add your own score
+        # under tests/corpus to have the real checks run: see CONTRIBUTING.md.
+        run: |
+          ./tests/ProjectFileCheck/bin/Release/net10.0/project-file-check.exe
+          ./tests/VocabularyCheck/bin/Release/net10.0/vocabulary-check.exe
+
+      - name: publish (Native AOT, win-x64)
+        run: dotnet publish src/DoricoUse.Cli/DoricoUse.Cli.csproj -c Release -r win-x64 --nologo
+
+      - name: what was published
+        shell: pwsh
+        run: |
+          Get-Item src/DoricoUse.Cli/bin/Release/net10.0/win-x64/publish/dorico-use.exe |
+            Select-Object FullName, Length
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dorico-use-win-x64
+          path: |
+            src/DoricoUse.Cli/bin/Release/net10.0/win-x64/publish/dorico-use.exe
+            README.md
+            LICENSE
+            NOTICE
+            CHANGELOG.md
+          if-no-files-found: error

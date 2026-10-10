@@ -120,9 +120,9 @@ internal static class NoteCommands
 
         var readTo = new Option<string?>("--read-to")
         {
-            Description = "Where the copy for --read goes. Default: .spinney/read/<timestamp>.dorico. An existing "
-                + "file is never overwritten, and the open document is rebound to the copy (that is File.SaveAs; see "
-                + "read.save.document).",
+            Description = "Where the copy for --read goes. Default: a timestamped file in the system temporary "
+                + "directory. An existing file is never overwritten, and the open document is rebound to the copy "
+                + "(that is File.SaveAs; see read.save.document).",
         };
 
         var readLimit = new Option<string?>("--limit")

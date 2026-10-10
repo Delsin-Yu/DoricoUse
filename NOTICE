@@ -1,0 +1,39 @@
+# NOTICE
+
+## This project is not affiliated with Steinberg
+
+`dorico-use` is an independent, unaffiliated community tool. It is not made, endorsed, sponsored or supported by
+Steinberg Media Technologies GmbH.
+
+**Dorico** is a registered trademark of Steinberg Media Technologies GmbH, used here only to say what this tool
+works with. The Dorico application, the `.dorico` file format and the Dorico Remote Control API are Steinberg's
+property; this repository claims no rights over any of them.
+
+## What this tool does with Steinberg's software
+
+Everything here works with a Dorico installation the user already has and has licensed:
+
+- It speaks to the Remote Control WebSocket that Dorico exposes when the user turns it on in **Preferences >
+  Remote Control**. That is a documented, user-enabled feature, used as intended.
+- `file read` decodes `.dorico` files **the user owns**, reading them from disk. The format was reverse engineered
+  for interoperability — to let a user's own scores be read by other tools — and the decoder is our own code.
+- `tools/analyze_minidump.py` reads crash dumps of the user's own machine.
+- Nothing here is a copy of Steinberg code, and no Steinberg binary, string table or other extracted data is
+  distributed in this repository.
+
+## Reverse engineering, and the vocabulary question
+
+Commands, parameter names and enum spellings were learned by observing the application: its `application.log`
+(which echoes every command Dorico performs), the command catalogue it publishes over the API, and — for the
+unpublished surface — strings inside the executable on the maintainer's own machine.
+
+The extracted vocabulary is **deliberately not** part of this repository. `tools/extract_vocabulary.py` reads a
+locally installed Dorico executable and writes a per-user file under `%LOCALAPPDATA%\dorico-use\` for local
+validation only; the list itself is never committed and never shipped. This is the same line the open-source
+Dorico clients drawn on here have kept.
+
+## Files you bring
+
+Test fixtures named in `tests/` are files on the maintainer's machine. They are **not** in this repository. If you
+want the full checks, point them at your own projects — see `CONTRIBUTING.md`, which explains how to add a score
+you are allowed to redistribute so that continuous integration can run the real checks.

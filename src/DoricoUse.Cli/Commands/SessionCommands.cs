@@ -40,8 +40,8 @@ internal static class SessionCommands
     {
         var to = new Option<string?>("--to")
         {
-            Description = "The file to write the copy to. Default: .spinney/read/<timestamp>.dorico in the current "
-                + "folder. An existing file is never overwritten.",
+            Description = "The file to write the copy to. Default: a timestamped file in the system temporary "
+                + "directory. An existing file is never overwritten.",
         };
 
         var limit = new Option<string>("--limit")

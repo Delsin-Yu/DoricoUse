@@ -7,7 +7,10 @@
     <Nullable>enable</Nullable>
     <AssemblyName>dorico-use</AssemblyName>
     <RootNamespace>DoricoUse.Cli</RootNamespace>
+    <Version>0.1.0</Version>
+    <Authors>the dorico-use contributors</Authors>
     <Description>Stateless JSON CLI for steering Dorico through its Remote Control API</Description>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <InvariantGlobalization>true</InvariantGlobalization>
     <PublishAot>true</PublishAot>
     <OptimizationPreference>Size</OptimizationPreference>
