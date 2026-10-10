@@ -2,64 +2,76 @@ using System.CommandLine;
 using System.Diagnostics;
 using System.Text.Json.Nodes;
 using DoricoUse.Cli.Dorico;
+using DoricoUse.Cli.Ipc;
 using DoricoUse.Cli.Json;
 using DoricoUse.Cli.Views;
 
 namespace DoricoUse.Cli.Commands;
 
-/// <summary>Connect to Dorico, read the state of the running session, and check that the environment works.</summary>
+/// <summary>
+/// Reading the live session. Everything here goes through the host, which owns the connection; `session probe` is
+/// the exception and talks to Dorico directly, because it exists to measure the connection itself.
+/// </summary>
 internal static class SessionCommands
 {
     public static Command Build()
     {
-        var session = new Command("session", "Connect to Dorico and read the state of the running session.");
+        var session = new Command("session", "Read the state of the running Dorico session.");
         session.Subcommands.Add(BuildStatus());
-        session.Subcommands.Add(BuildConnect());
         session.Subcommands.Add(BuildInfo());
+        session.Subcommands.Add(BuildConnect());
+        session.Subcommands.Add(BuildEvents());
         session.Subcommands.Add(BuildProbe());
         return session;
     }
 
     private static Command BuildStatus()
     {
-        var address = CommandRoot.AddressOption();
-        var clientName = CommandRoot.ClientNameOption();
         var timeout = CommandRoot.TimeoutOption();
         var raw = CommandRoot.RawOption();
 
         var command = new Command(
             "status",
-            "Current Dorico state: score loaded, selection, note input, mode, playback.")
+            "Score loaded, selection, note input, mode, playback. Ask for this after a command: it is the feedback.")
         {
-            address,
-            clientName,
             timeout,
             raw,
         };
 
         command.SetAction(parse => CommandRoot.RunAsync("session status", async () =>
         {
-            var store = CommandRoot.LoadStore(parse, address, clientName);
-            var wait = CommandRoot.Timeout(parse, timeout);
+            var args = new JsonObject { ["raw"] = parse.GetValue(raw) };
 
-            await using var client = await DoricoClient.ConnectAsync(
-                new DoricoConnectOptions(store, wait),
+            return await HostClient.CallAsync(
+                HostProtocol.OpStatus,
+                args,
+                CommandRoot.Timeout(parse, timeout),
                 CancellationToken.None);
+        }));
 
-            var status = await client.GetStatusAsync(wait, CancellationToken.None);
+        return command;
+    }
 
-            var payload = new JsonObject
-            {
-                ["session"] = client.Handshake.DeepClone(),
-                ["status"] = SessionView.Status(status),
-            };
+    private static Command BuildInfo()
+    {
+        var timeout = CommandRoot.TimeoutOption();
+        var raw = CommandRoot.RawOption();
 
-            if (parse.GetValue(raw))
-            {
-                payload["raw"] = status.DeepClone();
-            }
+        var command = new Command("info", "Which Dorico this is, and how the host reaches it.")
+        {
+            timeout,
+            raw,
+        };
 
-            return payload;
+        command.SetAction(parse => CommandRoot.RunAsync("session info", async () =>
+        {
+            var args = new JsonObject { ["raw"] = parse.GetValue(raw) };
+
+            return await HostClient.CallAsync(
+                HostProtocol.OpInfo,
+                args,
+                CommandRoot.Timeout(parse, timeout),
+                CancellationToken.None);
         }));
 
         return command;
@@ -67,8 +79,6 @@ internal static class SessionCommands
 
     private static Command BuildConnect()
     {
-        var address = CommandRoot.AddressOption();
-        var clientName = CommandRoot.ClientNameOption();
         var timeout = CommandRoot.TimeoutOption(120000);
         var raw = CommandRoot.RawOption();
         var reset = new Option<bool>("--reset")
@@ -78,10 +88,9 @@ internal static class SessionCommands
 
         var command = new Command(
             "connect",
-            "Open a session and store its session token. The first connection needs a click on Allow inside Dorico.")
+            "Open the session and store its token. The first connection under a client name needs a click on Allow "
+            + "inside Dorico.")
         {
-            address,
-            clientName,
             timeout,
             raw,
             reset,
@@ -89,78 +98,55 @@ internal static class SessionCommands
 
         command.SetAction(parse => CommandRoot.RunAsync("session connect", async () =>
         {
-            var store = CommandRoot.LoadStore(parse, address, clientName);
-            var wait = CommandRoot.Timeout(parse, timeout);
-            var resetToken = parse.GetValue(reset);
+            var args = new JsonObject { ["reset"] = parse.GetValue(reset) };
 
-            await using var client = await DoricoClient.ConnectAsync(
-                new DoricoConnectOptions(store, wait, resetToken),
+            return await HostClient.CallAsync(
+                HostProtocol.OpConnect,
+                args,
+                CommandRoot.Timeout(parse, timeout),
                 CancellationToken.None);
-
-            var app = await client.AppInfoAsync(wait, CancellationToken.None);
-
-            var payload = new JsonObject
-            {
-                ["session"] = client.Handshake.DeepClone(),
-                ["app"] = SessionView.App(app),
-                ["storePath"] = SessionStore.FilePath,
-            };
-
-            if (NodeRead.Str(client.Handshake, "authorization") == "consent-dialog")
-            {
-                payload["hint"] = "Dorico asked for authorization; the dialog is closed now that the token is stored.";
-            }
-
-            if (parse.GetValue(raw))
-            {
-                payload["raw"] = app.DeepClone();
-            }
-
-            return payload;
         }));
 
         return command;
     }
 
-    private static Command BuildInfo()
+    private static Command BuildEvents()
     {
-        var address = CommandRoot.AddressOption();
-        var clientName = CommandRoot.ClientNameOption();
-        var timeout = CommandRoot.TimeoutOption();
-        var raw = CommandRoot.RawOption();
-
-        var command = new Command("info", "Which Dorico this is, and how the CLI is configured to reach it.")
+        var limit = new Option<int>("--limit")
         {
-            address,
-            clientName,
-            timeout,
-            raw,
+            Description = "How many of the most recent messages to return.",
+            DefaultValueFactory = _ => 20,
         };
 
-        command.SetAction(parse => CommandRoot.RunAsync("session info", async () =>
+        var payload = new Option<bool>("--payload")
         {
-            var store = CommandRoot.LoadStore(parse, address, clientName);
-            var wait = CommandRoot.Timeout(parse, timeout);
+            Description = "Include each message as Dorico sent it, not just its kind and time.",
+        };
 
-            await using var client = await DoricoClient.ConnectAsync(
-                new DoricoConnectOptions(store, wait),
-                CancellationToken.None);
+        var timeout = CommandRoot.TimeoutOption();
 
-            var app = await client.AppInfoAsync(wait, CancellationToken.None);
+        var command = new Command(
+            "events",
+            "The messages Dorico pushed on its own (status patches, selection changes) since the host started.")
+        {
+            limit,
+            payload,
+            timeout,
+        };
 
-            var payload = new JsonObject
+        command.SetAction(parse => CommandRoot.RunAsync("session events", async () =>
+        {
+            var args = new JsonObject
             {
-                ["app"] = SessionView.App(app),
-                ["session"] = client.Handshake.DeepClone(),
-                ["storePath"] = SessionStore.FilePath,
+                ["limit"] = Math.Clamp(parse.GetValue(limit), 1, 500),
+                ["payload"] = parse.GetValue(payload),
             };
 
-            if (parse.GetValue(raw))
-            {
-                payload["raw"] = app.DeepClone();
-            }
-
-            return payload;
+            return await HostClient.CallAsync(
+                HostProtocol.OpEvents,
+                args,
+                CommandRoot.Timeout(parse, timeout),
+                CancellationToken.None);
         }));
 
         return command;
@@ -187,8 +173,7 @@ internal static class SessionCommands
 
         var command = new Command(
             "probe",
-            "Diagnostics: time the handshake, check that the stored session token is reused, count the command "
-            + "catalogue, and watch for unsolicited messages.")
+            "Diagnostics for the connection itself: it talks to Dorico directly, not through the host.")
         {
             address,
             clientName,
@@ -238,7 +223,9 @@ internal static class SessionCommands
                     result["ok"] = false;
                     result["connectMs"] = CommandRoot.ElapsedMilliseconds(connectStarted);
                     result["error"] = DescribeError(ex);
-                    JsonArr.AddText(findings, $"round {round}: connect failed after {CommandRoot.ElapsedMilliseconds(connectStarted)} ms");
+                    JsonArr.AddText(
+                        findings,
+                        $"round {round}: connect failed after {CommandRoot.ElapsedMilliseconds(connectStarted)} ms");
                     break;
                 }
 
@@ -298,7 +285,7 @@ internal static class SessionCommands
                 {
                     JsonArr.AddText(
                         findings,
-                        "the session token survived disconnect, so one invocation can connect and quit freely");
+                        "the session token survived disconnect, so a connection per invocation is safe");
                 }
             }
 
@@ -354,41 +341,7 @@ internal static class SessionCommands
         var response = await client.GetCommandsAsync(wait, CancellationToken.None);
         var elapsed = CommandRoot.ElapsedMilliseconds(started);
 
-        var list = NodeRead.Arr(response, "commands");
-        var report = new JsonObject
-        {
-            ["fetchMs"] = elapsed,
-            ["count"] = list?.Count ?? 0,
-        };
-
-        if (list is not null && list.Count > 0)
-        {
-            report["families"] = CommandFamilies(list);
-            report["first"] = list[0]?.DeepClone();
-        }
-
-        return report;
-    }
-
-    private static JsonObject CommandFamilies(JsonArray commands)
-    {
-        var families = new JsonObject();
-
-        foreach (var command in commands)
-        {
-            var name = NodeRead.Str(command, "name");
-
-            if (name is null)
-            {
-                continue;
-            }
-
-            var dot = name.IndexOf('.', StringComparison.Ordinal);
-            var family = dot > 0 ? name[..dot] : name;
-            families[family] = (NodeRead.Int(families, family) ?? 0) + 1;
-        }
-
-        return families;
+        return CatalogueView.Report(response, elapsed);
     }
 
     private static JsonArray Sample(IReadOnlyList<JsonObject> events, bool includePayload)
@@ -402,7 +355,7 @@ internal static class SessionCommands
                 : new JsonObject
                 {
                     ["kind"] = NodeRead.Str(evt, "kind"),
-                    ["atMs"] = NodeRead.Long(evt, "atMs"),
+                    ["atUtc"] = NodeRead.Str(evt, "atUtc"),
                 });
         }
 

@@ -11,6 +11,8 @@ internal static class CommandRoot
     {
         var root = new RootCommand("dorico-use: JSON CLI for steering Dorico through its Remote Control API.");
         root.Subcommands.Add(SessionCommands.Build());
+        root.Subcommands.Add(HostCommands.Build());
+        root.Subcommands.Add(CommandCommands.Build());
         return root;
     }
 
@@ -64,15 +66,43 @@ internal static class CommandRoot
     internal static TimeSpan Timeout(ParseResult parse, Option<int> timeoutOption)
         => TimeSpan.FromMilliseconds(Math.Clamp(parse.GetValue(timeoutOption), 250, 600000));
 
-    internal static int RunAsync(string command, Func<Task<JsonObject>> action)
+    /// <param name="silent">
+    /// Print nothing on success. Used by `host serve`: when it is started detached its stdout belongs to a pipe
+    /// nobody reads, and its log file is where the story lives.
+    /// </param>
+    internal static int RunAsync(string command, Func<Task<JsonObject>> action, bool silent = false)
     {
         try
         {
-            return ResponseWriter.Success(command, action().GetAwaiter().GetResult());
+            var payload = action().GetAwaiter().GetResult();
+
+            return silent ? 0 : ResponseWriter.Success(command, payload);
         }
         catch (Exception ex)
         {
-            return ResponseWriter.Fail(command, ex);
+            if (!silent)
+            {
+                return ResponseWriter.Fail(command, ex);
+            }
+
+            WriteErrorIfAttached(ex);
+
+            return ex is CliException cli ? cli.ExitCode : 2;
+        }
+    }
+
+    private static void WriteErrorIfAttached(Exception error)
+    {
+        try
+        {
+            if (!Console.IsErrorRedirected)
+            {
+                Console.Error.WriteLine($"dorico-use: {error.Message}");
+            }
+        }
+        catch (IOException)
+        {
+            // A detached process has nowhere to write.
         }
     }
 

@@ -266,10 +266,10 @@ internal sealed class DoricoSession : IAsyncDisposable
 
         DropAbandoned();
 
-        // An unsolicited status is a partial patch; the one answering getstatus is the complete status.
+        // An unsolicited status is a partial patch; the one answering getstatus is merged the same way.
         if (id == DoricoProtocol.RidStatus && !NextExpects(id))
         {
-            Status.Apply(message, full: false);
+            Status.Apply(message);
             Record(id, message);
             return;
         }
@@ -286,7 +286,7 @@ internal sealed class DoricoSession : IAsyncDisposable
 
             if (id == DoricoProtocol.RidStatus)
             {
-                Status.Apply(message, full: true);
+                Status.Apply(message);
             }
 
             pending.Complete(message);
@@ -331,7 +331,7 @@ internal sealed class DoricoSession : IAsyncDisposable
             _events.Add(new JsonObject
             {
                 ["kind"] = kind,
-                ["atMs"] = Environment.TickCount64,
+                ["atUtc"] = DateTimeOffset.UtcNow.ToString("O"),
                 ["payload"] = payload.DeepClone(),
             });
 
@@ -346,7 +346,7 @@ internal sealed class DoricoSession : IAsyncDisposable
             _events.Add(new JsonObject
             {
                 ["kind"] = kind,
-                ["atMs"] = Environment.TickCount64,
+                ["atUtc"] = DateTimeOffset.UtcNow.ToString("O"),
                 ["raw"] = raw,
             });
 

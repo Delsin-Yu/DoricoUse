@@ -29,7 +29,7 @@ internal static class SessionView
         return new JsonObject
         {
             ["hasScore"] = Clone(status, "hasScore"),
-            ["scoreId"] = Clone(status, "activeOpenScoreID"),
+            ["scoreId"] = Number(status, "activeOpenScoreID"),
             ["editable"] = Clone(status, "notReadOnly"),
             ["canUndo"] = Clone(status, "canUndo"),
             ["hasSelection"] = Clone(status, "hasSelection"),
@@ -52,12 +52,12 @@ internal static class SessionView
             ["selection"] = new JsonObject
             {
                 ["duration"] = Clone(status, "duration"),
-                ["rhythmDots"] = Clone(status, "rhythmDots"),
+                ["rhythmDots"] = Number(status, "rhythmDots"),
                 ["accidental"] = Clone(status, "accidental"),
                 ["restMode"] = Clone(status, "restMode"),
             },
             ["rhythmGrid"] = Clone(status, "rhythmicGridResolutionValue"),
-            ["zoomPercent"] = Clone(status, "zoomPercent"),
+            ["zoomPercent"] = Number(status, "zoomPercent"),
         };
     }
 
@@ -77,4 +77,20 @@ internal static class SessionView
 
     private static JsonNode? Clone(JsonObject? source, string key)
         => source is not null && source.TryGetPropertyValue(key, out var value) ? value?.DeepClone() : null;
+
+    /// <summary>Dorico sometimes sends numbers as strings ("144"); an agent should not have to care.</summary>
+    private static JsonNode? Number(JsonObject source, string key)
+    {
+        if (!source.TryGetPropertyValue(key, out var value) || value is null)
+        {
+            return null;
+        }
+
+        if (value is JsonValue json && json.TryGetValue<string>(out var text))
+        {
+            return long.TryParse(text, out var parsed) ? JsonValue.Create(parsed) : value.DeepClone();
+        }
+
+        return value.DeepClone();
+    }
 }

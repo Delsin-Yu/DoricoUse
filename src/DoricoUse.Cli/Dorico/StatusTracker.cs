@@ -29,13 +29,19 @@ internal sealed class StatusTracker
 
     public int Revision { get; private set; }
 
-    /// <param name="status">The status object as received.</param>
-    /// <param name="full">True when Dorico sent this in answer to getstatus (a complete status).</param>
-    public void Apply(JsonObject status, bool full)
+    /// <summary>
+    /// Merges a status message into the last known status.
+    /// </summary>
+    /// <remarks>
+    /// Dorico answers getstatus with a complete status and pushes partial patches the rest of the time — but an
+    /// answer sent while a modal dialog is up (loading a project, for instance) is partial as well, so every
+    /// status is merged the same way instead of replacing what is already known.
+    /// </remarks>
+    public void Apply(JsonObject status)
     {
         lock (_gate)
         {
-            if (full || _current is null)
+            if (_current is null)
             {
                 _current = (JsonObject)status.DeepClone();
             }

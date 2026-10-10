@@ -10,6 +10,8 @@ internal static class Program
     private static readonly string[] Groups =
     [
         "session",
+        "host",
+        "command",
     ];
 
     private static int Main(string[] args)
