@@ -199,7 +199,7 @@ internal sealed partial class HostServer(HostOptions options, HostLog log)
                 HostProtocol.OpSequence => (HostProtocol.Ok(await SequenceAsync(args, timeout).ConfigureAwait(false)), false),
                 HostProtocol.OpNoteInsert => (HostProtocol.Ok(await NoteInsertAsync(args, timeout).ConfigureAwait(false)), false),
                 HostProtocol.OpEvents => (HostProtocol.Ok(Events(args)), false),
-                HostProtocol.OpFlows => (HostProtocol.Ok(await FlowsAsync(timeout).ConfigureAwait(false)), false),
+                HostProtocol.OpFlows => (HostProtocol.Ok(await FlowsAsync(args, timeout).ConfigureAwait(false)), false),
                 HostProtocol.OpLayouts => (HostProtocol.Ok(await LayoutsAsync(args, timeout).ConfigureAwait(false)), false),
                 HostProtocol.OpOptionsGet => (HostProtocol.Ok(await OptionsGetAsync(args, timeout).ConfigureAwait(false)), false),
                 HostProtocol.OpOptionsSet => (HostProtocol.Ok(await OptionsSetAsync(args, timeout).ConfigureAwait(false)), false),

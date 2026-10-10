@@ -12,8 +12,13 @@ namespace DoricoUse.Cli.Host;
 
 internal sealed partial class HostServer
 {
-    private Task<JsonObject> FlowsAsync(TimeSpan timeout)
-        => FetchAsync("flows", DoricoProtocol.RidFlowsList, DoricoProtocol.GetFlows(), ScoreView.Flows, timeout);
+    private Task<JsonObject> FlowsAsync(JsonObject args, TimeSpan timeout)
+        => FetchAsync(
+            "flows",
+            DoricoProtocol.RidFlowsList,
+            DoricoProtocol.GetFlows(),
+            response => WithRaw(ScoreView.Flows(response), response, args),
+            timeout);
 
     private Task<JsonObject> LayoutsAsync(JsonObject args, TimeSpan timeout)
     {
@@ -23,10 +28,34 @@ internal sealed partial class HostServer
             "layouts",
             DoricoProtocol.RidLayoutsList,
             DoricoProtocol.GetLayouts(),
-            response => ScoreView.Layouts(response, kind),
+            response => WithRaw(ScoreView.Layouts(response, kind), response, args),
             timeout);
     }
 
+    /// <summary>
+    /// Adds the unmodified Dorico answer when the caller asked for it (<c>--raw</c>). Every other read has this
+    /// escape hatch, and these three do too: a field this build does not model yet stays reachable instead of
+    /// being invisible until a release adds it.
+    /// </summary>
+    private static JsonObject WithRaw(JsonObject payload, JsonObject response, JsonObject args)
+    {
+        if (NodeRead.Bool(args, "raw") == true)
+        {
+            payload["raw"] = response.DeepClone();
+        }
+
+        return payload;
+    }
+
+    /// <summary>
+    /// The players of the open document.
+    /// </summary>
+    /// <remarks>
+    /// Not a protocol fetch like the two above it, because there is no request to fetch from: the Remote Control API
+    /// publishes no players request, and <c>getflows</c> answers a flow id and a name. The CLI reads them through
+    /// the scripting layer instead — the same route the live read takes — which is why there is no host operation
+    /// here: a host operation would have to send a command through the host's own gate and deadlock on it.
+    /// </remarks>
     private Task<JsonObject> PropertiesAsync(TimeSpan timeout)
         => FetchAsync(
             "properties",
