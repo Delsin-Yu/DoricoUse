@@ -41,10 +41,26 @@ internal static class VersionCommands
         return new JsonObject
         {
             ["version"] = BuildInfo(),
+            ["compatibility"] = Compatibility(),
             ["state"] = State(store, announced),
             ["protocol"] = Protocol(store),
         };
     }
+
+    /// <summary>
+    /// What this build was tested against — a fact, kept out of the SemVer number so that the two cannot be
+    /// confused: the tool version tracks the tool, and Dorico compatibility is reported here.
+    /// </summary>
+    private static JsonObject Compatibility() => new()
+    {
+        ["testedAgainst"] = DoricoProtocol.TestedAgainst,
+        ["edition"] = "Pro",
+        ["platform"] = "windows",
+        ["api"] = $"Remote Control handshake {DoricoProtocol.HandshakeVersion}",
+        ["note"] = "Only this combination is tested. The CLI uses no Windows-only API, so a macOS port is a "
+            + "contribution rather than a rewrite; other Dorico editions differ in which commands and options they "
+            + "accept and are untested.",
+    };
 
     private static JsonObject BuildInfo()
     {

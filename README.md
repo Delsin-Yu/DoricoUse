@@ -13,6 +13,19 @@ Two processes, by design:
 
 `file read` is the exception: it parses a project file on disk and touches neither Dorico nor the host.
 
+## Quickstart
+
+```bash
+dorico-use session connect      # the first run asks Dorico's user to click Allow; the token is then stored
+dorico-use session status       # score loaded, selection, note input, mode - this is your feedback
+dorico-use file read --path "C:\scores\my score.dorico" --limit 20   # works with Dorico closed
+dorico-use command list --family NoteInput --filter "*Pitch*"        # what can be sent, and its parameters
+dorico-use note insert --notes "C5 D5 E5" --duration crotchet        # writes at the caret
+```
+
+Only `note insert` needs a project with at least one player; `file read` needs neither Dorico nor the host.
+Every command prints one JSON object, and the ones with a `--raw` option can add Dorico's own payload.
+
 ## Requirements
 
 - Dorico running, with **Preferences > Remote Control** enabled (port 4560 by default).
@@ -33,6 +46,28 @@ the `bin` tree. The source is plain `net10.0` (no Win32 dependency), so the same
 
 **Stop the host before rebuilding**: a running host holds the executable open and the build fails with
 `MSB3027 ... being used by another process`. `host stop` before building, `host restart` after.
+
+## Install, upgrade, uninstall
+
+This is a single self-contained executable: copy `dorico-use.exe` anywhere on `PATH` (or call it by full path).
+There is no installer, no service, and no scheduled task — nothing is registered anywhere.
+
+Two things live outside the executable:
+
+| Path | What | Removing it |
+|---|---|---|
+| `%LOCALAPPDATA%\dorico-use\` | `session.json` (connection settings and the session token Dorico granted this client), `host.json` (the running host's pid and pipe), `host.log`, and `vocabulary.json` if you generated one | delete the folder |
+| a running `host` process | `host start` leaves one background process alive by design: the connection has to stay open for the status stream Dorico pushes | `dorico-use host stop` |
+
+**Upgrading: stop the host first.** A running host holds the executable open, so replacing it while it runs fails;
+`dorico-use host stop`, replace the file, and the next command starts the new host. Nothing else needs migrating.
+
+## Versioning and compatibility
+
+The tool version is SemVer and says nothing about Dorico; what it was tested against is a fact, reported by
+`version` (`compatibility.testedAgainst`, `compatibility.api`). Windows is the only platform tested, on Dorico
+6.2.30 Pro. Nothing in the CLI uses a Windows-only API — the pipe, the WebSocket and the file decoder are plain
+.NET — so a macOS port is a contribution rather than a rewrite; see `CONTRIBUTING.md`.
 
 ## Commands
 
@@ -57,8 +92,11 @@ the `bin` tree. The source is plain `net10.0` (no Win32 dependency), so the same
 | `file read --path <project.dorico> [--limit n\|all] [--measure a-b] [--player <glob>] [--tree <name\|*>] [--dynamics] [--lyrics] [--slurs] [--articulations] [--ties] [--beams] [--techniques] [--layout] [--mark-limit n]` | Read a project file from disk: notes, dynamics, slurs, articulations, ties, beams, techniques, layout, or any subtree. No Dorico needed. |
 | `export musicxml [--path <watch dir>] [--wait-ms n]` | Export MusicXML. **Needs a click on 确定 inside Dorico** (see below). |
 | `export text --path <file.csv>` | Export project text/comments as CSV. Fully unattended. |
-| `raw send --json '{"message":...}' --expect <id\|any>` | Escape hatch for protocol messages this CLI does not model. |
 | `version` | This build (assembly version, whether it is Native AOT), where its state lives, and the protocol constants. Starts no host, needs no Dorico. |
+
+There is deliberately **no** command that sends an arbitrary protocol message. One existed during development
+(it is how some of the message ids below were discovered), and it was removed before release: a tool that can post
+anything can post anything at all, including the destructive commands.
 
 Shared options: `--timeout-ms` (default 15000; 120000 for `session connect`) and `--raw` (add the unmodified
 Dorico payload). `--address` and `--client-name` belong to the host, since it owns the connection; only
@@ -324,8 +362,8 @@ Verified against Dorico Pro 6.2.30 on Windows 11:
 - `session probe` measures the useful part: the token survives a disconnect, so a connection per invocation costs
   about 1 ms — the host exists for the event stream and for serialising access, not to save handshakes.
 - The best documentation is `application.log` (`%APPDATA%\Steinberg\Dorico 6`): every action Dorico performs is
-  echoed there as the command and parameters that produce it. When a message's answer id is unknown,
-  `raw send --expect any` sends it and shows whatever comes back.
+  echoed there as the command and parameters that produce it. That, the command catalogue and XML files Dorico
+  itself exports are how every fact below was established — a generic send-any-message command is not shipped.
 
 ### Beyond the published API
 
@@ -405,10 +443,24 @@ dotnet build tests/VocabularyCheck/VocabularyCheck.csproj -v q --nologo
 `VocabularyCheck` extracts from a small synthetic executable it writes itself, so it needs neither the 154 MB app
 nor Dorico; a check that cannot run reports `skip` instead of passing.
 
+## Troubleshooting
+
+| Symptom | What it is |
+|---|---|
+| `NotReachable` on every live command | Dorico is not running, its `Preferences > Remote Control` server is off, or it listens elsewhere (set `--address` on `host start`). `file read` and `version` still work without Dorico. |
+| The build fails with `MSB3027 ... being used by another process` | The host is running from that binary and holds it open. `dorico-use host stop`, build, and the next command starts the host again. |
+| A command seems to do nothing | Something is modal in Dorico. While a dialog is open Dorico **queues** commands instead of running them, and each one still answered `kOK` when it was posted — so they run minutes later, out of sight. Look in `%APPDATA%\Steinberg\Dorico 6\application.log` for when a command really ran, and close the dialog. |
+| `WrongActiveScore {expected, actual}` | `--expect-score` refused: the document Dorico has active is not the one you named. Bring the right window to the front, or drop the flag. |
+| `kOK` but nothing happened | `kOK` is a receipt, not proof — a bad `File.Open` path answers it too. Every command that changes the score reads the status back; for note entry the honest proof is `session read`. |
+| `session read` changed which file my document points at | It must: it uses `File.SaveAs`, which rebinds the open document to the copy. Run it against a scratch project, or re-open the original afterwards. The copy goes to your system temporary directory. |
+| Dorico crashed while running a script | The scripting layer (`Script.RunScript` via `command send`) is undocumented and not defensive; building its C++ argument objects blind has crashed Dorico here. See `docs/scripting.md` §8 before using it. |
+| `file read` reports `NotAContainer` / `UnsupportedScoreData` | The file is not a Dorico project, or is a newer format than this build knows. The reader refuses rather than guessing. |
+
 ## Roadmap
 
 1. **Done** — lean WebSocket client (request/response pairing, status merging), session store, `session` group.
-2. **Done** — host process, pipe protocol, `host` group, `command send|list|info`, `raw send`, `session events`.
+2. **Done** — host process, pipe protocol, `host` group, `command send|list|info`, `session events`.
+   (A raw sender existed here and was removed before release.)
 3. **Done** — `project`, `options`, `library`, `playback`, `properties`.
 4. **Done** — `note insert` with chords, tuplets and relative staff targeting; `file read` (the project-file
    decoder); `export musicxml`/`export text`.

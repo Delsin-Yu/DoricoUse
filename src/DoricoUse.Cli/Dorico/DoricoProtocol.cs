@@ -17,6 +17,13 @@ internal static class DoricoProtocol
 {
     public const string HandshakeVersion = "1.0";
 
+    /// <summary>
+    /// The Dorico build everything in this repository was measured against. Reported by the <c>version</c> command
+    /// rather than encoded in the tool's own SemVer number, because the tool's version and Dorico compatibility are
+    /// two different facts.
+    /// </summary>
+    public const string TestedAgainst = "6.2.30";
+
     public const string DefaultAddress = "ws://127.0.0.1:4560";
 
     public const string DefaultClientName = "dorico-use";
