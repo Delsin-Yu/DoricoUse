@@ -13,17 +13,25 @@ using DoricoUse.Cli.Views;
 var failures = 0;
 var skipped = 0;
 
-const string Corpus = @"Bad Apple!! (JAGMO Shiro v1.2 2026.10.08).dorico";
-const string SecondCorpus = @"《小城日常》 OPED串烧.dorico";
-const string ThirdCorpus = @"畜生界传说：被欺骗者迷失的善与恶.dorico";
+// The scores these checks run against are not in this repository — they are the maintainer's own files, on the
+// maintainer's machine (see NOTICE and tests/corpus/README.md) — so each one is looked up by name: first in
+// tests/corpus/ beside the committed fixture (drop your own file in there), then in every folder named by the
+// environment variable below, separated by the platform's path separator (`;` on Windows, `:` elsewhere). A name
+// that is found nowhere reports SKIP rather than failing, and the check prints the path it looked for.
+const string CorpusFolder = "tests/corpus";
+const string CorpusVariable = "DORICO_USE_TEST_CORPUS";
+
+var Corpus = CorpusFile(@"Bad Apple!! (JAGMO Shiro v1.2 2026.10.08).dorico");
+var SecondCorpus = CorpusFile(@"《小城日常》 OPED串烧.dorico");
+var ThirdCorpus = CorpusFile(@"畜生界传说：被欺骗者迷失的善与恶.dorico");
 
 // A fourth file, because Dorico's own MusicXML export of it sits beside it on disk: the dynamics of that export were
 // compared with what this reader decodes, marking by marking.
-const string FourthCorpus = @"無限城への誘い.dorico";
+var FourthCorpus = CorpusFile(@"無限城への誘い.dorico");
 
 // A fifth file, whose MusicXML export came from Sibelius instead — a different engraving of the same music, so only
 // the text of its markings can be compared.
-const string FifthCorpus = @"秘封拉格1 ~ Hifuu Rag 225 Clean.dorico";
+var FifthCorpus = CorpusFile(@"秘封拉格1 ~ Hifuu Rag 225 Clean.dorico");
 
 void Check(string name, bool ok, string? detail = null)
 {
@@ -68,6 +76,32 @@ static string? Locate(string relative)
     }
 
     return File.Exists(relative) ? Path.GetFullPath(relative) : null;
+}
+
+// One corpus file by name: tests/corpus/ first, then each folder named by DORICO_USE_TEST_CORPUS. The name it
+// returns when nothing is found is the path under tests/corpus/ — the check that calls it reports SKIP with that
+// path in its output, so a reader can see where the file was expected to be.
+static string CorpusFile(string name)
+{
+    var local = Locate(Path.Combine(CorpusFolder, name));
+
+    if (local is not null)
+    {
+        return local;
+    }
+
+    foreach (var root in (Environment.GetEnvironmentVariable(CorpusVariable) ?? string.Empty)
+        .Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+    {
+        var candidate = Path.Combine(root, name);
+
+        if (File.Exists(candidate))
+        {
+            return candidate;
+        }
+    }
+
+    return Path.Combine(CorpusFolder, name);
 }
 
 var fixture = Locate(FixtureRelative);
@@ -516,7 +550,7 @@ Head(@"lyrics: a file with lyrics");
 // lyric elements - syllables under several verses, a translation line, and Chinese as well as Latin text. Its
 // numbers and its element/event link are asserted below; when it is not on the machine the block skips, which is
 // the honest outcome, because nothing else here can test it.
-const string LyricsProbe = @"TestPayload.dorico";
+var LyricsProbe = CorpusFile(@"TestPayload.dorico");
 
 if (!File.Exists(LyricsProbe))
 {
@@ -1209,7 +1243,7 @@ Head($"the note spelling letter against Dorico's own export: {FourthCorpus}");
 // file stores the sounding one, so the export's own <transpose> is applied first: that is what the element means
 // (sounding = written + chromatic + 12 x octave-change, and the sounding letter is the written letter shifted by
 // <diatonic> steps), and the parts it appears on are checked below.
-const string FourthExport = @"無限城への誘い - 总谱 - 01 無限城への誘い.musicxml";
+var FourthExport = CorpusFile(@"無限城への誘い - 总谱 - 01 無限城への誘い.musicxml");
 
 if (!File.Exists(FourthCorpus) || !File.Exists(FourthExport))
 {

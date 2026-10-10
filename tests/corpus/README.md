@@ -5,7 +5,7 @@
 | File | Where it comes from | Licence |
 |---|---|---|
 | `fixture.dorico` | **This repository.** Made by the maintainers with Dorico 6.2.30 for testing, and it contains nothing but our own notes: one Piano player, one 4/4 bar, three notes (a B flat, an F sharp and a C in the bass). | CC0 — dedicated to the public domain, no attribution needed |
-| the other scores named in `tests/ProjectFileCheck/Program.cs` | The maintainer's own music, on the maintainer's machine. **Not** in this repository, and never will be. | — |
+| the other scores named in `tests/ProjectFileCheck/Program.cs` | The maintainer's own music, on the maintainer's machine. **Not** in this repository, and never will be. The check program looks each one up by file name: `tests/corpus/` first, then the folder(s) named by `DORICO_USE_TEST_CORPUS`. | — |
 
 The fixture is the one that always works: continuous integration runs the checks against it, so the decoder is
 exercised for real on every push. It is deliberately small (1.3 MB) and deliberately shaped — two staves, a flat,

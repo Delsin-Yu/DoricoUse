@@ -38,7 +38,10 @@ decoder for `.dorico` files that needs no Dorico at all.
 - **`--expect-score <id>`** on every command that changes a document: the host refuses to act when Dorico's active
   document is not the one named.
 - **Tests** — `ProjectFileCheck` (187 checks against real projects and against Dorico's own MusicXML exports) and
-  `VocabularyCheck` (77 checks; the table is built in, so it needs no Dorico and no extraction step).
+  `VocabularyCheck` (77 checks; the table is built in, so it needs no Dorico and no extraction step). The checks
+  look the maintainer's own scores up by file name — `tests/corpus/` first, then the folder(s) named by
+  `DORICO_USE_TEST_CORPUS` — so the repository names no drive, and a machine that does not have those files reports
+  `skip` for the 13 checks that need them instead of failing.
 - Continuous integration: build, the two test projects, and a Native AOT publish on every push.
 - `error.data.stack` when `DORICO_USE_DEBUG` is set: an unexpected failure then carries its stack trace, which is
   what a bug report needs and what the JSON message alone never has.

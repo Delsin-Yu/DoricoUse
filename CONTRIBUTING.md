@@ -61,11 +61,14 @@ player, two staves and three notes (a flat, a sharp and a natural), so the check
 push. The rest are the maintainer's own scores, which are **not** here: a check whose file is missing reports
 `skip` and the run still exits 0.
 
-To run those ones too, put a score you are allowed to redistribute under `tests/corpus/` and adjust the paths at
-the top of `tests/ProjectFileCheck/Program.cs` (they are `const string`s). A good corpus file is small, has one or
-two players, and — if you want the export cross-checks to run — comes with a MusicXML export written by Dorico
-itself (File > Export > MusicXML) beside it. If you contribute a score, say where it came from and under which
-licence in your pull request: it ends up in the repository, so it has to be redistributable.
+To run those ones too, put the files under `tests/corpus/` — the checks look there first, by file name — or point
+`DORICO_USE_TEST_CORPUS` at the folder (or folders, separated by the platform's path separator) that holds them.
+Nothing in the repository names a drive: the names live in `tests/ProjectFileCheck/Program.cs` and are resolved at
+run time, so a machine that has the scores runs all 187 checks and one that does not reports `skip` for the 13
+that need them. A good corpus file is small, has one or two players, and — if you want the export cross-checks to
+run — comes with a MusicXML export written by Dorico itself (File > Export > MusicXML) beside it. If you contribute
+a score, say where it came from and under which licence in your pull request: it ends up in the repository, so it
+has to be redistributable.
 
 The strongest checks compare this decoder against a second source: Dorico's own MusicXML export. `--alter` against
 the derived accidental, `<articulations>` against the articulation marks, `<slur>` pairs against the slur events,
