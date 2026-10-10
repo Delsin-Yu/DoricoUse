@@ -28,6 +28,31 @@ than by size: `HostServer` keeps the server and the dispatch, `HostServer.Notes.
 `ProjectFileView.Marks.cs` the dynamics, slurs, articulations, ties, beams, techniques and layout. Adding a part
 means adding the file **and** the compiler item in the test project that compiles those sources by hand.
 
+## Building with the unsafe surface
+
+`command send` refuses any name in the `Script.` family: that layer is undocumented and probing it has crashed
+Dorico here (`docs/scripting.md` §8). The refusal is compile-time, not policy — `UnsafeSurface.ScriptRunExposed` is
+`false` unless the build defines `EXPOSE_UNSAFE_SCRIPT_RUN_API` — and only a build that asks for it gets the
+capability back:
+
+```powershell
+dotnet build src/DoricoUse.Cli/DoricoUse.Cli.csproj -p:ExposeUnsafeScriptRunApi=true
+```
+
+That is for working on the scripting layer against a scratch document. **A release build must not pass it:**
+`release.yml` refuses to publish a binary whose `version.build.exposeUnsafeScriptRunApi` is not `false`, and
+`ci.yml` compiles the check project both ways so the flag cannot quietly rot.
+
+## Building without the stored session token
+
+By default the token Dorico grants is written to `%LOCALAPPDATA%\dorico-use\session.json`, in plain text, which is
+what makes the second run cost a millisecond instead of a dialog. `-p:NeverPersistSession=true` builds the other
+one: the token lives in the host's memory only, `session.json` keeps no token, a leftover from an earlier build is
+ignored (and named in `version.state.session.token`), and each `host start` — or the first command after Dorico
+restarts — asks Dorico's user to allow the client again. `session probe` connects directly rather than through the
+host, so in that build it shows the dialog on every run, and its payload says so. Release builds do not pass this
+switch either.
+
 ## The test corpus
 
 `ProjectFileCheck` runs against two kinds of `.dorico` file. `tests/corpus/fixture.dorico` **is** in the
@@ -45,6 +70,21 @@ licence in your pull request: it ends up in the repository, so it has to be redi
 The strongest checks compare this decoder against a second source: Dorico's own MusicXML export. `--alter` against
 the derived accidental, `<articulations>` against the articulation marks, `<slur>` pairs against the slur events,
 the page box in tenths against the layout numbers. That is the pattern to copy when you add a feature.
+
+## Verifying by hand
+
+Nothing in CI can reach Dorico, so the live surface — `session`, `host`, `note`, `export`, and the protocol itself —
+has no automatic cover. `tools/smoke.ps1` is that cover: it runs the whole surface against a **running** Dorico and
+prints one PASS/FAIL line per check with the JSON it saw, exiting non-zero when anything failed.
+
+```powershell
+powershell -File tools/smoke.ps1                 # read-only
+powershell -File tools/smoke.ps1 -AllowWrite     # also note insert and session read --rebind
+```
+
+Run it before a release, and after touching the host or the protocol. It prints the active document's title and
+score id first and writes nothing without `-AllowWrite`; `session read --rebind` saves a copy **and rebinds the open
+document to it**, so use a scratch project for that half.
 
 ## Adding a feature
 
@@ -79,7 +119,10 @@ Contributions welcome, in rough order of value:
 
 ## Releasing
 
-`.github/workflows/ci.yml` builds, runs both checks and publishes the Native AOT binary on every push. A release
-is a tag plus the `dorico-use.exe` from that artifact (there is no installer), with `CHANGELOG.md` updated and the
-`<Version>` in `DoricoUse.Cli.csproj` bumped. Dorico compatibility is *not* a version number: it is reported by
-`dorico-use version` (`compatibility.testedAgainst`), which is the fact a user needs.
+`.github/workflows/ci.yml` builds, runs both checks and publishes the Native AOT binary on every push. A `v*` tag
+additionally runs `.github/workflows/release.yml`: the same build and checks, the publish, an assertion that the
+published binary's `version.build` flags are both `false`, a zip of the exe with `README.md`, `LICENSE`, `NOTICE`
+and `CHANGELOG.md`, and `gh release create` with that version's `CHANGELOG.md` section as its notes (falling back to
+generated notes). A release is that tag plus the `dorico-use.exe` from it (there is no installer), with
+`CHANGELOG.md` updated and the `<Version>` in `DoricoUse.Cli.csproj` bumped. Dorico compatibility is *not* a version
+number: it is reported by `dorico-use version` (`compatibility.testedAgainst`), which is the fact a user needs.

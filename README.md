@@ -30,7 +30,8 @@ Every command prints one JSON object, and the ones with a `--raw` option can add
 
 - Dorico running, with **Preferences > Remote Control** enabled (port 4560 by default).
 - The **first** connection makes Dorico ask its user to allow the client; the session token it then returns is
-  stored in `%LOCALAPPDATA%\dorico-use\session.json`, and every later connection is authorized silently in ~1 ms.
+  stored **in plain text** in `%LOCALAPPDATA%\dorico-use\session.json`, and every later connection is authorized
+  silently in ~1 ms.
 
 ## Build
 
@@ -56,7 +57,7 @@ Two things live outside the executable:
 
 | Path | What | Removing it |
 |---|---|---|
-| `%LOCALAPPDATA%\dorico-use\` | `session.json` (connection settings and the session token Dorico granted this client), `host.json` (the running host's pid and pipe) and `host.log` | delete the folder |
+| `%LOCALAPPDATA%\dorico-use\` | `session.json` (connection settings and the session token Dorico granted this client, kept **in plain text**), `host.json` (the running host's pid and pipe) and `host.log` | delete the folder |
 | a running `host` process | `host start` leaves one background process alive by design: the connection has to stay open for the status stream Dorico pushes | `dorico-use host stop` |
 
 **Upgrading: stop the host first.** A running host holds the executable open, so replacing it while it runs fails;
@@ -491,6 +492,7 @@ parameter this build does not know is never refused.
 | `session read` changed which file my document points at | Only `session read --rebind` does that: `File.SaveAs` rebinds the open document to the copy it writes. The default read does not save anything and has no side effect. If you did use `--rebind`, re-open the original file afterwards; the copy is under your system temporary directory. |
 | Dorico crashed while running a script | The scripting layer (`Script.RunScript` via `command send`) is undocumented and not defensive; building its C++ argument objects blind has crashed Dorico here. See `docs/scripting.md` §8 before using it. |
 | `file read` reports `NotAContainer` / `UnsupportedScoreData` | The file is not a Dorico project, or is a newer format than this build knows. The reader refuses rather than guessing. |
+| How do I revoke this client? | Delete `%LOCALAPPDATA%\dorico-use\` and remove the client in Dorico if it is listed there. The session token Dorico granted this client is in `session.json` there, in plain text — `host stop` does not remove it, but deleting the folder does. |
 
 ## Roadmap
 
