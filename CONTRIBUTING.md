@@ -87,6 +87,49 @@ that measurement, and a check asserts that none of them has one yet.
 The captions and labels in the catalogue are the maintainer's Chinese UI. A dialog on another UI language reports as
 `unknown` and is refused; that is the intended failure and not a bug to paper over with a looser matcher.
 
+## The panel layer
+
+`ui panels` reports every window Dorico has up besides its document window, and `ui panels --panel <id>` reads the
+elements of one of them. The rules are the same shape as the dialog surface's, with two additions.
+
+**A panel is a window, not a dialog, and the difference is measured, not assumed.** A window that is up while the
+*document window is disabled* is holding Dorico's command queue; a window that is up while the document window is
+enabled is not. That is the whole of `blocksQueue`, and it is a hint: `execution` on a command's payload stays the
+measurement. Never decide by the window class — measured, Dorico's crash reporter is a `Qt6101QWindowIcon` like the
+modeless library manager, and it disabled every other window of the process.
+
+**The rules live in the pure half.** `Ui/PanelModel.cs` (ids, roles, states, the action choice, the window
+classification) and `Ui/PanelCatalogue.cs` (the panels that have been read) have no Windows API in them, so
+`VocabularyCheck` compiles them and asserts them without Dorico. The probe, the element reader and the surface are
+under `Ui/` in files only the CLI project compiles. **A rule that decides what an agent may act on belongs in
+`PanelModel`, not in the Windows code.**
+
+**To add a panel to the catalogue**, raise it, read it with `ui panels --panel <id> --raw`, and take the caption and
+the class from that output — the catalogue's matcher is a caption glob *and* a window-class prefix, because the class
+is what the two measured kinds of Dorico window differ in. A panel that is not in the catalogue is still reported in
+full with an `unknown.<hash>` id; acting on one of its elements needs `--allow-unknown-dialog`. There is no safety
+table for panels: the danger is in the pattern, not the window, and the pattern is chosen from what the element
+really exposes.
+
+**An element's action comes from its own patterns**, in this order: toggle, selection, expand or collapse, invoke,
+value. Measured, a Qt check box exposes an invoke pattern *and* a toggle pattern, and invoking it does not always
+change its state, while toggling does — which is why toggle is asked for first. An element with none of them is
+refused with `ElementNotActionable`; there is no coordinate clicking and no synthetic typing anywhere in this build.
+
+## Two protocol facts that cost a crash and a morning
+
+Both were measured while building this layer, and neither is guessable from the catalogue:
+
+- **`Project.Player.SetAsSoloist?PlayerID=` without its optional `Set` parameter crashes Dorico 6.2.30.** The log's
+  last line is the `Executing command: Project.Player.SetAsSoloist?PlayerID=34` line with no
+  `notifyPostCommandExecute` after it, and the process was gone. `Set` is optional in the published catalogue and is
+  not optional in practice. The same command *with* `Set=true` works, and it renames the player it converts: measured
+  on a 34-player project, player 34 (Violin II) went from `baseName "Violin II", isSoloist false` to
+  `baseName "Solo Violin", isSoloist true` in the saved file.
+- **`Project.Layout.Rename?LayoutID=&Name=` is refused outright** — `kError kCommandNotAllowed`, with no `Posting`
+  line in the log, in Write mode and in Setup mode, for the full score and for a part layout, with a `Name` and
+  without one. A layout's name cannot be set through the API; `Project.Layouts.Renumber` answers `kOK` and runs.
+
 ## The test corpus
 
 `ProjectFileCheck` runs against two kinds of `.dorico` file. `tests/corpus/fixture.dorico` **is** in the

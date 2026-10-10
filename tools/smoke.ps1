@@ -125,7 +125,13 @@ $script:Dialogue            = $null
 
 function Write-Line {
     param([string] $Text = '')
-    Write-Output $Text
+
+    # Write-Host rather than Write-Output, and that is a fix rather than a style choice: a check's assert block is
+    # run with `& $Assert`, so anything the block writes to the output stream is captured as part of its return
+    # value. A NOTE printed from inside an assert therefore turned a passing check into "the verdict is not a bool"
+    # - measured, twice, on the panel checks that report what is up while they assert. Write-Host goes to the
+    # console the script's output is read from, and the assert's return value stays the one value it means.
+    Write-Host $Text
 }
 
 function Format-Value {
@@ -662,6 +668,34 @@ Invoke-Check -Name 'project layouts' -Arguments @('project', 'layouts') -NeedsSc
     return $true
 }
 
+Invoke-Check -Name 'project players' -Arguments @('project', 'players') -NeedsScore -Assert {
+    param($j, $code)
+
+    $ok = Assert-Ok $j $code
+    if ($ok -ne $true) { return $ok }
+
+    # No protocol request returns players, so this is a live read and it has to say so: a payload that claimed a
+    # fetch would be describing something the API does not have.
+    if ("$($j.source)" -ne 'live') { return ('source is {0}, expected live' -f (Format-Value $j.source)) }
+    if ($j.count -lt 1) { return ('count is {0}: the open document reports no player' -f (Format-Value $j.count)) }
+    if ((Get-ItemCount $j.players) -ne $j.count) { return ('count is {0} but players carries {1}' -f $j.count, (Get-ItemCount $j.players)) }
+
+    foreach ($player in @($j.players)) {
+        if ($null -eq $player.index) { return 'a player has no index' }
+        if ([string]::IsNullOrWhiteSpace("$($player.described)")) { return ('player {0} has no description' -f $player.index) }
+    }
+
+    # The members the scripting layer refuses have to be reported as refusals rather than left looking null, and the
+    # caveat that names the missing request has to be there.
+    $caveats = (@($j.caveats) | ForEach-Object { "$_" }) -join ' '
+    if ($caveats -notlike '*no Remote Control request that returns players*') {
+        return 'the caveats do not say that no protocol request returns players'
+    }
+
+    if ($null -ne $j.script -and $null -eq $j.script.ack) { return 'script.ack is absent: the read must report what Dorico acknowledged' }
+    return $true
+}
+
 Invoke-Check -Name 'options get' -Arguments @('options', 'get', '--type', 'engraving', '--limit', '5') -NeedsScore -Assert {
     param($j, $code)
 
@@ -853,6 +887,92 @@ Invoke-Check -Name 'session status carries the dialog field' -Arguments @('sessi
     return $true
 }
 
+# The panel layer: the same funnel, one field beside `dialog`, and the two commands that read and work a panel.
+Invoke-Check -Name 'session status carries the panels field' -Arguments @('session', 'status') -Assert {
+    param($j, $code)
+
+    $ok = Assert-Ok $j $code
+    if ($ok -ne $true) { return $ok }
+
+    if ($j.PSObject.Properties.Name -notcontains 'panels') {
+        return 'the payload has no `panels` field: every payload must carry it, empty when Dorico has no other window'
+    }
+
+    if ($null -eq $j.dialog -and $null -ne $j.panels -and $j.panels.Count -gt 0) {
+        # The point of the field: a window is up and it is a panel, not a dialog. Report it rather than fail.
+        foreach ($panel in $j.panels) {
+            Write-Line ('      NOTE  panel up: {0} - {1} (blocksQueue {2})' -f (Format-Value $panel.id), (Format-Value $panel.title), (Format-Value $panel.blocksQueue))
+        }
+    }
+
+    foreach ($panel in $j.panels) {
+        if ([string]::IsNullOrEmpty("$($panel.hwnd)")) { return 'a panel carries no hwnd' }
+        if ([string]::IsNullOrEmpty("$($panel.id)")) { return 'a panel carries no id' }
+        if ([string]::IsNullOrEmpty("$($panel.class)")) { return 'a panel carries no window class' }
+    }
+
+    return $true
+}
+
+Invoke-Check -Name 'ui panels' -Arguments @('ui', 'panels') -Offline -Assert {
+    param($j, $code)
+
+    # Offline on purpose, exactly like `ui dialog`: this needs no host and no document, and a probe that cannot run
+    # must say so rather than look like an empty window list.
+    $ok = Assert-Ok $j $code
+    if ($ok -ne $true) { return $ok }
+
+    if ($j.PSObject.Properties.Name -notcontains 'panels') { return 'the payload has no `panels` field' }
+    if ($null -eq $j.probe) { return 'probe is absent: the answer must say what the probe cost' }
+    if ($j.probe.degraded -eq $true) { return ('the probe itself failed: {0}' -f (Format-Value $j.probe.error)) }
+
+    foreach ($panel in $j.panels) {
+        if ($null -eq $panel.document) { return 'a panel does not say whether it is the document window' }
+        if ($null -eq $panel.blocksQueue) { return 'a panel does not say whether it blocks the queue' }
+        if ($panel.document -eq $true -and $panel.blocksQueue -eq $true) { return 'the document window is reported as blocking the queue' }
+    }
+
+    if ($j.panels.Count -gt 0) {
+        Write-Line ('      NOTE  {0} window(s) beside the document window: {1}' -f $j.panels.Count, (($j.panels | ForEach-Object { "$($_.id)" }) -join ', '))
+    }
+
+    return $true
+}
+
+# Naming a panel that is not up is a refusal, and it needs no window at all.
+Invoke-Check -Name 'ui panels --panel nope reports a miss rather than an empty list' -Arguments @('ui', 'panels', '--panel', 'dorico.no-such-panel') -Offline -Assert {
+    param($j, $code)
+
+    $ok = Assert-Ok $j $code
+    if ($ok -ne $true) { return $ok }
+
+    if ($null -eq $j.miss) { return 'naming a panel that is not up answered with neither a panel nor a `miss`' }
+    if ($j.count -ne 0) { return ('count is {0}, expected 0' -f (Format-Value $j.count)) }
+    return $true
+}
+
+# Working an element of a panel that is not up refuses with PanelNotFound, exit 1, like every other refusal.
+Invoke-Check -Name 'ui press --panel with no such panel refuses PanelNotFound' -Arguments @('ui', 'press', '--panel', 'dorico.no-such-panel', '--element', 'e1') -Offline -Assert {
+    param($j, $code)
+
+    if ($null -eq $j) { return ('stdout was not one JSON object (exit code {0})' -f $code) }
+    if ($j.ok -eq $true) { return 'the press was accepted, but no such panel is up' }
+    if ($code -ne 1) { return ('exit code was {0}, expected 1 for a refusal' -f $code) }
+    if ("$($j.error.code)" -ne 'PanelNotFound') { return ('error.code is {0}, expected PanelNotFound' -f (Format-Value $j.error.code)) }
+    if ($j.PSObject.Properties.Name -notcontains 'panels') { return 'the failure payload has no `panels` field, but every payload must carry it' }
+    return $true
+}
+
+# Neither a dialog nor a panel named: the invocation is wrong, and the refusal has to say so rather than guess.
+Invoke-Check -Name 'ui press with no window named is an InvalidArgument' -Arguments @('ui', 'press', '--dialog', 'dorico.export-musicxml') -Offline -Assert {
+    param($j, $code)
+
+    if ($null -eq $j) { return ('stdout was not one JSON object (exit code {0})' -f $code) }
+    if ($j.ok -eq $true) { return 'the press was accepted with no element named' }
+    if ($code -ne 1) { return ('exit code was {0}, expected 1 for a usage error' -f $code) }
+    return $true
+}
+
 Invoke-Check -Name 'ui dialog' -Arguments @('ui', 'dialog') -Offline -Assert {
     param($j, $code)
 
@@ -979,7 +1099,7 @@ Invoke-Check -Name 'note insert --dry-run' -Arguments @('note', 'insert', '--not
 # the offline checks: the fixture needs no Dorico at all, and `export text` is the one unattended export
 # --------------------------------------------------------------------------------------------------------------
 
-Invoke-Check -Name 'file read (fixture.dorico)' -Arguments @('file', 'read', '--path', $script:Fixture, '--limit', '5') -Offline -Assert {
+Invoke-Check -Name 'file read (fixture.dorico)' -Arguments @('file', 'read', '--path', $script:Fixture, '--limit', '5', '--layout') -Offline -Assert {
     param($j, $code)
 
     if (-not (Test-Path -LiteralPath $script:Fixture -PathType Leaf)) {
@@ -993,6 +1113,15 @@ Invoke-Check -Name 'file read (fixture.dorico)' -Arguments @('file', 'read', '--
     if ($j.score.counts.notes -ne 3) { return ('score.counts.notes is {0}, but fixture.dorico holds three notes' -f (Format-Value $j.score.counts.notes)) }
     if ((Get-ItemCount $j.metadata.players) -lt 1) { return 'metadata.players is empty: the fixture has one Piano player' }
     if ((Get-ItemCount $j.score.notes) -ne 3) { return ('score.notes carries {0} entries, expected the fixture''s 3 notes' -f (Get-ItemCount $j.score.notes)) }
+
+    # The player groups and the layout view state are the two reads the engraving checklist's group and
+    # transposition items need, so the fixture check asserts they are in every payload.
+    if ($null -eq $j.score.playerGroups) { return 'score.playerGroups is absent: every file read payload must carry it' }
+    if ((Get-ItemCount $j.score.layout.layouts) -lt 2) { return 'the fixture has two layouts but the layout block carries fewer' }
+    foreach ($layout in @($j.score.layout.layouts)) {
+        if ($null -eq $layout.condensing) { return ('layout {0} reports no condensing flag' -f $layout.id) }
+        if ("$($layout.transpositionType)" -notlike 'k*') { return ('layout {0} reports transpositionType {1}' -f $layout.id, (Format-Value $layout.transpositionType)) }
+    }
 
     $pitch = @($j.score.notes | ForEach-Object { $_.pitch }) -join ','
     if ($pitch -notlike '*F#*') { return ('the fixture''s notes are {0}, expected an F sharp among them' -f $pitch) }
@@ -1081,8 +1210,28 @@ Invoke-WriteCheck -Name 'note insert (real write, at the start of the first flow
 #   dorico.unsaved-changes   raise it: change a scratch document, then close it (File.Close)
 #                            NOT MEASURED YET: its caption has never been read, so it is matched on the labels
 #                            丢弃 and 取消 alone, and 丢弃 must be refused without --allow-destructive.
+#                            Measured on 2026-10-11: File.Close on a document that HAD been edited raised nothing
+#                            at all and the document closed, so this prompt may not be reachable this way.
+#   dorico.crash-report      raise it: crash Dorico (nothing here does that on purpose)
+#                            expect: title 向 Steinberg 发送崩溃报告, buttons 发送到 Steinberg / 不发送 / 不再询问,
+#                            all three sharing one automation id, only `dismiss` safe.
 #
-# Everything else is reported as unknown and refused, which is the designed answer for a dialog nobody has read.
+# BY HAND: the panels. Same rule - a check cannot raise one, and `ui panels` reads a window that is already up.
+#
+#   dorico.library-manager   raise it: dorico-use command send --name Project.ShowLibraryImportExportDialog
+#                            (it needs an open document), then:  dorico-use ui panels --panel dorico.library-manager
+#                            expect: title 库管理, class Qt6101QWindowIcon, blocksQueue false, and five elements -
+#                            出厂设置 (off), 用户库 (on), Dorico 工程 (off), each action `toggle`; 关闭 and 应用,
+#                            each action `invoke`.
+#                            then:  dorico-use ui press --panel dorico.library-manager --element dorico
+#                            expect: worked.stateBefore "off" and worked.stateAfter.toggle "on", and the panel list
+#                            in the same payload showing the new state. NOTE the three collection check boxes are
+#                            exclusive: choosing one turns the others off, measured.
+#                            to close it:  dorico-use ui press --panel dorico.library-manager --element button-4
+#
+# Everything else is reported as unknown and refused, which is the designed answer for a window nobody has read.
+# A panel that is not in PanelCatalogue is still listed in full with an `unknown.<hash>` id, and working one of its
+# elements needs --allow-unknown-dialog.
 # --------------------------------------------------------------------------------------------------------------
 
 # --------------------------------------------------------------------------------------------------------------

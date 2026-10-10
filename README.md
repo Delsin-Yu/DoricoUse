@@ -94,7 +94,8 @@ surface. See `CONTRIBUTING.md`.
 | `command send --name <Name> [--param K=V]... [--wait-ms n] [--no-verify]` | Send a Dorico command. The status is read back afterwards. |
 | `command list [--family X] [--filter "*Glob*"] [--limit 100]` | Search the catalogue of 1090 commands. |
 | `command info --name <Name>` | One entry: display name and the parameters it accepts. |
-| `project flows` / `project layouts [--kind full-score\|part]` | Flow and layout IDs, which several options need. |
+| `project flows [--raw]` / `project layouts [--kind full-score\|part] [--raw]` | Flow and layout IDs, which several options need. |
+| `project players [--expect-score n]` | The players of the **open** document. There is no protocol request for players, so this is a live read through the scripting layer: it reports each player's index, the text Dorico describes it with, and which members the layer refuses. |
 | `options get --type engraving\|notation\|layout [--layout n] [--flow n] [--filter glob] [--limit n]` | The option paths and their current values (1565 engraving options in the reference project). |
 | `options set --type ... --value path=value... [--layout n] [--flow n] [--no-verify]` | Set option values, then read them back to prove them. |
 | `library collections` / `library entities --collection <name>` | The 50 library collections and their entities. |
@@ -104,7 +105,8 @@ surface. See `CONTRIBUTING.md`.
 | `export musicxml [--path <watch dir>] [--wait-ms n]` | Export MusicXML. **Needs a button pressed in Dorico's export dialog** — `ui press` does it, and the payload names the button (see below). |
 | `export text --path <file.csv>` | Export project text/comments as CSV. Fully unattended. |
 | `ui dialog [--raw]` | The modal dialog Dorico has up, verbatim: its title, its body text and every button with a stable id. `dialog` is null when nothing is modal. Windows only. |
-| `ui press --dialog <id> --button <id> [--allow-destructive] [--allow-unknown-dialog] [--path <p>] [--timeout-ms n]` | Press one button of that dialog, then re-probe and report what is up now. Windows only. See [Modal dialogs](#modal-dialogs). |
+| `ui panels [--panel <id>] [--raw]` | Every window Dorico has up besides its document window, and — when `--panel` names one — every element an action could target, with its role, its state and the pattern an action would use. Windows only. See [Modeless panels](#modeless-panels). |
+| `ui press --dialog <id> --button <id> \| --panel <id> --element <id> [--value <t>] [--allow-destructive] [--allow-unknown-dialog] [--path <p>] [--timeout-ms n]` | Work one element: press a button of the dialog that is up, or toggle a check box, choose a tab, select a list or tree item, expand, or write a text field. The payload says what is up afterwards. Windows only. See [Modal dialogs](#modal-dialogs) and [Modeless panels](#modeless-panels). |
 | `version` | This build: assembly version, whether it is Native AOT, where its state lives, and the protocol constants. It starts no host and needs no Dorico. |
 
 There is deliberately **no** command that sends an arbitrary protocol message. One existed during development, and
@@ -201,9 +203,11 @@ dorico-use ui press --dialog dorico.export-musicxml --button accept     # or --b
   that had just been answered — up to a second, and a dialog still there after that second is reported as still
   there rather than guessed away.
 - **Only measured dialogs are pressable.** The catalogue holds the dialogs whose real captions and labels were
-  read — `dorico.export-musicxml`, the `dorico.folder-picker` it raises, and `dorico.unsaved-changes` (discard is
-  丢弃, cancel is 取消, and discard is not safe). A dialog that is not in it is reported in full and refused with
-  `UnknownDialog`.
+  read — `dorico.export-musicxml`, the `dorico.folder-picker` it raises, `dorico.unsaved-changes` (discard is
+  丢弃, cancel is 取消, and discard is not safe) and `dorico.crash-report`, Dorico's own crash reporter
+  (向 Steinberg 发送崩溃报告, with 发送到 Steinberg, 不发送 and 不再询问; only 不发送 is safe, and all three buttons share
+  one automation id, so their ids come from their labels). A dialog that is not in it is reported in full and
+  refused with `UnknownDialog`.
 - **Two flags, and only for a caller that means it.** `--allow-unknown-dialog` allows a button of an unmeasured
   dialog; `--allow-destructive` allows one this build does not call safe (discard, overwrite). Every button of an
   unknown dialog is unsafe — cancel included, because "cancel is harmless" is a claim about a specific dialog — so
@@ -230,6 +234,64 @@ dialog reports as `unknown` and is refused. That is the intended failure: read i
 
 A probe or press failure is exit 2 (`DialogProbeFailed`, `PressFailed`), never a refusal: a refusal is the caller's
 fault and a runtime failure is not.
+
+### Modeless panels
+
+Dorico's panels are windows a user can see while Dorico keeps working — the library manager is one — and they are a
+different species from a modal dialog. Measured, with timestamps in `application.log`: the MusicXML export dialog
+disables the document window and stalls the whole command queue for 56 seconds, while the library manager leaves the
+document window enabled and a command posted while it is up runs in 31 ms. Neither `IsWindowEnabled` nor `GW_OWNER`
+tells the two apart on its own, and the window class does not either: the crash reporter is a `Qt6101QWindowIcon`
+like the library manager and it disabled every other window of the process.
+
+So **every payload carries `panels` beside `dialog`**, and the two never mix:
+
+```json
+{"ok":true,"command":"session status", "dialog":null,
+ "panels":[{"hwnd":"0x0DEB12A0","id":"dorico.library-manager","kind":"known","shape":"qt",
+            "class":"Qt6101QWindowIcon","title":"库管理","owner":null,"foreground":false,"enabled":true,
+            "document":false,"dialog":false,"blocksQueue":false,
+            "description":"Measured: the library manager …"}]}
+```
+
+- **A panel is never reported as `dialog`.** `dialog` keeps exactly the meaning it had: the one blocking modal that
+  is up, or `null`. An agent that only knows about dialogs cannot be surprised by a panel appearing where a dialog
+  was expected, and an agent that needs the library manager has a name for it.
+- **`blocksQueue` is the fact this layer turns on**, and it is a hint from the window facts: a window that is up
+  while the *document window is disabled* is holding the queue (`documentEnabled: false` in `probe`), and one that
+  is up while the document window is enabled is not. `execution` on a command's payload stays the measurement.
+- **The list is every visible top-level window** of Dorico's own process, with `document` and `dialog` flagging the
+  two the probe resolved. It is cheap Win32 — **9 to 17 ms measured** — and it carries no elements, so it is on
+  every invocation.
+- **Reading a panel's elements is UI Automation, so it happens only when you ask**: `ui panels --panel <id>`
+  reports every element an action could target — buttons, check boxes, tabs, list and tree items, edits and combo
+  boxes — with a stable `id`, its `role`, its `state` and the `action` an invocation would use. Measured, on the
+  library manager:
+
+  ```
+  {"elements":[{"id":"collectionFactoryCheckBox","role":"checkBox","name":"出厂设置","action":"toggle","state":"off"},
+               {"id":"collectionUserCheckBox","role":"checkBox","name":"用户库","action":"toggle","state":"on"},
+               {"id":"dorico","role":"checkBox","name":"Dorico 工程","action":"toggle","state":"off"},
+               {"id":"button-4","role":"button","name":"关闭","action":"invoke","state":null},
+               {"id":"button-5","role":"button","name":"应用","action":"invoke","state":null}],
+   "elementCount":5,"readMs":30}
+  ```
+
+- **One element, one invocation.** `ui press --panel dorico.library-manager --element dorico` toggles the check
+  box; `--element button-4` presses 关闭, which closes the panel — the thing this tool could not do at all before.
+  The pattern is chosen by the element, never by the caller: toggle for a check box, selection for a tab or a list
+  or tree item, expand or collapse for an expander, invoke for a button, and the value pattern for a text field,
+  which needs `--value <text>`. An element with none of those is refused with `ElementNotActionable`, and this build
+  never posts a mouse event and never types at a coordinate.
+- **The evidence is the second read.** A press that destroys its own window reported an error after it had worked,
+  measured on this panel's 关闭 button, so `worked.stateAfter` is a fresh read of the same element in the same
+  invocation and the `panels` array beside it is the same fresh read of the whole window. Measured:
+  `stateBefore: "off"`, `stateAfter: {"toggle":"on"}` on the 工程 check box.
+- **A panel nobody measured is still reported in full**, with an `unknown.<hash>` id, and working one of its
+  elements needs `--allow-unknown-dialog`: `PanelNotFound`, `ElementNotFound`, `ElementNotActionable`,
+  `ElementNotSettable` and `ValueRequired` are the codes, all exit 1 like every other refusal.
+
+Everything here is **Windows only**, and it is in every build, exactly like the modal surface.
 
 ### Entering notes
 
@@ -312,6 +374,22 @@ nothing is rebound, and the document is untouched. One invocation takes half a s
  "notes":[{"flow":1,"stream":196,"eventId":239342,"position":"0,","duration":"2","pitch":"C4"}]}
 ```
 
+Rehearsal marks come from the flow's **timebase** stream, where Dorico's printer writes them, and they are counted
+and listed separately from the notes:
+
+```json
+{"counts":{"flows":1,"streams":2,"timebaseStreams":1,"events":3,"notes":3,"rehearsals":1,...},
+ "timebaseKinds":{"kRehearsalMarkEvent":1},
+ "rehearsals":[{"flow":1,"stream":0,"eventId":9,"position":"1","text":null,
+                "line":"1 (1): kRehearsalMarkEvent (id:9) at 1 "}]}
+```
+
+`text` is null because the printer prints no text for a mark: measured, the line is the position and the event id and
+nothing else, and the saved file's own `RehearsalMarkEventDefinition` carries an empty property table beside them.
+The letters a mark shows (A, B, AA) are the sequence Dorico computes from the rehearsal-mark options, so both routes
+can count and place the marks and neither can read the letter. `counts.rehearsals` is zero for a document with none,
+which is a measurement and not silence.
+
 The field `source` says which route produced the payload, and `caveats` says what that route cannot see. The
 numbers come from Dorico's own printer (`dump()`), parsed with regular expressions. So **no MIDI number,
 accidental, dynamic value or layout** comes out of it. A line this build cannot read is counted in
@@ -362,6 +440,13 @@ The stave is resolved through `stream → flowPlayer → voiceStreamInfos/staveS
 The option `--tree` is the escape hatch for everything else. The value `*` is a census of every node kind and leaf
 key. A name dumps each occurrence with its root path and fields, and a miss returns the nearest names.
 
+Every `file read` payload also carries **`score.playerGroups`**, the score's own groups: each one's `name`, its
+`shortName` (the abbreviation a staff label prints), its file `id` and the player ids in it. Measured on a 34-player
+project: Woodwinds/Ww., Brass/Br., Percussion/Perc., Strings/Str. and Band/Bnd. That is the read the engraving
+checklist's group item needs, and it is the only one there is — `Project.PlayerGroup.Rename?PlayerGroupID=&Name=` is
+refused outright by Dorico 6.2.30 (`kError kCommandNotAllowed`, and no `Posting` line in its log), so a group's name
+and abbreviation cannot be set through the API at all; `file read` is what verifies them.
+
 The other blocks read the same way. Each one states in its own `caveats` what it rests on:
 
 | Option | What it reads | Verification |
@@ -372,7 +457,7 @@ The other blocks read the same way. Each one states in its own `caveats` what it
 | `--ties` | What *is* stored: LV ties, tie-to-event, split values | The export's `<tied type="let-ring"/>` count matches (17). |
 | `--beams` | The 16 beam properties (Bad Apple) / 17325 (another file) | Single source. No corpus file has both. |
 | `--techniques` | 35 technique events + 45 note techniques, with ids, texts and names | Single source. The appearance → technique → name chain is the file's own library. |
-| `--layout` | Page box, margins, casting off, page sets and frames | Page size and margin match the export's tenths exactly. |
+| `--layout` | Page box, margins, casting off, page sets and frames, plus each layout's `transpositionType` and `condensing` | Page size and margin match the export's tenths exactly. Measured for the two view-state fields: a project's full score wrote `kScoreInC` and its part layout `kTransposingScore`; toggling that layout's transposition in Dorico (`options get --type layout --filter transpositionType` reads the new value live) changed exactly that field in the saved file, and toggling condensing wrote `condensing: true` on that layout and left the part layout `false`. |
 
 The reader was verified against independent MusicXML exports and against 20 project files from Dorico 6.0.0
 through 6.2.30. The limits follow, and the payload reports them as `caveats`.
@@ -478,10 +563,11 @@ have. An agent then never has to parse the sentence:
 The exit codes are `0` for success, `1` for an argument or usage error, `2` for a protocol, connection or Dorico
 failure, and `3` when a host was already running and `host serve` was asked to start.
 
-Two more fields can sit beside `ok`/`command`, success and failure alike: `dialog` is on every payload — the modal
-dialog Dorico has up, or `null` — and `execution` is on the payloads that posted a command to Dorico, because what
-it says is whether that command actually ran. Both come from the same funnel every command goes through, so no
-command can omit them. See [Modal dialogs](#modal-dialogs).
+Three more fields can sit beside `ok`/`command`, success and failure alike: `dialog` is on every payload — the modal
+dialog Dorico has up, or `null` — `panels` is on every payload and lists Dorico's other windows, and `execution` is
+on the payloads that posted a command to Dorico, because what it says is whether that command actually ran. All
+three come from the same funnel every command goes through, so no command can omit them. See
+[Modal dialogs](#modal-dialogs) and [Modeless panels](#modeless-panels).
 
 ## What is true about Dorico's API
 

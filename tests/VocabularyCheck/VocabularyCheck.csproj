@@ -38,6 +38,13 @@
     <Compile Include="../../src/DoricoUse.Cli/Ui/DialogModel.cs" />
     <Compile Include="../../src/DoricoUse.Cli/Ui/DialogCatalogue.cs" />
     <!--
+      The panel layer's pure half: the window-to-panel classification and the element ids, roles, states and action
+      choice. The Windows side of it (the probe, the reader, the surface) stays under Ui/ in files only the CLI
+      project compiles.
+    -->
+    <Compile Include="../../src/DoricoUse.Cli/Ui/PanelModel.cs" />
+    <Compile Include="../../src/DoricoUse.Cli/Ui/PanelCatalogue.cs" />
+    <!--
       The execution verdict is not pure in the same way - it reads a file and waits for it - but it needs no Dorico
       and no Windows: the check points it at a fixture log and appends Dorico's lines to it while the verdict waits.
       That is the only way to measure the retry and the offset rule without a live modal dialog, which no check can

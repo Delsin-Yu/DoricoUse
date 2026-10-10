@@ -7,6 +7,7 @@ Compatibility with Dorico is reported by `dorico-use version` (`testedAgainst`, 
 encoded in the version number, because the same build works against any Dorico that exposes the same Remote
 Control API — see `README.md`.
 
+
 ## [Unreleased]
 
 ### Added
@@ -53,6 +54,76 @@ Control API — see `README.md`.
   payload's `dialog` and `pressed.afterDialog` named the dialog that had just gone. The re-probe now waits, for up
   to a second, until that window is gone or another dialog has taken its place, and reports what is up then. The
   fast path is untouched: `ui dialog` with nothing modal still measures 9 ms.
+
+### The engraving job's surface (layers 1 and 2)
+
+### Added
+- **`project players`**: the players of the **open** document, read live. There is no Remote Control request that
+  returns players — measured, the request table in the application has none, and `getflows` answers
+  `{flowID, flowName}` per flow on a one-player fixture and on a 38-player project alike — so this goes through the
+  scripting layer, which reports each player's index, the text Dorico describes it with, and which members that
+  layer refuses (`id`, `name`, `shortName`, `playerID`, `soloPlayer` and `isSoloist` all answer nil; `#instruments`
+  answers a number). The refusals are fields, not silence.
+- **`project flows --raw`** and **`project layouts --raw`**: the unmodified Dorico answer, the same escape hatch the
+  other reads have. How the two payloads above were read.
+- **`score.playerGroups`** on every `file read`: each group's `name`, its `shortName` (the abbreviation a staff label
+  prints), its file id and the player ids in it. Measured on a 34-player project: Woodwinds/Ww., Brass/Br.,
+  Percussion/Perc., Strings/Str. and Band/Bnd. This is the read the checklist's group item needs, and it is the only
+  one: `Project.PlayerGroup.Rename?PlayerGroupID=&Name=` is refused outright (`kCommandNotAllowed`).
+- **`score.players[].isSoloist`** and the layout view state on **`file read --layout`**: each layout's
+  `transpositionType` (`kScoreInC` / `kTransposingScore`) and its `condensing`, which are the stored half of the
+  "enable the transposing view" and "enable the optimised score" checklist items. Measured both ways: a project's
+  full score wrote `kScoreInC` and its part layout `kTransposingScore`, and toggling each setting in Dorico and
+  saving a copy changed exactly those fields on that layout.
+- **`session status` reports `condensingEnabled`**, which is the live half of the same item.
+- **Rehearsal marks in the live read.** `session read` (and `note insert --read`) now walks the flow's **timebase**
+  stream as well as its voice streams, so `counts.rehearsals`, `counts.timebaseStreams`, `timebaseKinds` and a
+  `rehearsals` array appear. Measured with one mark created live:
+  `[{flow:1, stream:0, eventId:9, position:"1", text:null, line:"1 (1): kRehearsalMarkEvent (id:9) at 1 "}]`. `text`
+  is null because Dorico's printer prints no text for a mark and the saved file stores none either: the letters are
+  the sequence Dorico computes.
+- **`panels` on every payload**, and **`ui panels [--panel <id>] [--raw]`**: every visible top-level window of
+  Dorico's own process, with its handle, class, title, owner, foreground state, whether it is the document window or
+  the modal one, and `blocksQueue` — a hint from the facts, never the queue measurement. Cheap Win32: measured at
+  9 to 17 ms with the library manager up, and it reads no elements.
+- **`ui press --panel <id> --element <id> [--value <text>]`**: work one element of a modeless panel — toggle a check
+  box, choose a tab, select a list or tree item, expand or collapse, invoke a button, or write a text field through
+  the value pattern. The action is chosen from what the element really exposes (toggle, selection, expand, invoke,
+  value, in that order) and an element with none of them is refused with `ElementNotActionable`. Measured on the
+  library manager: three check boxes with `action: toggle` and real states, two buttons with `action: invoke`, and
+  `ui press --panel dorico.library-manager --element button-4` closes the panel — which this tool could not do at
+  all before.
+- **`ui press --element <id>`** is accepted for a dialog as an alias of `--button`, and **`--value <text>`** is the
+  general form of `--path`.
+- **`Ui/PanelModel.cs`** and **`Ui/PanelCatalogue.cs`**: the panel layer's pure half, compiled into
+  `VocabularyCheck` like the dialog model, with 48 new checks over the element ids, the roles, the states, the
+  action choice, the window classification and the element cap.
+- **`dorico.crash-report`** in `DialogCatalogue`: Dorico's own crash reporter, measured (向 Steinberg 发送崩溃报告,
+  with 发送到 Steinberg, 不发送 and 不再询问; only 不发送 is safe). It owns nothing and yet disables every other
+  window of the process, which is how the block rule was corrected.
+- **`dorico.library-manager`** in `PanelCatalogue`: the first panel read off a live window.
+
+### Changed
+- **`dialog.blocksQueue` is no longer the class alone.** A window that is up while the document window is disabled
+  is holding the queue, and that is now what decides it — measured against Dorico's crash reporter, a
+  `Qt6101QWindowIcon` that the class hint called modeless while it had disabled the document window *and* the
+  library manager.
+- The document window is resolved by size when a modal that owns nothing is up: measured with the crash reporter
+  showing, the process's main window was the 1768x1077 library manager and the 3286x1841 document window was beside
+  it, unowned and disabled.
+
+### Fixed
+- **The tool can now close Dorico's library manager.** `ui press` used to refuse it with `DialogNotFound` because
+  the panel was not a dialog; it is reported as a panel and worked by element id (`... --element button-4`).
+
+### Documented, not fixed
+- **`Project.Player.SetAsSoloist?PlayerID=` without its optional `Set` parameter crashes Dorico 6.2.30.** Measured:
+  the log's last line is the `Executing` line and no `notifyPostCommandExecute` follows it. With `Set=true` it runs
+  and converts the player: player 34 of a 34-player project went from `Violin II`/`isSoloist false` to
+  `Solo Violin`/`isSoloist true` in the saved file. `Set=false` answered `kOK`, ran, and left the flag `true`.
+- **`Project.Layout.Rename?LayoutID=&Name=` is refused** in Write mode and in Setup mode, for both kinds of layout,
+  with and without a `Name`: `kError kCommandNotAllowed`, never posted. Renaming a layout is therefore a manual step,
+  and `Project.Layouts.Renumber` (which answers `kOK` and runs) is the only layout bookkeeping the API offers.
 
 ## [0.1.0] - 2026-10-11
 

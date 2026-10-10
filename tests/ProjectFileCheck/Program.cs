@@ -147,6 +147,29 @@ else
     Check("the lyric table is there and empty", fixtureScore.Lyrics.Tables == 1 && fixtureScore.Lyrics.Elements == 0);
     Check("nothing else is decorated: no dynamics, no slurs", fixtureScore.Dynamics.Count == 0 && fixtureScore.Slurs.Count == 0);
 
+    // The two reads the checklist needs, on the file the checks always have. A player group is a name plus the
+    // abbreviation a staff label prints, and the fixture has only Dorico's own placeholder group (-1, no name),
+    // which is what an ungrouped score writes; the five real groups are asserted on the reference corpus below.
+    Check(
+        "the fixture's only player group is Dorico's placeholder",
+        fixtureScore.PlayerGroups.Count == 1 && fixtureScore.PlayerGroups[0].Id == -1 && fixtureScore.PlayerGroups[0].Name is null,
+        string.Join(',', fixtureScore.PlayerGroups.Select(group => group.Id.ToString())));
+
+    // The two layout view-state fields are the stored half of the transposition and condensing checklist items.
+    // They are read from the layout, and the fixture's own two layouts disagree about the transposition — which is
+    // the point of the field: measured, a full score is kScoreInC and its part layout kTransposingScore.
+    Check(
+        "every layout reports a transposition type and a condensing flag",
+        fixtureScore.Layout.Layouts.All(layout => layout.TranspositionType is "kScoreInC" or "kTransposingScore" && layout.Condensing is not null),
+        string.Join(", ", fixtureScore.Layout.Layouts.Select(layout => $"{layout.Name}={layout.TranspositionType}/{layout.Condensing}")));
+    Check(
+        "the fixture's full score is in C and its part layout is not",
+        fixtureScore.Layout.Layouts[0].TranspositionType == "kScoreInC"
+            && fixtureScore.Layout.Layouts[1].TranspositionType == "kTransposingScore");
+    Check(
+        "and neither layout has condensing on in the committed file",
+        fixtureScore.Layout.Layouts.All(layout => layout.Condensing == false));
+
     // The two readers have to agree on this file too, not only on the reference corpus.
     var fixtureCensus = ProjectFileTreeReader.Census(manifest.ScoreData, -1);
     var noteEvents = fixtureCensus.Names.FirstOrDefault(name => name.Name == "NoteEventDefinition");

@@ -614,6 +614,111 @@ void WriteLater(string text, int delayMs) => _ = Task.Run(async () =>
 });
 
 File.WriteAllText(fixture, "2026-10-11 05:42:42.463 [info] ping response received in ipc://Dorico6.lic\n");
+// ---------------------------------------------------------------- the panel layer
+
+// Measured, live, on the library manager while it was up: five actionable elements, the three collection check
+// boxes (出厂设置 off, 用户库 on, Dorico 工程 off — the same state an earlier measurement of this panel recorded) and
+// the two buttons 关闭 and 应用. The lines below are that reading, and every assertion after this one is about what
+// the pure half does with it.
+var libraryElements = new List<PanelElementInput>
+{
+    new(50002, "出厂设置", "DoricoQApplication.LibraryDialog.collectionFactoryCheckBox", null, "off", null, null, false, 10, 100),
+    new(50002, "用户库", "DoricoQApplication.LibraryDialog.collectionUserCheckBox", null, "on", null, null, false, 10, 130),
+    new(50002, "Dorico 工程", "DoricoQApplication.LibraryDialog.collectionProjectCheckBox", null, "off", null, null, false, 10, 160),
+    new(50000, "关闭", "DoricoQApplication.LibraryDialog.closePushButton", null, null, null, null, true, 10, 200),
+    new(50000, "应用", "DoricoQApplication.LibraryDialog.applyPushButton", null, null, null, null, true, 60, 200),
+};
+
+var library = PanelModel.Describe(libraryElements);
+
+Check("every actionable element of the panel gets a description", library.Count == 5, library.Count.ToString());
+Check("a check box is a check box and a button is a button", library[0].Role == "checkBox" && library[3].Role == "button", library[0].Role + "," + library[3].Role);
+Check("a check box reports the state the toggle pattern answered", library[0].State == "off" && library[1].State == "on", library[0].State + "," + library[1].State);
+Check("a button with no state pattern reports no state", library[3].State is null, library[3].State);
+Check("acting on a check box uses the toggle pattern, never invoke", library[0].Action == "toggle", library[0].Action);
+Check("acting on a button uses invoke", library[3].Action == "invoke", library[3].Action);
+Check("an element id comes from the automation id's tail when that tail is unique", library[0].Id == "collectionFactoryCheckBox", library[0].Id);
+Check("the same reading gives the same ids three times over", Enumerable.Range(0, 3).All(_ => PanelModel.Describe(libraryElements).Select(element => element.Id).SequenceEqual(library.Select(element => element.Id))));
+
+// Two elements can share a label and one can have none, exactly as the dialog buttons can — measured on the crash
+// reporter, whose three buttons all share one automation id.
+var sharing = PanelModel.Describe(
+[
+    new(50000, "不发送", "DoricoQApplication.CrashUploadConfirmationDialog_QMLTYPE_127.Button_QMLTYPE_47", null, null, null, null, true, 10, 10),
+    new(50000, "不再询问", "DoricoQApplication.CrashUploadConfirmationDialog_QMLTYPE_127.Button_QMLTYPE_47", null, null, null, null, true, 70, 10),
+    new(50000, "", "DoricoQApplication.CrashUploadConfirmationDialog_QMLTYPE_127.Button_QMLTYPE_47", null, null, null, null, true, 130, 10),
+]);
+
+Check("three elements that share an automation id still get three different ids", sharing.Select(element => element.Id).Distinct(StringComparer.Ordinal).Count() == 3, string.Join(',', sharing.Select(element => element.Id)));
+Check("the label still comes through verbatim beside the id", sharing[0].Name == "不发送" && sharing[2].Name.Length == 0, sharing[0].Name);
+
+// Selection and expansion, the two patterns a dialog never needed.
+var tab = PanelModel.Describe([new(50019, "集合", "…tabBar.tab", null, null, true, null, false, 5, 5)])[0];
+var tree = PanelModel.Describe([new(50024, "Percussion", "…tree.treeItem", null, null, null, "collapsed", false, 5, 40)])[0];
+var field = PanelModel.Describe([new(50004, "", "…fileNameEdit", "C:\\scores", null, null, null, false, 5, 70)])[0];
+
+Check("a chosen tab reports itself as selected and is acted on with the selection pattern", tab.State == "selected" && tab.Action == "select", tab.State + "," + tab.Action);
+Check("a collapsed tree item offers expansion, not invoke", tree.State == "collapsed" && tree.Action == "expand", tree.State + "," + tree.Action);
+Check("a text field is acted on through the value pattern", field.Action == "value" && field.State == "value", field.Action + "," + field.State);
+Check("an element with no value, no toggle, no selection, no expander and no invoke has no action at all", PanelModel.Describe([new(50020, "text", null, null, null, null, null, false)])[0].Action is null);
+
+// The window classification: the fact the whole layer turns on.
+Check("a Qt class is the qt shape and a #32770 dialog is the native one", PanelModel.Shape("Qt6101QWindowIcon") == "qt" && PanelModel.Shape("#32770") == "native", PanelModel.Shape("#32770"));
+
+var modeless = PanelModel.Describe(
+    new WindowFacts(0x1000, 1, nint.Zero, false, true, "Qt6101QWindowIcon", "库管理"),
+    documentEnabled: true);
+var blocking = PanelModel.Describe(
+    new WindowFacts(0x2000, 1, 0x10, true, true, "Qt6101QWindow", "导出MusicXML"),
+    documentEnabled: false);
+var unownedBlocking = PanelModel.Describe(
+    new WindowFacts(0x3000, 1, nint.Zero, true, true, "Qt6101QWindowIcon", "向 Steinberg 发送崩溃报告"),
+    documentEnabled: false);
+
+Check("the measured library manager is recognised as a panel by name", NodeRead.Str(modeless, "id") == "dorico.library-manager" && NodeRead.Str(modeless, "kind") == "known", modeless.ToJsonString());
+Check("a modeless panel does not block the queue, however Qt its class looks", NodeRead.Bool(modeless, "blocksQueue") == false);
+Check("a dialog that disables the document window blocks", NodeRead.Bool(blocking, "blocksQueue") == true);
+Check("a window that is up while the document window is disabled blocks even with no owner", NodeRead.Bool(unownedBlocking, "blocksQueue") == true);
+Check("a window nobody measured is unknown and says so", NodeRead.Str(unownedBlocking, "kind") == "unknown" && NodeRead.Str(unownedBlocking, "note")?.Contains("panel catalogue", StringComparison.Ordinal) == true);
+Check("an unknown panel's id is a hash of its caption and class, not a guess", NodeRead.Str(unownedBlocking, "id")?.StartsWith("unknown.", StringComparison.Ordinal) == true, NodeRead.Str(unownedBlocking, "id"));
+
+var windows = PanelModel.Windows(
+[
+    new WindowFacts(0x1000, 1, nint.Zero, false, true, "Qt6101QWindowIcon", "库管理"),
+    new WindowFacts(0x2000, 1, nint.Zero, false, true, "Qt6101QWindowIcon", "谱章 1 在 fixture 内"),
+],
+documentEnabled: true,
+documentHandle: 0x2000,
+dialogHandle: nint.Zero);
+
+Check("the document window is in the list and is flagged as the document", windows.Count == 2 && NodeRead.Bool(windows[1], "document") == true, windows.ToJsonString());
+Check("the modal window is flagged as the dialog", NodeRead.Bool(windows[0], "dialog") == false);
+
+// The element payload of `ui panels --panel <id>`: what an agent reads before it acts.
+var panelPayload = PanelModel.Elements(
+    new WindowFacts(0x1000, 1, nint.Zero, false, true, "Qt6101QWindowIcon", "库管理"),
+    documentEnabled: true,
+    libraryElements,
+    truncated: false,
+    readMs: 30);
+
+Check("the panel payload reports the elements it read", NodeRead.Int(panelPayload, "elementCount") == 5 && NodeRead.Arr(panelPayload, "elements")?.Count == 5);
+Check("the panel payload names the read's mechanism", NodeRead.Str(panelPayload, "textSource") == "uia");
+Check("the element cap is stated rather than applied in silence", NodeRead.Bool(panelPayload, "truncated") == false && PanelModel.MaxElements > 5, PanelModel.MaxElements.ToString());
+
+var capped = PanelModel.Elements(
+    new WindowFacts(0x1000, 1, nint.Zero, false, true, "Qt6101QWindowIcon", "库管理"),
+    documentEnabled: true,
+    [.. Enumerable.Range(0, PanelModel.MaxElements + 20).Select(index => new PanelElementInput(50000, "b" + index, null, null, null, null, null, true, index, 0))],
+    truncated: false,
+    readMs: 1);
+
+Check("more elements than the cap is reported as truncated, not dropped quietly", NodeRead.Bool(capped, "truncated") == true && NodeRead.Arr(capped, "elements")?.Count == PanelModel.MaxElements, NodeRead.Arr(capped, "elements")?.Count.ToString());
+
+Check("every catalogued panel has a note, an id and a matcher", PanelCatalogue.Entries.All(entry => entry.Id.Length > 0 && entry.Note.Length > 0 && (entry.TitleGlobs.Count > 0 || entry.ClassPrefixes.Count > 0)));
+Check("a panel catalogue entry only matches the class it was measured in", PanelCatalogue.Match("库管理", "#32770") is null);
+Check("an empty caption does not match a catalogued panel", PanelCatalogue.Match("", "Qt6101QWindowIcon") is null);
+
 LogQueue.Begin(fixture);
 LogQueue.Mark("NoteInput.Enter");
 WriteLater(
