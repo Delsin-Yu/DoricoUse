@@ -58,7 +58,11 @@ internal sealed class DoricoClient : IAsyncDisposable
 
             handshake["clientName"] = store.ClientName;
             handshake["address"] = store.Address;
-            handshake["sessionTokenStored"] = store.HasToken;
+
+            // What this really says is "the token this client is authorized with is one the disk kept". A build that
+            // does not persist keeps the token in memory instead (see SessionKeeper), and there store.HasToken is true
+            // after the handshake too - reporting just that would claim storage on disk that does not exist.
+            handshake["sessionTokenStored"] = SessionStore.PersistsToken && store.HasToken;
 
             return new DoricoClient(session, handshake);
         }

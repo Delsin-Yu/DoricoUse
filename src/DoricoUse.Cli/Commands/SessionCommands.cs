@@ -92,8 +92,15 @@ internal static class SessionCommands
 
             if (!parse.GetValue(rebind))
             {
+                // The same document guard the rebind route passes to File.SaveAs: the read script also reads whichever
+                // document is active, so --expect-score has to travel with the RunScript command and not just with the
+                // save. Without it the flag would be accepted here and silently ignored on this route.
                 return await LiveRead
-                    .RunAsync(protocolTimeout, ProjectFileView.ParseLimit(parse.GetValue(limit)), CancellationToken.None)
+                    .RunAsync(
+                        protocolTimeout,
+                        ProjectFileView.ParseLimit(parse.GetValue(limit)),
+                        CancellationToken.None,
+                        parse.GetValue(expectScore))
                     .ConfigureAwait(false);
             }
 

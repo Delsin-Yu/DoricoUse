@@ -175,17 +175,29 @@ internal static class HostCommands
             var addressOverride = parse.GetValue(address);
             var clientNameOverride = parse.GetValue(clientName);
 
-            if (!string.IsNullOrWhiteSpace(addressOverride))
+            var addressChanged = !string.IsNullOrWhiteSpace(addressOverride)
+                && !string.Equals(store.Address, addressOverride, StringComparison.OrdinalIgnoreCase);
+            var clientNameChanged = !string.IsNullOrWhiteSpace(clientNameOverride)
+                && !string.Equals(store.ClientName, clientNameOverride, StringComparison.Ordinal);
+
+            if (addressChanged)
             {
-                store.Address = addressOverride;
+                store.Address = addressOverride!;
             }
 
-            if (!string.IsNullOrWhiteSpace(clientNameOverride))
+            if (clientNameChanged)
             {
-                store.ClientName = clientNameOverride;
+                store.ClientName = clientNameOverride!;
             }
 
-            store.Save();
+            // Only when an override actually changed something. The host holds these two in memory, so a rewrite it
+            // does not need buys nothing - and in a build that does not persist the session token it would erase a
+            // leftover token from an earlier build before the host could tell the user about it, which is the one
+            // thing SessionStore.StoredTokenIgnored exists to report.
+            if (addressChanged || clientNameChanged)
+            {
+                store.Save();
+            }
 
             var options = new HostOptions(store.Address, store.ClientName, parse.GetValue(verbose));
             var exitCode = await new HostServer(options, new HostLog(options.Verbose)).RunAsync();
