@@ -147,5 +147,58 @@ Check("it says what is checked and what is not", (NodeRead.Str(described, "note"
 Check("and a looked-at value carries its verdict", NodeRead.Str(NodeRead.Arr(described, "lookedAt")?[0], "verdict") == "known");
 
 Console.WriteLine();
+Console.WriteLine("== the scripting surface: refused unless the build was compiled to expose it");
+// The same source is compiled twice with different constants: this project ordinarily (the surface is off, which
+// is what a released binary is) and once in ci.yml with -p:ExposeUnsafeScriptRunApi=true (the surface is on).
+// Both runs must exit 0, so each direction asserts its own facts and nothing here needs Dorico either way.
+#if EXPOSE_UNSAFE_SCRIPT_RUN_API
+Check("this build was compiled with the scripting surface exposed", UnsafeSurface.ScriptRunExposed);
+Check("so a Script.* command is not refused", !Throws(() => UnsafeSurface.RefuseCommand("Script.RunScript")));
+Check("and neither is any other name in the family", !Throws(() => UnsafeSurface.RefuseCommand("script.foo")));
+Check("and a name outside the family is still untouched", !Throws(() => UnsafeSurface.RefuseCommand("NoteInput.Enter")));
+#else
+Check("this build was not compiled with the scripting surface exposed", !UnsafeSurface.ScriptRunExposed);
+
+var scriptingRefused = default(CliException);
+
+try
+{
+    UnsafeSurface.RefuseCommand("Script.RunScript");
+}
+catch (CliException ex)
+{
+    scriptingRefused = ex;
+}
+
+var refusalMessage = scriptingRefused?.Message ?? string.Empty;
+
+Check("a Script.* command is refused", scriptingRefused is not null);
+Check("with the code a caller switches on", scriptingRefused?.Code == "ScriptingDisabled", scriptingRefused?.Code ?? "nothing was thrown");
+Check("and exit code 1, because it is the call's fault, not Dorico's", scriptingRefused?.ExitCode == 1, scriptingRefused?.ExitCode.ToString());
+Check("and error.data names the command that was refused", NodeRead.Str(scriptingRefused?.Details, "command") == "Script.RunScript", NodeRead.Str(scriptingRefused?.Details, "command"));
+Check("and error.data carries the reason in one line", !string.IsNullOrWhiteSpace(NodeRead.Str(scriptingRefused?.Details, "reason")), NodeRead.Str(scriptingRefused?.Details, "reason"));
+Check("and the message says this build does not expose the layer", refusalMessage.Contains("does not expose"), refusalMessage[..Math.Min(120, refusalMessage.Length)]);
+Check("and points at the record of what happened", refusalMessage.Contains("docs/scripting.md"));
+Check("and does not tell the reader how to turn it back on", !refusalMessage.Contains("ExposeUnsafeScriptRunApi"), refusalMessage[..Math.Min(120, refusalMessage.Length)]);
+Check("the family is matched case-insensitively, as command names are", Throws(() => UnsafeSurface.RefuseCommand("script.foo")));
+
+var upperCaseRefused = default(CliException);
+
+try
+{
+    UnsafeSurface.RefuseCommand("SCRIPT.Foo");
+}
+catch (CliException ex)
+{
+    upperCaseRefused = ex;
+}
+
+Check("an all-caps family is refused the same way", upperCaseRefused?.Code == "ScriptingDisabled", upperCaseRefused?.Code ?? "nothing was thrown");
+Check("and the refusal keeps the name exactly as it was typed", NodeRead.Str(upperCaseRefused?.Details, "command") == "SCRIPT.Foo", NodeRead.Str(upperCaseRefused?.Details, "command"));
+Check("a name outside the family is never refused", !Throws(() => UnsafeSurface.RefuseCommand("NoteInput.Enter")));
+Check("so is any other catalogue command, Script. is the whole of it", !Throws(() => UnsafeSurface.RefuseCommand("File.Open")));
+#endif
+
+Console.WriteLine();
 Console.WriteLine($"{failures} failed, 0 skipped");
 return failures == 0 ? 0 : 1;

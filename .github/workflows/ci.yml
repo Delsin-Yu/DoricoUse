@@ -56,3 +56,26 @@ jobs:
             NOTICE
             CHANGELOG.md
           if-no-files-found: error
+
+  unsafe-surface:
+    # B1: the other half of the check the `build` job runs. VocabularyCheck is compiled by hand and takes the
+    # scripting switch itself, so building the same project with -p:ExposeUnsafeScriptRunApi=true makes its
+    # Program.cs assert the opposite direction - ScriptRunExposed == true, and a Script.* command is not refused.
+    # Both halves have to pass, otherwise "refused unless compiled in" would be tested in one direction only.
+    #
+    # The `build` job above must never pass this property: what it publishes is the released binary, and a
+    # released binary refuses the scripting layer. This job builds only the check, and publishes nothing.
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: build the check with the surface exposed
+        run: dotnet build tests/VocabularyCheck/VocabularyCheck.csproj -c Release -p:ExposeUnsafeScriptRunApi=true --nologo
+
+      - name: run the check (it asserts the exposed direction)
+        run: ./tests/VocabularyCheck/bin/Release/net10.0/vocabulary-check.exe

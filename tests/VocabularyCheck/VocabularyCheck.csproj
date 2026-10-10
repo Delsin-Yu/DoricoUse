@@ -21,7 +21,20 @@
     <Compile Include="../../src/DoricoUse.Cli/Dorico/NoteValue.cs" />
     <Compile Include="../../src/DoricoUse.Cli/Dorico/NodeRead.cs" />
     <Compile Include="../../src/DoricoUse.Cli/Dorico/DoricoProtocol.cs" />
+    <Compile Include="../../src/DoricoUse.Cli/Dorico/UnsafeSurface.cs" />
     <Compile Include="../../src/DoricoUse.Cli/Json/JsonArr.cs" />
   </ItemGroup>
+
+  <!--
+    B1: UnsafeSurface answers one question - is the scripting layer exposed? - from a compile-time constant, so
+    the check compiles its source by hand like the files above, and can be asked to compile it the other way.
+    The switch is passed on the command line (-p:ExposeUnsafeScriptRunApi=true), the same switch the CLI project
+    takes; defining it here as well is what lets one Program.cs assert both directions, and is the only reason
+    ci.yml builds this project twice: once as an ordinary build, once with the surface exposed.
+  -->
+  <PropertyGroup>
+    <ExposeUnsafeScriptRunApi Condition="'$(ExposeUnsafeScriptRunApi)' == 'true'">true</ExposeUnsafeScriptRunApi>
+    <DefineConstants Condition="'$(ExposeUnsafeScriptRunApi)' == 'true'">$(DefineConstants);EXPOSE_UNSAFE_SCRIPT_RUN_API</DefineConstants>
+  </PropertyGroup>
 
 </Project>

@@ -80,6 +80,16 @@ internal static class VersionCommands
             ["nativeAot"] = !dynamicCodeSupported,
             ["dynamicCodeSupported"] = dynamicCodeSupported,
             ["dynamicCodeCompiled"] = RuntimeFeature.IsDynamicCodeCompiled,
+
+            // The two surfaces a build can have been asked for, taken from the same constants the code branches on
+            // rather than from a hand-kept copy of them: that is what makes a downloaded binary auditable, because
+            // the release workflow refuses to publish one whose flags are not both false (see release.yml).
+            ["build"] = new JsonObject
+            {
+                ["exposeUnsafeScriptRunApi"] = UnsafeSurface.ScriptRunExposed,
+                ["neverPersistSession"] = !SessionStore.PersistsToken,
+            },
+
             ["runtime"] = RuntimeInformation.FrameworkDescription,
             ["os"] = RuntimeInformation.OSDescription,
             ["architecture"] = RuntimeInformation.ProcessArchitecture.ToString(),

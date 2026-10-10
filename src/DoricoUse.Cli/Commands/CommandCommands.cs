@@ -87,6 +87,11 @@ internal static class CommandCommands
             var values = ParseParameters(parse.GetValue(parameters));
             var commandName = parse.GetValue(name) ?? string.Empty;
 
+            // The name the user typed, checked before anything is composed and before the dry-run branch, so a
+            // Script.* command is refused with no host started and no Dorico running - and --dry-run is not a
+            // way around it either.
+            UnsafeSurface.RefuseCommand(commandName);
+
             // Before anything else touches the host: an unknown enum value would be accepted with kOK and
             // silently turned into another value inside Dorico, which is the failure this exists to prevent.
             var vocabulary = EnumVocabulary.Shared;

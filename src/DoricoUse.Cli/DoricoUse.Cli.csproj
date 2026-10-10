@@ -18,6 +18,16 @@
   </PropertyGroup>
 
   <!--
+    B1: the scripting layer is not exposed in any build unless it was asked for. The switch is passed on the
+    command line (-p:ExposeUnsafeScriptRunApi=true) while developing; CI and the release workflow never pass it,
+    which is what makes a released binary's `version` say the surface is off.
+  -->
+  <PropertyGroup>
+    <ExposeUnsafeScriptRunApi Condition="'$(ExposeUnsafeScriptRunApi)' == 'true'">true</ExposeUnsafeScriptRunApi>
+    <DefineConstants Condition="'$(ExposeUnsafeScriptRunApi)' == 'true'">$(DefineConstants);EXPOSE_UNSAFE_SCRIPT_RUN_API</DefineConstants>
+  </PropertyGroup>
+
+  <!--
     B3: the session token is written to disk by default, because that is what makes the second run cost a
     millisecond instead of a dialog. -p:NeverPersistSession=true builds one that keeps it in the host's memory
     instead; `version.build.neverPersistSession` reports which one this is, from the constant rather than a
