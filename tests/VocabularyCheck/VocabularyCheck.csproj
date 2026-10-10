@@ -37,6 +37,13 @@
     -->
     <Compile Include="../../src/DoricoUse.Cli/Ui/DialogModel.cs" />
     <Compile Include="../../src/DoricoUse.Cli/Ui/DialogCatalogue.cs" />
+    <!--
+      The execution verdict is not pure in the same way - it reads a file and waits for it - but it needs no Dorico
+      and no Windows: the check points it at a fixture log and appends Dorico's lines to it while the verdict waits.
+      That is the only way to measure the retry and the offset rule without a live modal dialog, which no check can
+      raise.
+    -->
+    <Compile Include="../../src/DoricoUse.Cli/Ui/LogQueue.cs" />
   </ItemGroup>
 
   <!--

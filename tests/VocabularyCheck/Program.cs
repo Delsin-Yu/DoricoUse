@@ -598,5 +598,134 @@ Check(
     NodeRead.Bool(DialogModel.ProbePayload(new DialogProbeInfo("win32", 9, Windows: 2)), "documentEnabled") is null);
 
 Console.WriteLine();
+Console.WriteLine("== the execution verdict, from a fixture log (no Dorico: a check cannot raise a modal dialog)");
+
+// Both defects this section guards were found by running the tool against a real Dorico dialog, which no check can
+// raise. What a check can do is write Dorico's lines into a file from another thread while the verdict waits -
+// which is what Dorico does while the CLI waits - and that is what these cases do. The measured shape of the real
+// thing is what makes them worth writing: the offset is taken at a line boundary, and the command's own Posting
+// line is then the first line the log gains, which is the line the verdict is made of.
+var fixture = Path.Combine(Path.GetTempPath(), $"dorico-use-logqueue-check-{Environment.ProcessId}.log");
+
+void WriteLater(string text, int delayMs) => _ = Task.Run(async () =>
+{
+    await Task.Delay(delayMs).ConfigureAwait(false);
+    File.AppendAllText(fixture, text);
+});
+
+File.WriteAllText(fixture, "2026-10-11 05:42:42.463 [info] ping response received in ipc://Dorico6.lic\n");
+LogQueue.Begin(fixture);
+LogQueue.Mark("NoteInput.Enter");
+WriteLater(
+    "2026-10-11 05:42:49.593 [info] Posting command (requested): NoteInput.Enter\n"
+    + "2026-10-11 05:42:49.593 [info] Queue after push: {NoteInput.Enter} \n",
+    150);
+
+var onTheQueue = LogQueue.Verdict(TimeSpan.FromMilliseconds(600));
+
+Check(
+    "a command whose first log line is its own Posting line is queued, not unknown",
+    NodeRead.Str(onTheQueue, "state") == "queued",
+    NodeRead.Str(onTheQueue, "state"));
+Check(
+    "and the evidence says the Posting line was seen and no Executing line followed",
+    NodeRead.Str(onTheQueue, "evidence")?.Contains("NoteInput.Enter: queued", StringComparison.Ordinal) == true
+        && NodeRead.Str(onTheQueue, "evidence")?.Contains("no Executing line", StringComparison.Ordinal) == true,
+    NodeRead.Str(onTheQueue, "evidence"));
+Check(
+    "and Dorico's own queue line is named when the log has one",
+    NodeRead.Str(onTheQueue, "evidence")?.Contains("Queue after push", StringComparison.Ordinal) == true,
+    NodeRead.Str(onTheQueue, "evidence"));
+Check("and the payload still carries the log it read", NodeRead.Str(onTheQueue, "log") == fixture);
+
+File.WriteAllText(fixture, "2026-10-11 05:15:50.603 [info] Sync complete\n");
+LogQueue.Begin(fixture);
+LogQueue.Mark("NoteInput.Enter");
+WriteLater(
+    "2026-10-11 05:15:50.603 [info] Posting command (requested): NoteInput.Enter\n"
+    + "2026-10-11 05:15:50.603 [info] Executing command: NoteInput.Enter\n",
+    150);
+
+var executed = LogQueue.Verdict(TimeSpan.FromMilliseconds(600));
+
+Check(
+    "an Executing line right after the Posting line makes it ran",
+    NodeRead.Str(executed, "state") == "ran",
+    NodeRead.Str(executed, "state"));
+
+File.WriteAllText(fixture, "2026-10-11 05:44:09.452 [info] Auto-save skipped\n");
+LogQueue.Begin(fixture);
+LogQueue.Mark("Play.StopScrubPlayback");
+LogQueue.Acknowledge("Play.StopScrubPlayback", "kError kCommandNotAllowed");
+
+var refusedByApi = LogQueue.Verdict(TimeSpan.FromMilliseconds(300));
+
+Check(
+    "a kError with no Posting line is refused, which stays a different verdict from queued",
+    NodeRead.Str(refusedByApi, "state") == "refused",
+    NodeRead.Str(refusedByApi, "state"));
+Check(
+    "and its evidence says the command was never queued",
+    NodeRead.Str(refusedByApi, "evidence")?.Contains("never queued", StringComparison.Ordinal) == true,
+    NodeRead.Str(refusedByApi, "evidence"));
+
+File.WriteAllText(fixture, "2026-10-11 05:44:09.452 [info] Auto-save skipped\n");
+LogQueue.Begin(fixture);
+LogQueue.Mark("NoteInput.Enter");
+LogQueue.Acknowledge("NoteInput.Enter", "kOK");
+
+var nothing = LogQueue.Verdict(TimeSpan.FromMilliseconds(300));
+
+Check(
+    "a kOK with no Posting line after the wait is unknown: the wait is bounded, and what it saw is all it claims",
+    NodeRead.Str(nothing, "state") == "unknown",
+    NodeRead.Str(nothing, "state"));
+
+// The other half of the offset rule: the fragment of a line Dorico was still writing when the offset was taken must
+// not be read as a line. The fix above must not have turned the drop off, only made it conditional.
+File.WriteAllText(fixture, "2026-10-11 05:44:09.452 [info] Auto-save ski");
+LogQueue.Begin(fixture);
+LogQueue.Mark("File.Open");
+WriteLater(
+    "pped\n2026-10-11 05:45:01.100 [info] Posting command (requested): File.Open File=C:\\scores\\a.dorico\n"
+    + "2026-10-11 05:45:01.101 [info] Executing command: File.Open?File=C:\\scores\\a.dorico\n",
+    150);
+
+var afterPartial = LogQueue.Verdict(TimeSpan.FromMilliseconds(600));
+
+Check(
+    "a half-written line at the offset is still dropped rather than read as a Posting line",
+    NodeRead.Str(afterPartial, "state") == "ran",
+    NodeRead.Str(afterPartial, "state"));
+
+File.WriteAllText(fixture, "2026-10-11 05:44:09.452 [info] Auto-save skipped\n");
+LogQueue.Begin(fixture);
+
+Check(
+    "an invocation that posted nothing by name carries no execution field at all, instead of an unknown about nothing",
+    LogQueue.Verdict(TimeSpan.FromMilliseconds(200)) is null);
+
+File.WriteAllText(fixture, "2026-10-11 05:44:09.452 [info] Auto-save skipped\n");
+LogQueue.Begin(fixture);
+WriteLater("2026-10-11 05:46:00.000 [info] Posting command (requested): NoteInput.Enter\n", 100);
+
+var someoneElses = LogQueue.Verdict(LogQueue.PassiveBudget);
+
+Check(
+    "a posting the host sent on its own is still reported as queued when nothing executed it",
+    NodeRead.Str(someoneElses, "state") == "queued"
+        && NodeRead.Str(someoneElses, "evidence")?.Contains("posted by the host", StringComparison.Ordinal) == true,
+    NodeRead.Str(someoneElses, "evidence"));
+
+try
+{
+    File.Delete(fixture);
+}
+catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+{
+    // The check's own temporary file: failing to delete it is not a failure of anything asserted here.
+}
+
+Console.WriteLine();
 Console.WriteLine($"{failures} failed, 0 skipped");
 return failures == 0 ? 0 : 1;
