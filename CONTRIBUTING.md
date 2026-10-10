@@ -18,8 +18,8 @@ dotnet build tests/VocabularyCheck/VocabularyCheck.csproj
 **Stop the host before rebuilding** (`dorico-use host stop`): a running host holds the executable open and the
 build fails with `MSB3027 ... being used by another process`. This bites everyone once.
 
-The style is in `.editorconfig`; the code is `net10.0`, no Windows-only API, and XML comments explain *why* rather
-than *what* — a reader should be able to tell a measured fact from an inference.
+The style is in `.editorconfig`; the CLI project is `net10.0-windows` and each check project is `net10.0`; XML
+comments explain *why* rather than *what*, so a reader can tell a measured fact from an inference.
 
 The three files that used to be too long to read are now sets of `partial` class parts, split by concern rather
 than by size: `HostServer` keeps the server and the dispatch, `HostServer.Notes.cs` the note entry,
@@ -52,6 +52,39 @@ ignored (and named in `version.state.session.token`), and each `host start` — 
 restarts — asks Dorico's user to allow the client again. `session probe` connects directly rather than through the
 host, so in that build it shows the dialog on every run, and its payload says so. Release builds do not pass this
 switch either.
+
+## The modal-dialog surface
+
+`dialog` and `execution` are on every payload, and `ui dialog` / `ui press` answer a dialog. The design decisions are
+in the handover plan that produced it; what a contributor needs is three rules.
+
+**Every file that needs a Windows API lives under `src/DoricoUse.Cli/Ui/`, and only the CLI project compiles it.**
+`ProjectFileCheck` and `VocabularyCheck` build CLI sources **by hand**, on `net10.0`, by listing them in
+`<Compile Include>` items — so a Win32 or UI Automation type in one of *those* files breaks both checks. The two
+files they do compile are the pure ones: `Ui/DialogModel.cs` (the ids, the ordering, the policy, the payload shape)
+and `Ui/DialogCatalogue.cs` (the whitelist). Both are plain records and rules, and that is deliberate: it is what
+makes the ids and the refusals testable without a dialog. **A rule that decides what an agent may press belongs in
+`DialogModel`, not in the Windows code.**
+
+**There is no compiler switch for this surface.** The maintainer removed it from scope: every build carries the
+probe, the reader and the presser, and `version.compatibility.uiAutomation` states that as a fact rather than
+reporting a flag that would be a constant. Safety comes from the catalogue and from the two `--allow-*` flags at
+the call. `AllowUnsafeBlocks` is on for the CLI project because UI Automation is called through raw COM vtable
+pointers — the built-in COM marshaller generates its stubs at run time, and the release image has no code
+generation at all.
+
+**To add a catalogue entry, measure the dialog first.** Run the thing that raises it, read it with
+`dorico-use ui dialog --raw`, and take the caption and the labels from that output — never from a description of the
+dialog. Then add the entry to `DialogCatalogue.Entries` with a `Note` saying what you measured, mark the buttons
+that cannot lose work `safe`, and leave every other button uncatalogued (it will be reported as
+`role: unknown, safe: false`, which is the safe answer). The vocabulary check then tests the entry for you: that it
+has a matcher, that its required labels are its own buttons' labels, that a destructive button is not safe, that it
+recognises the dialog it describes, and that the entry offers a `pressWith` line. Nothing else is needed. An entry
+for a dialog nobody has read is worse than no entry: the ids in `DialogCatalogue.Reserved` are waiting for exactly
+that measurement, and a check asserts that none of them has one yet.
+
+The captions and labels in the catalogue are the maintainer's Chinese UI. A dialog on another UI language reports as
+`unknown` and is refused; that is the intended failure and not a bug to paper over with a looser matcher.
 
 ## The test corpus
 
@@ -86,7 +119,15 @@ powershell -File tools/smoke.ps1 -AllowWrite                 # also note insert 
 powershell -File tools/smoke.ps1 -AllowUnsafeScriptRunApi    # only for -p:ExposeUnsafeScriptRunApi=true builds
 ```
 
-Run it before a release, and after touching the host or the protocol. It takes `-Exe <path>` (else the published
+Run it before a release, and after touching the host or the protocol.
+
+The dialog surface has two halves there. The automatic checks are read-only and need no dialog: that the probe runs
+and reports `dialog: null` on a Dorico with nothing modal, and that `ui press` refuses when nothing is up
+(`DialogNotFound`, exit 1). The real dialogs cannot be raised by a check, so they are a **documented by-hand
+section** at the end of the script's output: raise one dialog at a time, read it with `ui dialog`, and compare what
+comes back with what the window shows — the caption, the body text and every button label, verbatim. Add a line to
+that section when you add a catalogue entry, and record in the commit message which dialogs you actually raised,
+because a dialog nobody raised is a dialog nobody measured. It takes `-Exe <path>` (else the published
 binary, then the Debug build, then `dorico-use` on PATH) and `-JsonWidth 0` to print whole payloads. It prints the
 active document's title and score id first and writes nothing without `-AllowWrite`; `session read --rebind` saves
 a copy **and rebinds the open document to it**, so use a scratch project for that half. Exit `0` means every check
@@ -116,8 +157,10 @@ Contributions welcome, in rough order of value:
    a real footgun — and `docs/scripting.md` §8 shows a Lua script can read the live score instead
    (`score.flows → voiceStreams → dump()`); the work is parsing that printer format into the same JSON
    `file read` prints, and this repo has no shipped scripting command yet.
-2. **A macOS port.** Nothing uses a Windows-only API, but only Windows was tested: named pipes, console encoding,
-   the `host start` launch path (`UseShellExecute`) and paths all need a pass, and Dorico users are heavily Mac.
+2. **A macOS port.** The portable part is the pipe, the WebSocket and the file decoder; the dialog probe and the
+   button pressing are Windows-only and are compiled into every build, so a port has to exclude or replace that
+   surface rather than add a target framework. Only Windows was ever tested: named pipes, console encoding, the
+   `host start` launch path (`UseShellExecute`) and paths all need a pass too, and Dorico users are heavily Mac.
 3. **Dorico SE / Elements behaviour.** Only Pro 6.2.30 was tested; the editions differ in which commands and
    options they accept. The catalogue-based features should degrade, but nobody has checked.
 4. **The scripting channel as a shipped command.** `session read` uses it internally (see `LiveRead`), and

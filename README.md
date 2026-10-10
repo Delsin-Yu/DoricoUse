@@ -40,11 +40,17 @@ dotnet build src/DoricoUse.Cli/DoricoUse.Cli.csproj
 dotnet publish src/DoricoUse.Cli/DoricoUse.Cli.csproj -c Release -r win-x64
 ```
 
-The published Native AOT binary lands in `src/DoricoUse.Cli/bin/Release/net10.0/win-x64/publish/dorico-use.exe`.
+The published Native AOT binary lands in
+`src/DoricoUse.Cli/bin/Release/net10.0-windows/win-x64/publish/dorico-use.exe`.
 It is about 8.5 MB, and it carries no `hostfxr`. The `version` command reports `nativeAot:true`. The publish is
 clean, with no IL2026/IL3050 trim warnings. With `--artifacts-path <dir>` the binary lands in
-`<dir>/publish/DoricoUse.Cli/release_win-x64/`, not in the `bin` tree. The source is plain `net10.0` and calls no
-Win32 API, so the same code can target macOS later.
+`<dir>/publish/DoricoUse.Cli/release_win-x64/`, not in the `bin` tree.
+
+**The assembly targets `net10.0-windows`, and it carries a Windows-only surface.** Reading Dorico's modal dialogs
+and pressing their buttons uses Win32 and UI Automation. There is no build of this tool without it: there is no
+compiler switch, and `version` reports the surface as a fact (`compatibility.uiAutomation`) rather than as a flag.
+The pipe, the WebSocket and the file decoder are still plain .NET, but **a macOS port has to exclude or replace
+that surface** — it is no longer a matter of adding a target framework. See [Modal dialogs](#modal-dialogs).
 
 **Stop the host before you rebuild.** A running host holds the executable open. The build then fails with
 `MSB3027 ... being used by another process`. Run `host stop` before the build, and `host restart` after it.
@@ -69,8 +75,10 @@ needs migrating.
 
 The tool version is SemVer, and it says nothing about Dorico. What this build was tested against is a fact. The
 `version` command reports it (`compatibility.testedAgainst`, `compatibility.api`). Windows is the only platform
-tested, on Dorico 6.2.30 Pro. No part of the CLI uses a Windows-only API. The pipe, the WebSocket and the file
-decoder are plain .NET. A macOS port is therefore a contribution, not a rewrite. See `CONTRIBUTING.md`.
+tested, on Dorico 6.2.30 Pro. The pipe, the WebSocket and the file decoder are plain .NET and portable; the
+dialog probe and the button pressing are Windows-only and are in every build (`compatibility.uiAutomation` says so
+in one sentence). A macOS port is therefore a contribution to the portable part and a replacement of that one
+surface. See `CONTRIBUTING.md`.
 
 ## Commands
 
@@ -93,8 +101,10 @@ decoder are plain .NET. A macOS port is therefore a contribution, not a rewrite.
 | `playback techniques` / `properties get` | Expression maps and drum kit note maps. The `properties get` command reads what it can from the selection. |
 | `note insert ...` | Enter notes, chords, tuplets and rests. `--from-start` writes from the top, and `--read` proves the result (see below). |
 | `file read --path <project.dorico> [--limit n\|all] [--measure a-b] [--player <glob>] [--tree <name\|*>] [--dynamics] [--lyrics] [--slurs] [--articulations] [--ties] [--beams] [--techniques] [--layout] [--mark-limit n]` | Read a project file from disk: notes, dynamics, slurs, articulations, ties, beams, techniques, layout, or any subtree. No Dorico needed. |
-| `export musicxml [--path <watch dir>] [--wait-ms n]` | Export MusicXML. **Needs a click on 确定 inside Dorico** (see below). |
+| `export musicxml [--path <watch dir>] [--wait-ms n]` | Export MusicXML. **Needs a button pressed in Dorico's export dialog** — `ui press` does it, and the payload names the button (see below). |
 | `export text --path <file.csv>` | Export project text/comments as CSV. Fully unattended. |
+| `ui dialog [--raw]` | The modal dialog Dorico has up, verbatim: its title, its body text and every button with a stable id. `dialog` is null when nothing is modal. Windows only. |
+| `ui press --dialog <id> --button <id> [--allow-destructive] [--allow-unknown-dialog] [--path <p>] [--timeout-ms n]` | Press one button of that dialog, then re-probe and report what is up now. Windows only. See [Modal dialogs](#modal-dialogs). |
 | `version` | This build: assembly version, whether it is Native AOT, where its state lives, and the protocol constants. It starts no host and needs no Dorico. |
 
 There is deliberately **no** command that sends an arbitrary protocol message. One existed during development, and
@@ -124,6 +134,95 @@ active.
 
 Check it the way it can fail. `session read --expect-score 999` must refuse, and so must every other command in
 that list.
+
+### Modal dialogs
+
+Dorico stalls its **whole command queue** while a modal dialog is up, and the Remote Control API cannot see that: a
+command posted behind a dialog still answers `kOK`, and then runs minutes later. Measured, with timestamps:
+`NoteInput.Enter` was posted at 05:16:54.727 and executed at 05:17:18.757, twenty-four seconds later, after 取消
+closed the export dialog. That blind spot is why every payload carries two more fields and why `ui` exists.
+
+**Every payload carries `dialog`**, on success and on failure, next to the existing fields:
+
+```json
+{"ok":true,"command":"session status","status":{"…":"…"},
+ "execution":{"state":"queued","evidence":"NoteInput.Enter: queued - posted with no Executing line 1 s later: the command is on Dorico's queue, not run, which is what a modal dialog does","log":"C:\Users\<you>\AppData\Roaming\Steinberg\Dorico 6\application.log","postings":1},
+ "dialog":{"id":"dorico.export-musicxml","kind":"known","shape":"qt","class":"Qt6101QWindow","owner":"0x006C1132",
+   "blocksQueue":true,"title":"导出MusicXML","description":"导出到哪里\n格式","textSource":"uia",
+   "buttons":[{"id":"accept","alias":"yes","name":"确定","automationId":"…buttonBox.QPushButton","index":5,"role":"default","safe":true,"invokable":true},
+              {"id":"cancel","alias":"no","name":"取消","automationId":"…buttonBox.QPushButton","index":6,"role":"dismiss","safe":true,"invokable":true},
+              {"id":"folder-picker","name":"\ue0c8","automationId":"…chooseFolderPathPushButton","index":4,"role":"unknown","safe":false,"invokable":true}],
+   "pressWith":"dorico-use ui press --dialog dorico.export-musicxml --button cancel",
+   "probe":{"how":"win32+uia","ms":12,"degraded":false,"nodes":41,"truncated":false}}}
+```
+
+- **`dialog` is `null` when nothing is modal**, and that is a measurement rather than silence: the probe ran and
+  found nothing. It is cheap Win32 that runs on every invocation (8 ms measured against a Dorico sitting at the
+  Hub).
+- **`execution` is the queue fact**: `ran`, `queued`, `refused` or `unknown`, present on a command that posted
+  something to Dorico. It is read out of Dorico's own `application.log`, which echoes
+  `Posting command (requested): <name>` and `Executing command: <name>`. A command that was posted with no
+  `Executing` line has not run. A command Dorico refused leaves no `Posting` line at all, which is a different
+  outcome and is reported as one.
+- **`blocksQueue` is a hint from the window class only**, never the queue fact: the modeless library manager
+  (`Qt6101QWindowIcon`) is a window a user can see while Dorico keeps working 31 ms per command, and it is reported
+  as not blocking. `execution` is the measurement.
+- **The text is verbatim.** The title, the body and the button labels are the strings the dialog really shows, in
+  whatever language and encoding. Nothing is translated or summarised; only the **ids** are normalised.
+- **The ids are stable and derived.** A button id comes from the catalogue, then from a unique automation-id tail,
+  then from the classic Win32 control id (`1` is accept and `2` is cancel in a `#32770` dialog), then from a unique
+  label, then from the button's position. The id reported in one invocation works in the next, unlike a positional
+  snapshot.
+- **`pressWith`** is a line an agent can paste without reading `--help`. It names the safest button, and for a
+  dialog that is holding the queue that is also the button which releases it.
+
+#### Answering a dialog
+
+Two invocations, never more: act, then press.
+
+```bash
+dorico-use export musicxml --path .\export --wait-ms 120000
+# its payload says export.count 0, names the dialog, and carries pressWith
+dorico-use ui press --dialog dorico.export-musicxml --button accept     # or --button cancel
+# -> {"pressed":{…},"dialog":null}, and the command Dorico had queued runs
+```
+
+- **The press re-probes first.** When the dialog that is up is not the one named, the press is refused with
+  `WrongDialog` and nothing is pressed; when nothing is modal, `DialogNotFound`.
+- **The payload's `dialog` is the state after the press**, and it is the only evidence there is. A press that
+  closes its own window reported an error *after* it succeeded (`UIA_E_ELEMENTNOTAVAILABLE`), measured on the
+  library manager's 关闭 button, so neither its acknowledgement nor its error is trusted: `pressed.elementGone`
+  records that case, and `dialog` says what is up now.
+- **Only measured dialogs are pressable.** The catalogue holds the dialogs whose real captions and labels were
+  read — `dorico.export-musicxml`, the `dorico.folder-picker` it raises, and `dorico.unsaved-changes` (discard is
+  丢弃, cancel is 取消, and discard is not safe). A dialog that is not in it is reported in full and refused with
+  `UnknownDialog`.
+- **Two flags, and only for a caller that means it.** `--allow-unknown-dialog` allows a button of an unmeasured
+  dialog; `--allow-destructive` allows one this build does not call safe (discard, overwrite). Every button of an
+  unknown dialog is unsafe — cancel included, because "cancel is harmless" is a claim about a specific dialog — so
+  an unknown dialog needs **both** flags, and the payload then carries a `warning`.
+- **There is no third way to press a button.** Invoke, then toggle, then the legacy accessibility default action;
+  an element with none of the three is refused with `ButtonNotInvokable`. This build never posts a mouse event and
+  never clicks a coordinate.
+
+Everything here is **Windows only**, and it is in every build: there is no compiler switch (see
+[Build](#build)). The captions and labels above are what a Chinese Dorico shows, and on another UI language the same
+dialog reports as `unknown` and is refused. That is the intended failure: read it, report it, do not guess.
+
+#### The codes `ui press` refuses with
+
+| Code (exit 1) | When |
+|---|---|
+| `DialogNotFound` | nothing is modal, so there is nothing to press in |
+| `WrongDialog` | the dialog that is up is not the one named |
+| `ButtonNotFound` | the id is not in that dialog now; `error.data.ids` lists the ones that are |
+| `ButtonNotInvokable` | the element exposes no pressable pattern |
+| `UnknownDialog` | not in the catalogue and no `--allow-unknown-dialog` |
+| `DestructiveRefused` | the button is not catalogued as safe and no `--allow-destructive` |
+| `PickerNotSettable` | no value pattern on the file-name box, so `--path` cannot be written into it |
+
+A probe or press failure is exit 2 (`DialogProbeFailed`, `PressFailed`), never a refusal: a refusal is the caller's
+fault and a runtime failure is not.
 
 ### Entering notes
 
@@ -320,9 +419,14 @@ dialog writes nothing until 确定 is pressed:
 
 ```bash
 dorico-use export musicxml --path .\export --wait-ms 120000   # waits, watching --path
-# meanwhile, drive Dorico's dialog: it has a path label (not editable) and a "..." folder picker, and it ignores
-# any File= parameter, so set the destination through that picker, then invoke 确定.
+# Its payload reports the dialog that is up, its buttons and pressWith. Answer it in one more command:
+dorico-use ui press --dialog dorico.export-musicxml --button accept
 ```
+
+The dialog has a path label (not editable) and a "..." folder picker, and it ignores any `File=` parameter, so the
+destination can only be set through that picker — `ui press --dialog dorico.export-musicxml --button folder-picker`
+opens the native `选择文件夹` window, which the next payload names as `dorico.folder-picker`. See
+[Modal dialogs](#modal-dialogs).
 
 While that dialog is open, Dorico's whole command queue stalls. Queued commands then run late, and their acks and
 statuses are stale. The `export musicxml` command therefore reports the files that really appeared, and returns
@@ -366,6 +470,11 @@ have. An agent then never has to parse the sentence:
 
 The exit codes are `0` for success, `1` for an argument or usage error, `2` for a protocol, connection or Dorico
 failure, and `3` when a host was already running and `host serve` was asked to start.
+
+Two fields sit beside `ok`/`command` on every payload, success and failure alike: `dialog`, which is the modal
+dialog Dorico has up or `null`, and `execution`, which says whether the command this invocation posted actually
+ran. Both come from the same funnel every command goes through, so no command can omit them. See
+[Modal dialogs](#modal-dialogs).
 
 ## What is true about Dorico's API
 
@@ -517,7 +626,7 @@ reported there as a single `skip`.
 
 ```bash
 dotnet build tests/VocabularyCheck/VocabularyCheck.csproj -v q --nologo
-./tests/VocabularyCheck/bin/Debug/net10.0/vocabulary-check.exe    # 77 checks: the built-in table, no setup at all
+./tests/VocabularyCheck/bin/Debug/net10.0/vocabulary-check.exe    # 214 checks, no setup at all
 ```
 
 The `VocabularyCheck` program needs nothing but the framework: no Dorico, no host, no extraction step. It checks
@@ -525,13 +634,21 @@ the table against the code that uses it, so the note values the CLI resolves are
 checks the shape rule, the refusal and its suggestions, and the one behaviour that matters for forward
 compatibility: a value for a parameter this build does not know is never refused.
 
+It also compiles the two pure files of the dialog model (`Ui/DialogModel.cs`, `Ui/DialogCatalogue.cs`) by hand and
+asserts the rules an agent depends on without a dialog, a COM pointer or Windows: the id of every button of the
+measured export dialog (two of its seven share a label and one has none), three times over, so stability is a check
+and not a hope; the classic control ids of a native `#32770` dialog; the unknown-dialog hash; the position
+fallback; every catalogue entry's roles and safety; and that none of the reserved ids has an entry, because an
+entry needs a measurement and a check refuses to let one be guessed. That asymmetry is why the CLI's Windows-only
+code lives under `Ui/` in files this project does not compile.
+
 ## Troubleshooting
 
 | Symptom | What it is |
 |---|---|
 | `NotReachable` on every live command | Dorico is not running, its `Preferences > Remote Control` server is off, or it listens elsewhere (set `--address` on `host start`). `file read` and `version` still work without Dorico. |
 | The build fails with `MSB3027 ... being used by another process` | The host runs from that binary and holds it open. Run `dorico-use host stop`, build, and the next command starts the host again. |
-| A command seems to do nothing | Something is modal in Dorico. While a dialog is open, Dorico **queues** commands instead of running them. Each one still answered `kOK` when it was posted, so they run minutes later, out of sight. Look in `%APPDATA%\Steinberg\Dorico 6\application.log` for when a command really ran, and close the dialog. |
+| A command seems to do nothing | Something is modal in Dorico. While a dialog is open, Dorico **queues** commands instead of running them. Each one still answered `kOK` when it was posted, so they run minutes later, out of sight. The payload says so: `execution.state` is `queued`, and `dialog` names the dialog and carries the `pressWith` line that answers it. When `execution` is absent or `unknown`, read `%APPDATA%\Steinberg\Dorico 6\application.log` for the `Posting` and `Executing` lines. |
 | `WrongActiveScore {expected, actual}` | The `--expect-score` check refused, because the document Dorico has active is not the one you named. Bring the right window to the front, or drop the flag. |
 | `kOK` but nothing happened | `kOK` is a receipt, not proof, and a bad `File.Open` path answers it too. Every command that changes the score reads the status back. For note entry, the honest proof is `session read`. |
 | `session read` changed which file my document points at | Only `session read --rebind` does that, because `File.SaveAs` rebinds the open document to the copy it writes. The default read saves nothing and has no side effect. If you did use `--rebind`, re-open the original file afterwards. The copy is under your system temporary directory. |
@@ -561,6 +678,15 @@ compatibility: a value for a parameter this build does not know is never refused
    parsing `dump()` into the same JSON that `file read` prints. Also next: a phrase that spans calls without
    restarting at the top, positional entry if Dorico ever exposes it, and `session read` gaining the same block
    options as the `file read` command.
+
+9. **Done**: the modal-dialog surface — the `dialog` and `execution` fields on every payload, `ui dialog`, and
+   `ui press` with a measured whitelist, two safety flags and stable derived button ids.
+10. **Next**: the rest of the dialog catalogue. Three dialogs are in it because their captions and labels were
+   actually read; five more are named in the code as reserved (`dorico.allow-remote-client`, `dorico.import-musicxml`,
+   `dorico.open-picker`, `dorico.save-picker`, `dorico.overwrite-file`) and have **no** entry, because an entry
+   needs a measurement and a check refuses to let one be guessed. Until they are read they are reported in full and
+   refused, which is safe but not useful. A file picker is the one that blocks two other jobs: no file picker has
+   been read, so `ui press --path` (which writes through the UI Automation value pattern) is unverified.
 
 Two things are tested and settled, so they are no longer "next". The **unpublished commands** are blocked on the
 remote channel and usable from inside. Over the API, `File.New` answers `kError` with no log entry, and it

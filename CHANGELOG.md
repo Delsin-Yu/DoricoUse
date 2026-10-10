@@ -7,6 +7,34 @@ Compatibility with Dorico is reported by `dorico-use version` (`testedAgainst`, 
 encoded in the version number, because the same build works against any Dorico that exposes the same Remote
 Control API — see `README.md`.
 
+## [Unreleased]
+
+### Added
+- **Modal-dialog awareness.** Every payload now carries `dialog`: the dialog Dorico has up, its title, its body
+  text and every button with a stable id, or `null` when nothing is modal. A modal dialog stalls Dorico's whole
+  command queue, and the API could not report that until now.
+- **`ui dialog [--raw]`** and **`ui press --dialog <id> --button <id> [--allow-destructive]
+  [--allow-unknown-dialog] [--path <p>] [--timeout-ms n]`**: read the dialog that is up, and press one of its
+  buttons. The press re-probes first, refuses when the dialog named is not the one up (`WrongDialog`), and reports
+  what is up afterwards, because a press that closes its own window can report an error after succeeding.
+- **`execution`** on every payload that posted a command to Dorico: `ran`, `queued`, `refused` or `unknown`, read
+  out of Dorico's own `application.log`. `queued` is the state that used to be invisible — a command posted behind
+  a dialog still answers `kOK` and then runs minutes later.
+- A measured whitelist in `DialogCatalogue`: `dorico.export-musicxml`, the `dorico.folder-picker` it raises, and
+  `dorico.unsaved-changes`. Anything else is reported in full and refused (`UnknownDialog`), and every button of an
+  unknown dialog is unsafe, so pressing one needs both `--allow-unknown-dialog` and `--allow-destructive`.
+- `export musicxml` and the live read now report the dialog they saw while waiting (`dialogWhileWaiting`).
+- 137 checks in `VocabularyCheck` over the two pure model files, which need no Dorico, no dialog and no Windows:
+  id stability, the unknown-dialog hash, the button ordering rules, every catalogue entry's policy, every refusal
+  code with its exit code, and the payload shape.
+
+### Changed
+- **The CLI project targets `net10.0-windows`.** Reading Dorico's dialogs and pressing their buttons uses Win32 and
+  UI Automation, and there is no compiler switch: the capability is in every build. `version.compatibility` states
+  that as a fact. A macOS port now has to exclude or replace that surface, which the README and `CONTRIBUTING.md`
+  say outright instead of promising that nothing uses a Windows-only API.
+- `version.compatibility` reports `uiAutomation`; the two existing `version.build` flags are unchanged.
+
 ## [0.1.0] - 2026-10-11
 
 The first release: a stateless JSON CLI that lets an agent or a script steer a running Dorico, and a from-scratch
