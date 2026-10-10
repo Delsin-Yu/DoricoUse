@@ -427,8 +427,10 @@ internal static class NoteCommands
             if (readRequested)
             {
                 // The rebind route adds the save and the decode, inside this same host call. The live route reads
-                // nothing in the host - its read is a second exchange after this one returns - so what it adds is
-                // the wait that read script gets, kept here so the command's budget does not silently omit it.
+                // nothing in the host - its read is a second exchange after this one returns - so this is headroom
+                // rather than a need: the exchange is short, and the generous number only decides that a host which
+                // is stuck is reported by the read's own wait (LiveRead.DefaultWait, in CompleteLiveReadAsync)
+                // instead of by a pipe timeout in the middle of the note sequence.
                 budget += rebindRequested
                     ? SaveCopy.DefaultWait + TimeSpan.FromSeconds(15)
                     : LiveRead.DefaultWait;
@@ -516,9 +518,11 @@ internal static class NoteCommands
     /// (<see cref="ProjectFileReader"/> plus <see cref="ProjectFileView"/>); nothing is re-implemented here.
     /// </summary>
     /// <remarks>
-    /// It runs in the CLI process rather than in the host on purpose: the report is built once per process, and the
-    /// long-lived host would call it once per invocation (the view reuses a node, so a second call inside one
-    /// process throws "The node already has a parent."). A one-shot process has that property for free.
+    /// It runs in the CLI process rather than in the host: the CLI is what waits for the copy to stop growing, so it
+    /// is also what should read it, and the decode is the same call <c>file read</c> makes. That used to be a hard
+    /// requirement — the view shared one node across calls, so a second <c>Report</c> inside the long-lived host threw
+    /// "The node already has a parent." — and it is not any more: the view clones what it shares, and
+    /// <c>ProjectFileCheck</c> builds the report three times in one process precisely so that stays true.
     /// </remarks>
     private static async Task CompleteReadAsync(
         JsonObject payload,

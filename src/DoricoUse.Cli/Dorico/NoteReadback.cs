@@ -18,10 +18,11 @@ namespace DoricoUse.Cli.Dorico;
 /// <para>
 /// <b>Why the decode is not here.</b> The decoder itself is <see cref="ProjectFileReader"/> plus
 /// <c>DoricoUse.Cli.Views.ProjectFileView.Report</c> — the same pair <c>file read</c> and <c>session read</c> use,
-/// and neither is re-implemented anywhere in this file. It is called from the CLI process instead, for the same
-/// reason <c>session read</c> works: the report is built once per process. (Calling it twice inside the long-lived
-/// host throws "The node already has a parent." — the view reuses a node, which is fine for a one-shot process and
-/// not fine here. That is a fact about the shared view, reported rather than worked around.)
+/// and neither is re-implemented anywhere in this file. It is called from the CLI process, which is the one that
+/// waits for the copy to stop growing and that already owns its path. That was once a hard requirement — the view
+/// shared one node across calls, so a second <c>Report</c> inside the long-lived host threw "The node already has a
+/// parent." — and it is not any more: the view clones what it shares, and <c>ProjectFileCheck</c> builds the report
+/// three times in one process precisely so that stays true.
 /// </para>
 /// </remarks>
 internal static class NoteReadback

@@ -46,6 +46,20 @@ internal sealed partial class HostServer
                 1);
         }
 
+        // Defensive: a copy path or read options on a live read would be silently ignored (there is no copy to save
+        // and nothing to filter), which is the kind of quiet no-op this tool refuses elsewhere. The CLI never sends
+        // the combination, so this only catches a CLI and a host of different vintages talking to each other.
+        if (read && !readRebind
+            && (!string.IsNullOrWhiteSpace(readPath) || NodeRead.Obj(args, "readOptions") is not null))
+        {
+            throw new CliException(
+                "InvalidArgument",
+                "note insert was given a copy path (or read options) for a live read, and a live read saves no copy "
+                + "and has nothing to filter. Those belong to --read --read-rebind: set readRebind to true, or send "
+                + "the live read without them.",
+                1);
+        }
+
         if (rebind && string.IsNullOrWhiteSpace(readPath))
         {
             throw new CliException(
