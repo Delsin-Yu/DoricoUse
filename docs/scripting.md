@@ -574,7 +574,7 @@ print(pcall(function() return st:createNote() end))
 with correct arguments on the throwaway project, and check the result with this repo's own reader:
 
 ```bash
-./src/DoricoUse.Cli/bin/Debug/net10.0/dorico-use.exe session read --limit all --expect-score <the scratch id>
+./src/DoricoUse.Cli/bin/Debug/net10.0-windows/dorico-use.exe session read --limit all --expect-score <the scratch id>
 ```
 
 If the note you created shows up, §5.1 stops being an open question — and it becomes the first thing this project
