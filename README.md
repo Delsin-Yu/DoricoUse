@@ -467,12 +467,13 @@ against another, the per-note spelling letter matched onset by onset against a t
 with the export's `<transpose>` table asserted), score-order and overlap invariants, the generic tree walker
 compared with the typed reader, that the report can be built three times in one process (a shared node parented
 twice throws), and every error path (`NotFound`, `NotAContainer`, `MissingScoreData`, `MalformedMember`,
-`UnsupportedScoreData`). 153 checks pass and one is a documented `skip` — reading a real lyric, which needs a file
-with lyrics.
+`UnsupportedScoreData`). 187 checks run and none is skipped on a machine that has the maintainer's scores: the ones
+that need a file which is not in the repository report `skip` instead, which is what CI sees — including the check
+that reads a real lyric.
 
 ```bash
 dotnet build tests/VocabularyCheck/VocabularyCheck.csproj -v q --nologo
-./tests/VocabularyCheck/bin/Debug/net10.0/vocabulary-check.exe    # 63 checks: the built-in table, no setup at all
+./tests/VocabularyCheck/bin/Debug/net10.0/vocabulary-check.exe    # 77 checks: the built-in table, no setup at all
 ```
 
 `VocabularyCheck` needs nothing but the framework: no Dorico, no host, no extraction step. It checks the table
