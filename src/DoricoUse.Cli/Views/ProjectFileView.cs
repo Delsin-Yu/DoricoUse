@@ -255,6 +255,7 @@ internal static partial class ProjectFileView
                 ["originator"] = score.Info.Originator,
             },
             ["players"] = Players(score.Players),
+            ["playerGroups"] = PlayerGroups(score.PlayerGroups),
             ["layouts"] = Layouts(score.Layouts),
             ["flows"] = Flows(score.Flows),
             ["staves"] = Staves(score.Staves),
@@ -403,8 +404,44 @@ internal static partial class ProjectFileView
         return array;
     }
 
-    private static JsonArray Layouts(IReadOnlyList<ProjectFileLayout> layouts)
+    /// <summary>
+    /// The score's player groups: the names and abbreviations a score gives its sections.
+    /// </summary>
+    /// <remarks>
+    /// This is the read the checklist's group item needs, and it is the only one there is: measured,
+    /// <c>Project.PlayerGroup.Rename?PlayerGroupID=&amp;Name=</c> is refused outright by Dorico 6.2.30
+    /// (<c>kError kCommandNotAllowed</c>, with no <c>Posting</c> line in its log), so a group's name and short name
+    /// cannot be set by command and <c>Project.PlayerGroup.New</c> is the only group command that runs. What the
+    /// file does carry is enough to verify all five groups: a 34-player project writes Woodwinds/Ww., Brass/Br.,
+    /// Percussion/Perc., Strings/Str. and Band/Bnd., each with the player ids that belong to it.
+    /// </remarks>
+    private static JsonArray PlayerGroups(IReadOnlyList<ProjectFilePlayerGroup> groups)
     {
+        var array = new JsonArray();
+
+        foreach (var group in groups)
+        {
+            var ids = new JsonArray();
+
+            foreach (var id in group.PlayerIds)
+            {
+                JsonArr.AddNumber(ids, id);
+            }
+
+            JsonArr.AddNode(array, new JsonObject
+            {
+                ["id"] = group.Id,
+                ["name"] = group.Name,
+                ["shortName"] = group.ShortName,
+                ["playerIds"] = ids,
+                ["insertionIndex"] = group.InsertionIndex,
+            });
+        }
+
+        return array;
+    }
+
+    private static JsonArray Layouts(IReadOnlyList<ProjectFileLayout> layouts)    {
         var array = new JsonArray();
 
         foreach (var layout in layouts)

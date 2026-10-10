@@ -53,6 +53,7 @@ internal sealed record ProjectFileScore(
     ProjectFileScoreInfo Info,
     IReadOnlyList<ProjectFilePlayer> Players,
     IReadOnlyList<ProjectFileLayout> Layouts,
+    IReadOnlyList<ProjectFilePlayerGroup> PlayerGroups,
     IReadOnlyList<ProjectFileFlow> Flows,
     IReadOnlyList<ProjectFileStave> Staves,
     IReadOnlyList<ProjectFileMeter> Meters,
@@ -235,6 +236,21 @@ internal sealed record ProjectFileInstrument(
     string? Name,
     int Staves,
     string? Range);
+
+/// <summary>
+/// One player group: the name and abbreviation a score gives a section of players.
+/// </summary>
+/// <param name="Id">The file's own <c>groupID</c>. Measured: a 34-player project writes 0 to 4 plus one placeholder at -1.</param>
+/// <param name="Name">The group's full name, e.g. <c>Woodwinds</c>.</param>
+/// <param name="ShortName">The group's abbreviation, e.g. <c>Ww.</c> — the one a staff label prints.</param>
+/// <param name="PlayerIds">The file's player entity ids in this group, in the order the group wrote them.</param>
+/// <param name="InsertionIndex">Where the group sits in the score's own order.</param>
+internal sealed record ProjectFilePlayerGroup(
+    int Id,
+    string? Name,
+    string? ShortName,
+    IReadOnlyList<int> PlayerIds,
+    int InsertionIndex);
 
 /// <summary>A part or the full score: what Dorico prints and exports.</summary>
 internal sealed record ProjectFileLayout(

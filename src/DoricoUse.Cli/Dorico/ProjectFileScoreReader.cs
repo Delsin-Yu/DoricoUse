@@ -233,6 +233,7 @@ internal static partial class ProjectFileScoreReader
         private readonly List<string> _pool;
         private readonly InfoDraft _info = new();
         private readonly List<PlayerDraft> _players = [];
+        private readonly List<PlayerGroupDraft> _playerGroups = [];
         private readonly List<LayoutDraft> _layouts = [];
         private readonly List<FlowDraft> _flows = [];
         private readonly List<NoteDraft> _notes = [];
@@ -580,6 +581,7 @@ internal static partial class ProjectFileScoreReader
                 "info" => WalkInfo(count),
                 "layouts" => WalkLayouts(count),
                 "scorePlayers" => WalkPlayers(count),
+                "scorePlayerGroups" => WalkPlayerGroups(count),
                 "flows" => WalkFlows(count),
                 "library" => WalkLibrary(count),
                 _ => SkipChildren(count),
@@ -881,6 +883,12 @@ internal static partial class ProjectFileScoreReader
                         instrument.Range))]))],
                 [.. _layouts.Select(layout => new ProjectFileLayout(
                     (int)layout.Id, (int)layout.Number, DisplayName(layout.Name), layout.Type))],
+                [.. _playerGroups.Select(group => new ProjectFilePlayerGroup(
+                    (int)group.Id,
+                    DisplayName(group.Name),
+                    DisplayName(group.ShortName),
+                    [.. group.PlayerIds.Select(id => (int)id)],
+                    group.InsertionIndex))],
                 [.. _flows.Select(flow => new ProjectFileFlow(
                     (int)flow.Id, flow.Name, flow.Streams, flow.Blocks, flow.Notes))],
                 staves,
@@ -1380,6 +1388,16 @@ internal static partial class ProjectFileScoreReader
         public string? CreatedVersion;
         public string? LastSavedVersion;
         public string? Originator;
+    }
+
+    /// <summary>One player group as the file writes it.</summary>
+    private sealed class PlayerGroupDraft
+    {
+        public long Id = -1;
+        public string? Name;
+        public string? ShortName;
+        public int InsertionIndex;
+        public List<long> PlayerIds { get; } = [];
     }
 
     private sealed class PlayerDraft

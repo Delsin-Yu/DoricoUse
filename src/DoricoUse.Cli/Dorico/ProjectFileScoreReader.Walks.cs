@@ -520,6 +520,66 @@ internal static partial class ProjectFileScoreReader
                 return ok;
             });
 
+        /// <summary>
+        /// The score's player groups, which is where the checklist's group names and abbreviations live.
+        /// </summary>
+        /// <remarks>
+        /// Measured on a 34-player project: each <c>scorePlayerGroup</c> writes <c>name</c> ("Woodwinds"),
+        /// <c>shortName</c> ("Ww."), <c>groupID</c>, <c>insertionIndex</c> and a comma-separated <c>playerIDs</c>, and
+        /// that project holds exactly the five groups the checklist names — Woodwinds/Ww., Brass/Br.,
+        /// Percussion/Perc., Strings/Str. and a Band/Bnd. that is not on the list. The group's own <c>name</c> and
+        /// <c>shortName</c> are therefore readable without a command, which matters because
+        /// <c>Project.PlayerGroup.Rename?PlayerGroupID=&amp;Name=</c> was measured to be refused outright
+        /// (<c>kError kCommandNotAllowed</c>, and no Posting line in Dorico's log).
+        /// </remarks>
+        private bool WalkPlayerGroups(long count)
+            => WalkItems(count, (_, children) =>
+            {
+                var group = new PlayerGroupDraft();
+
+                var ok = WalkChildren(
+                    children,
+                    (key, value) =>
+                    {
+                        switch (NameAt(key))
+                        {
+                            case "groupID": group.Id = Number(value); break;
+                            case "name": group.Name = Value(value); break;
+                            case "shortName": group.ShortName = Value(value); break;
+                            case "insertionIndex": group.InsertionIndex = (int)Number(value); break;
+                            case "playerIDs": group.PlayerIds.AddRange(Players(Value(value))); break;
+                        }
+
+                        return true;
+                    },
+                    (_, childCount, _) => SkipChildren(childCount));
+
+                _playerGroups.Add(group);
+
+                return ok;
+            });
+
+        /// <summary>The comma-separated player ids a group writes, as numbers.</summary>
+        private static List<long> Players(string? text)
+        {
+            if (string.IsNullOrWhiteSpace(text))
+            {
+                return [];
+            }
+
+            var ids = new List<long>();
+
+            foreach (var part in text.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            {
+                if (long.TryParse(part, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var id))
+                {
+                    ids.Add(id);
+                }
+            }
+
+            return ids;
+        }
+
         private bool WalkInstruments(long count, PlayerDraft player)
             => WalkItems(count, (_, children) =>
             {
