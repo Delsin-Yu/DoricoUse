@@ -78,13 +78,17 @@ has no automatic cover. `tools/smoke.ps1` is that cover: it runs the whole surfa
 prints one PASS/FAIL line per check with the JSON it saw, exiting non-zero when anything failed.
 
 ```powershell
-powershell -File tools/smoke.ps1                 # read-only
-powershell -File tools/smoke.ps1 -AllowWrite     # also note insert and session read --rebind
+powershell -File tools/smoke.ps1                             # read-only; the two write checks print SKIP
+powershell -File tools/smoke.ps1 -AllowWrite                 # also note insert and session read --rebind
+powershell -File tools/smoke.ps1 -AllowUnsafeScriptRunApi    # only for -p:ExposeUnsafeScriptRunApi=true builds
 ```
 
-Run it before a release, and after touching the host or the protocol. It prints the active document's title and
-score id first and writes nothing without `-AllowWrite`; `session read --rebind` saves a copy **and rebinds the open
-document to it**, so use a scratch project for that half.
+Run it before a release, and after touching the host or the protocol. It takes `-Exe <path>` (else the published
+binary, then the Debug build, then `dorico-use` on PATH) and `-JsonWidth 0` to print whole payloads. It prints the
+active document's title and score id first and writes nothing without `-AllowWrite`; `session read --rebind` saves
+a copy **and rebinds the open document to it**, so use a scratch project for that half. Exit `0` means every check
+ran and passed, `1` at least one failed, `2` nothing failed but something could not run (Dorico closed, or no
+document open) — a `not run` line is never success, which is what keeps a green run from being faked.
 
 ## Adding a feature
 
