@@ -659,3 +659,16 @@ Start block id: 1196 position: 0
 (`Not implemented - this may leave the score in an unpredictable state @ …streamwrapper.cpp:162`). A script can
 therefore read a stream by parsing `dump()`, and cannot yet be shown to write one.
 
+**The next probe is written and committed**: `tools/probe-scripting-writes.lua` walks the candidate constructor
+class-reps (`DoCore.MIDIPitchWithSpelling`, `NotatedLength`, `RhythmicLength`, `LogDuration`, …) the same way, and
+writes its findings incrementally so a half-way failure still leaves evidence. Run it with Dorico open:
+
+```bash
+dorico-use command send --name Script.RunScript \
+  --param "ScriptPath=<repo>/tools/probe-scripting-writes.lua" --param ShowConsole=false
+cat .spinney/scripting/probe4.out
+```
+
+If a `RhythmicLength` and a `MIDIPitchWithSpelling` can be built, the write itself is one more call:
+`stream:createNote(start, duration, pitch)`, verified against the file with `session read`.
+
