@@ -589,8 +589,8 @@ internal static class ExportView
         + $"want watched and re-run with a longer --wait-ms (e.g. {DefaultMusicXmlWaitMs}) so dorico-use is "
         + "watching while you confirm. Nor can the dialog be dismissed from here: while it is open Dorico's whole "
         + "command queue is stalled and other clients' commands pile up behind it, so press 确定 or 取消. "
-        + "Driving that dialog with a posted click on 确定 while this command waits is the one "
-        + "fully automatic route.";
+        + "Driving that dialog from outside (posting a click on 确定 to Dorico's window while this command waits) "
+        + "is the one fully automatic route.";
 
         if (NodeRead.Str(commandQueue, "verdict") == "stalled")
         {
