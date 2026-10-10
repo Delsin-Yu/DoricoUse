@@ -511,8 +511,8 @@ else
 
 Head(@"lyrics: a file with lyrics");
 
-// Every project on this machine has an empty lyric table, so this reader's non-empty path was written from the
-// application's own field vocabulary and had never been seen in data. One file settles it: a score carrying 4710
+// The reference corpus has an empty lyric table everywhere, so this reader's non-empty path was written from the
+// application's own field vocabulary with no file to try it on. One file settles it: a score carrying 4710
 // lyric elements - syllables under several verses, a translation line, and Chinese as well as Latin text. Its
 // numbers and its element/event link are asserted below; when it is not on the machine the block skips, which is
 // the honest outcome, because nothing else here can test it.

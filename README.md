@@ -272,14 +272,20 @@ Limits, reported as `caveats`:
   (frame geometry → measure mapping) is not derivable here: casting off is a layout computation and the file's own
   cache of it is empty.
 
-- **Lyrics are modelled but unverified against data.** Every one of the 88 project files on this machine has an
-  empty lyric table and not one element, so the reader is built on the *binary's* vocabulary
-  (`LyricElementDefinition`, `LyricEventDefinition`, `lyricElementID`, `lyricHyphen`, `kLyricSyllableType`, …) and
-  still reports `elements: 0` everywhere. `--lyrics` now returns `read`/`events`/`fields` plus **5 caveats** that
-  separate what is measured from what is inferred, and the one check that needs a real lyric is a documented `skip`.
-  To settle it, a file with lyrics is needed: add a syllable or two plus a second verse and a translation to a
-  *copy* of a score, save it as a new file, and run `file read --path <it> --lyrics`
-  (then `--tree LyricElementDefinition --depth 4` to see the raw truth).
+- **Lyrics are read, and that reading was checked against a score that has them.** The non-empty path was written
+  from the *binary's* vocabulary (`LyricElementDefinition`, `LyricEventDefinition`, `elementID`, `text`,
+  `kLyricSyllableType`, …) with no file to try it on, and then one file settled it: a score with 30810 notes and 43
+  players holds **8 lyric tables, 4710 elements and 4710 events**, and the guesses held — the id and the text sit in
+  `elementID` and `text`, a syllable carries `syllableType: kWholeWord`, `lineType: kVerse`, `lineLocation: kBelow`,
+  the first two syllables are the ones that were typed (`A-`, `lice`), text outside Latin-1 survives (the score
+  carries Chinese lines), and every event resolves to a real measure, beat and stave (event 129187 → measure 6,
+  beat 2, element 954, stave 834). The link is 1:1 across the whole file: 4710 `LyricElementDefinition` against
+  4710 `LyricEventDefinition`. `ProjectFileCheck` asserts exactly that in **15 checks**, which run wherever that
+  file is — where it is not, the block reports a single `skip`, which is what CI sees. `--lyrics` still returns
+  `read`/`events`/`fields` plus **5 caveats** that separate what is measured from what is inferred. Still
+  unverified: **which** lyric line is a verse and which is a translation (the checks only pin that the lines are
+  told apart), and no second file with lyrics has been read — every other file of the reference corpus still
+  answers `elements: 0`.
 - **Rests are gaps**, not events; **measures are derived** from the stored metre/bar-division events.
 - Not modelled: the score library's engraving options, frame → measure mapping, playback/mixer data and tremolo.
 - `scorelibrary.dtn` and the other supplementary members are listed but not parsed.
@@ -468,8 +474,8 @@ with the export's `<transpose>` table asserted), score-order and overlap invaria
 compared with the typed reader, that the report can be built three times in one process (a shared node parented
 twice throws), and every error path (`NotFound`, `NotAContainer`, `MissingScoreData`, `MalformedMember`,
 `UnsupportedScoreData`). 187 checks run and none is skipped on a machine that has the maintainer's scores: the ones
-that need a file which is not in the repository report `skip` instead, which is what CI sees — including the check
-that reads a real lyric.
+that need a file which is not in the repository report `skip` instead, which is what CI sees — the lyric block, for
+instance, is 15 checks reported there as a single `skip`.
 
 ```bash
 dotnet build tests/VocabularyCheck/VocabularyCheck.csproj -v q --nologo
@@ -509,7 +515,8 @@ parameter this build does not know is never refused.
    --from-start` and `--read` (write and prove in one call), the per-note spelling letter as a field, a `version`
    command, a proven Native AOT publish, and slurs/articulations/ties/beams/techniques/layout in `file read`.
 7. **Done** — the vocabulary extractor with enum validation, the unpublished-command diff (`docs/hidden-commands.md`)
-   and the scripting-layer analysis (`docs/scripting.md`), plus lyric *modelling* from the binary's own vocabulary.
+   and the scripting-layer analysis (`docs/scripting.md`), plus lyric reading, checked against a score that has
+   lyrics.
 8. **Next** — a `script read` command built on what §8 of `docs/scripting.md` proved (a Lua script can read the
    live document, and write to it, which is a channel the Remote Control API does not have; the remaining work is
    parsing `dump()` into the same JSON `file read` prints), a phrase that spans calls without restarting at the

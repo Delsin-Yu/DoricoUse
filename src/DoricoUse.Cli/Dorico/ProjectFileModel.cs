@@ -338,11 +338,12 @@ internal sealed record ProjectFileDynamicGroup(
 /// nothing in it is a leaf, so presence and size are both readable even when the shape of one lyric is not.
 /// <para>
 /// <see cref="Read"/> and <see cref="Events"/> are the attempt to read one, anchored on the field names the
-/// application itself uses for lyrics (see <c>--lyrics</c> caveats): every corpus file has an empty lyric table, so
-/// nothing here has ever been seen in data. <see cref="Shapes"/> stays exactly what it was — the ordered leaf names
-/// of each element — so a file that <i>does</i> have lyrics is readable even where the interpretation below is a
-/// guess. <see cref="EventTotal"/> is the number of lyric events found, which
-/// <see cref="Events"/> may cap.
+/// application itself uses for lyrics (see <c>--lyrics</c> caveats): every file of the reference corpus has an empty
+/// lyric table, so what follows was written from those field names with no file to try it on —
+/// <c>ProjectFileCheck</c> reads one that does have lyrics and asserts what comes out. <see cref="Shapes"/> stays
+/// exactly what it was — the ordered leaf names of each element — so a file that <i>does</i> have lyrics is readable
+/// even where the interpretation below is a guess. <see cref="EventTotal"/> is the number of lyric events found,
+/// which <see cref="Events"/> may cap.
 /// </para>
 /// </summary>
 internal sealed record ProjectFileLyrics(
