@@ -606,7 +606,6 @@ menu bar; either close it or untick **总是靠上**.
 | `.spinney/scripting/console1.lua` … `console8.lua` | the probes themselves |
 | `.spinney/scripting/usermacro.lua` | the macro the recorder wrote (§3F) |
 | `.spinney/scripting/from_lua.csv` | the file `doCommand` produced (§3E) |
-| `.spinney/scripting/exe-strings.txt` | 1.86 M printable strings from `Dorico6.exe` (24 MB) |
 | `.spinney/scripting/run-in-console.sh`, `snap-invoke.sh`, `wins.ps1` | the driving scripts used here |
 
 `.spinney/` is gitignored — the decisive transcripts are quoted in full in §3.
