@@ -146,7 +146,7 @@ closed the export dialog. That blind spot is why every payload carries two more 
 
 ```json
 {"ok":true,"command":"session status","status":{"…":"…"},
- "execution":{"state":"queued","evidence":"NoteInput.Enter: queued - posted with no Executing line 1 s later: the command is on Dorico's queue, not run, which is what a modal dialog does","log":"C:\Users\<you>\AppData\Roaming\Steinberg\Dorico 6\application.log","postings":1},
+ "execution":{"state":"queued","evidence":"NoteInput.Enter: queued - posted, with no Executing line 1 s later: the command is on Dorico's queue, not run, which is what a modal dialog does","log":"C:\Users\<you>\AppData\Roaming\Steinberg\Dorico 6\application.log","postings":1},
  "dialog":{"id":"dorico.export-musicxml","kind":"known","shape":"qt","class":"Qt6101QWindow","owner":"0x006C1132",
    "blocksQueue":true,"title":"导出MusicXML","description":"导出到哪里\n格式","textSource":"uia",
    "buttons":[{"id":"accept","alias":"yes","name":"确定","automationId":"…buttonBox.QPushButton","index":5,"role":"default","safe":true,"invokable":true},
@@ -165,7 +165,9 @@ closed the export dialog. That blind spot is why every payload carries two more 
   something to Dorico. It is read out of Dorico's own `application.log`, which echoes
   `Posting command (requested): <name>` and `Executing command: <name>`. A command that was posted with no
   `Executing` line has not run. A command Dorico refused leaves no `Posting` line at all, which is a different
-  outcome and is reported as one.
+  outcome and is reported as one. Both waits are bounded — a second for the `Posting` line, then a second for the
+  `Executing` one — so `queued` means "posted, and no `Executing` line within a second", and `unknown` means the
+  log showed neither, which is what a missing log or a second Dorico installation looks like.
 - **`blocksQueue` is a hint from the window class only**, never the queue fact: the modeless library manager
   (`Qt6101QWindowIcon`) is a window a user can see while Dorico keeps working 31 ms per command, and it is reported
   as not blocking. `execution` is the measurement.
@@ -194,7 +196,10 @@ dorico-use ui press --dialog dorico.export-musicxml --button accept     # or --b
 - **The payload's `dialog` is the state after the press**, and it is the only evidence there is. A press that
   closes its own window reported an error *after* it succeeded (`UIA_E_ELEMENTNOTAVAILABLE`), measured on the
   library manager's 关闭 button, so neither its acknowledgement nor its error is trusted: `pressed.elementGone`
-  records that case, and `dialog` says what is up now.
+  records that case, and `dialog` says what is up now. That re-probe waits for the press to have taken effect —
+  measured: 取消 closed the export dialog 82 ms *after* the press returned, so an immediate probe named the dialog
+  that had just been answered — up to a second, and a dialog still there after that second is reported as still
+  there rather than guessed away.
 - **Only measured dialogs are pressable.** The catalogue holds the dialogs whose real captions and labels were
   read — `dorico.export-musicxml`, the `dorico.folder-picker` it raises, and `dorico.unsaved-changes` (discard is
   丢弃, cancel is 取消, and discard is not safe). A dialog that is not in it is reported in full and refused with

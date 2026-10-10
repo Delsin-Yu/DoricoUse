@@ -27,6 +27,10 @@ Control API — see `README.md`.
 - 140 checks in `VocabularyCheck` over the two pure model files, which need no Dorico, no dialog and no Windows:
   id stability, the unknown-dialog hash, the button ordering rules, every catalogue entry's policy, every refusal
   code with its exit code, and the payload shape.
+- Eleven more checks over the execution verdict, driven by a fixture log that a check writes Dorico's own lines
+  into while the verdict waits — the one way to measure the retry and the offset rule with no dialog to raise:
+  the four verdicts, the offset at a line boundary and inside a line, and the payload that carries no `execution`
+  field. With the old offset rule put back, they fail with the payload this release fixes.
 
 ### Changed
 - **The CLI project targets `net10.0-windows`.** Reading Dorico's dialogs and pressing their buttons uses Win32 and
@@ -34,6 +38,21 @@ Control API — see `README.md`.
   that as a fact. A macOS port now has to exclude or replace that surface, which the README and `CONTRIBUTING.md`
   say outright instead of promising that nothing uses a Windows-only API.
 - `version.compatibility` reports `uiAutomation`; the two existing `version.build` flags are unchanged.
+
+### Fixed
+- **`execution` reported `unknown` in exactly the case it exists for.** The delta is read from the end of
+  `application.log`, and the line the verdict is made of — the command's own `Posting` line — is the *first* line
+  the log gains, so the rule that drops a half-written leading line dropped it every time. Measured against a live
+  Dorico 6.2.30 with the export dialog up: `command send --name NoteInput.Enter --no-verify` answered `kOK` and the
+  payload said `unknown` while the log held `Posting command (requested): NoteInput.Enter` at that exact offset.
+  The verdict is now read in two bounded phases — wait for the `Posting` line, then a second for the matching
+  `Executing` line — and an invocation that posted nothing by name carries no `execution` field at all instead of
+  an `unknown` standing on a log line of somebody else's.
+- **`ui press` reported the dialog it had just answered.** The re-probe ran immediately after the press, while the
+  Qt window was still on screen — measured: 取消 closed the export dialog 82 ms *after* the press returned — so the
+  payload's `dialog` and `pressed.afterDialog` named the dialog that had just gone. The re-probe now waits, for up
+  to a second, until that window is gone or another dialog has taken its place, and reports what is up then. The
+  fast path is untouched: `ui dialog` with nothing modal still measures 9 ms.
 
 ## [0.1.0] - 2026-10-11
 

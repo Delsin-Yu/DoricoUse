@@ -55,16 +55,17 @@ switch either.
 
 ## The modal-dialog surface
 
-`dialog` and `execution` are on every payload, and `ui dialog` / `ui press` answer a dialog. The design decisions are
-in the handover plan that produced it; what a contributor needs is three rules.
+`dialog` is on every payload and `execution` on one that posted a command, and `ui dialog` / `ui press` answer a
+dialog. The design decisions are in the handover plan that produced it; what a contributor needs is three rules.
 
 **Every file that needs a Windows API lives under `src/DoricoUse.Cli/Ui/`, and only the CLI project compiles it.**
 `ProjectFileCheck` and `VocabularyCheck` build CLI sources **by hand**, on `net10.0`, by listing them in
-`<Compile Include>` items — so a Win32 or UI Automation type in one of *those* files breaks both checks. The two
-files they do compile are the pure ones: `Ui/DialogModel.cs` (the ids, the ordering, the policy, the payload shape)
-and `Ui/DialogCatalogue.cs` (the whitelist). Both are plain records and rules, and that is deliberate: it is what
-makes the ids and the refusals testable without a dialog. **A rule that decides what an agent may press belongs in
-`DialogModel`, not in the Windows code.**
+`<Compile Include>` items — so a Win32 or UI Automation type in one of *those* files breaks both checks. The files
+they do compile from `Ui/` are the ones with no Windows API in them: `DialogModel.cs` (the ids, the ordering, the
+policy, the payload shape), `DialogCatalogue.cs` (the whitelist) and `LogQueue.cs` (the queue verdict, which reads
+a file and waits for it, and is checked against a fixture log the check writes Dorico's lines into). The first two
+are plain records and rules, and that is deliberate: it is what makes the ids and the refusals testable without a
+dialog. **A rule that decides what an agent may press belongs in `DialogModel`, not in the Windows code.**
 
 **There is no compiler switch for this surface.** The maintainer removed it from scope: every build carries the
 probe, the reader and the presser, and `version.compatibility.uiAutomation` states that as a fact rather than
