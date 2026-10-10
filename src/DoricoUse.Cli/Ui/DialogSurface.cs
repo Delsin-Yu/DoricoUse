@@ -27,6 +27,18 @@ internal static class DialogSurface
     /// <summary>How long <c>ui press --timeout-ms</c> waits for its dialog by default.</summary>
     public const int DefaultPressTimeoutMs = 0;
 
+    /// <summary>How often the re-probe after a press checks whether the transition has happened.</summary>
+    private static readonly TimeSpan SettleInterval = TimeSpan.FromMilliseconds(50);
+
+    /// <summary>How long the re-probe after a press waits for that transition.</summary>
+    /// <remarks>
+    /// Measured on 2026-10-11, pressing 取消 on the MusicXML export dialog: the press returned at 0.157 s into the
+    /// instrument's window log and the Qt window was gone by 0.239 s, 82 ms later. The bound is that measurement
+    /// with a wide margin, and the full bound is paid only by a button that leaves its dialog up (选择全部 does):
+    /// a dialog that closes is reported as soon as it has gone.
+    /// </remarks>
+    private static readonly TimeSpan SettleBudget = TimeSpan.FromMilliseconds(1000);
+
     private static long lastPeek;
     private static JsonObject? peeked;
 
@@ -257,9 +269,11 @@ internal static class DialogSurface
                 result["picker"] = picker;
             }
 
-            // Two probes, not one: the win32 presence probe is cheap and always answers, and the read behind it is
-            // what names the dialog that replaced this one.
-            var after = Describe(DialogProbe.Probe(), raw: false, out _);
+            // The re-probe waits, and that wait is the fix for the second measured defect: the press of 取消
+            // returned ok:true while the Qt dialog was still on screen and that window was destroyed 82 ms later,
+            // so an immediate re-probe named the dialog that had just been answered - the one thing this payload
+            // must never do.
+            var after = Describe(SettledAfterPress(window.Handle), raw: false, out _);
 
             result["dialog"] = after;
             pressed["afterDialog"] = after is null ? null : NodeRead.Str(after, "id");
@@ -287,6 +301,33 @@ internal static class DialogSurface
 
         // Authorize has already refused an id that is not there, so this cannot happen.
         throw new CliException("ButtonNotFound", $"No button '{buttonId}' in '{description.Id}'.", DialogModel.RefusalExitCode);
+    }
+
+    /// <summary>
+    /// The dialog that is up after a press, waiting for the press to have taken effect: the window that was pressed
+    /// is gone, a different dialog has taken its place, or the bound expires.
+    /// </summary>
+    /// <remarks>
+    /// The presence probe is the cheap Win32 fact, so this loop costs no UI Automation read per attempt; the read
+    /// runs once, on the settled answer. A dialog still up when the bound expires is reported as still up, which is
+    /// the truth for a button that does not close its dialog.
+    /// </remarks>
+    /// <param name="pressed">The window handle the button was pressed in.</param>
+    private static DialogPresence SettledAfterPress(nint pressed)
+    {
+        var deadline = Stopwatch.GetTimestamp() + (long)(SettleBudget.TotalMilliseconds * Stopwatch.Frequency / 1000);
+
+        while (true)
+        {
+            var presence = DialogProbe.Probe();
+
+            if (presence.Dialog is not { } window || window.Handle != pressed || Stopwatch.GetTimestamp() >= deadline)
+            {
+                return presence;
+            }
+
+            Thread.Sleep(SettleInterval);
+        }
     }
 
     private static DialogPresence WaitForDialog(int timeoutMs)
