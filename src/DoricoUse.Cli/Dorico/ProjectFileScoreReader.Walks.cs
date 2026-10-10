@@ -64,9 +64,16 @@ internal static partial class ProjectFileScoreReader
             });
 
         /// <summary>
-        /// One layout's engraving options. Only the page box and the casting off are read: the rest is the engraving
-        /// and notation option tree, which <c>options get</c> reaches through Dorico itself.
+        /// One layout's engraving options. The page box, the casting off and the two <b>view-state</b> flags are
+        /// read: the rest is the engraving and notation option tree, which <c>options get</c> reaches through
+        /// Dorico itself.
         /// </summary>
+        /// <remarks>
+        /// Measured on a small project: <c>layoutOptions.transpositionType</c> is <c>kScoreInC</c> on its full score
+        /// and <c>kTransposingScore</c> on its part layout, and toggling the layout's transposition in Dorico (the
+        /// <c>transpositionType</c> option reads back as the new value live) changes exactly that field in the saved
+        /// file.
+        /// </remarks>
         private bool WalkLayoutOptions(long count, LayoutDraft layout)
             => WalkChildren(
                 count,
@@ -76,6 +83,7 @@ internal static partial class ProjectFileScoreReader
                     {
                         case "pagePairSetEntityID": layout.PageSet = Value(value); break;
                         case "defaultSpaceSize": layout.SpaceSize = Value(value); break;
+                        case "transpositionType": layout.TranspositionType = Value(value); break;
                     }
 
                     return true;
@@ -84,8 +92,34 @@ internal static partial class ProjectFileScoreReader
                 {
                     "pageSizeAndMarginOptions" => WalkPageSize(childCount, layout),
                     "castingOffOptions" => WalkCastingOff(childCount, layout),
+                    "condensingLayoutOptions" => WalkCondensing(childCount, layout),
                     _ => SkipChildren(childCount),
                 });
+
+        /// <summary>
+        /// One layout's condensing group, whose <c>enableCondensing</c> is the stored half of "enable the optimised
+        /// score" (checklist item 5).
+        /// </summary>
+        /// <remarks>
+        /// Measured on a small project, and the measurement is the reason this is a separate walk: the flag is not a
+        /// leaf of <c>layoutOptions</c> itself — that is where the first attempt looked and it always read null — but
+        /// of the <c>condensingLayoutOptions</c> node inside it. Toggling the layout's condensing in Dorico (the live
+        /// status then reads <c>condensingEnabled: true</c>) and saving a copy changed exactly this leaf, on that
+        /// layout only: the full score went to <c>true</c> and the part layout beside it stayed <c>false</c>.
+        /// </remarks>
+        private bool WalkCondensing(long count, LayoutDraft layout)
+            => WalkChildren(
+                count,
+                (key, value) =>
+                {
+                    if (NameAt(key) == "enableCondensing")
+                    {
+                        layout.Condensing = Value(value) == "true";
+                    }
+
+                    return true;
+                },
+                (_, children, _) => SkipChildren(children));
 
         /// <summary>The page box of one layout: <c>pageWidth</c>/<c>pageHeight</c> are in points, as are the margins.</summary>
         private bool WalkPageSize(long count, LayoutDraft layout)
@@ -472,6 +506,7 @@ internal static partial class ProjectFileScoreReader
                             case "baseName": player.Name ??= Value(value); break;
                             case "displayShortName": player.ShortName = Value(value); break;
                             case "baseShortName": player.ShortName ??= Value(value); break;
+                            case "isSoloist": player.IsSoloist = Value(value) == "true"; break;
                         }
 
                         return true;

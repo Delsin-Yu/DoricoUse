@@ -58,6 +58,7 @@ internal static class SessionView
             },
             ["rhythmGrid"] = Clone(status, "rhythmicGridResolutionValue"),
             ["zoomPercent"] = Number(status, "zoomPercent"),
+            ["condensingEnabled"] = Clone(status, "condensingEnabled"),
         };
     }
 

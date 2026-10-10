@@ -461,6 +461,8 @@ internal static partial class ProjectFileView
                 ["number"] = layout.Number,
                 ["name"] = layout.Name,
                 ["type"] = layout.Type,
+                ["transpositionType"] = layout.TranspositionType,
+                ["condensing"] = layout.Condensing,
                 ["pageSet"] = layout.PageSet,
                 ["spaceSize"] = layout.SpaceSize,
                 ["pageWidth"] = layout.PageWidth,

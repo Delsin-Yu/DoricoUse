@@ -157,6 +157,15 @@ internal sealed record ProjectFileLayoutData(
     int FrameChainOverrides);
 
 /// <summary>One layout's page setup, in the file's own units (points — see the report's caveats).</summary>
+/// <param name="TranspositionType">
+/// The layout's view state: <c>kScoreInC</c> for a concert-pitch layout and <c>kTransposingScore</c> for one that
+/// shows transposing instruments at written pitch. This is the stored half of "enable the transposing view"
+/// (checklist item 6), and it is the field <c>options get --type layout --filter transpositionType</c> reads live.
+/// </param>
+/// <param name="Condensing">
+/// The layout's <c>enableCondensing</c>, which is the stored half of "enable the optimised score" (checklist item
+/// 5) and the same fact the live status reports as <c>condensingEnabled</c>. Null when the file states none.
+/// </param>
 internal sealed record ProjectFileLayoutPage(
     int LayoutId,
     string? Name,
@@ -166,6 +175,8 @@ internal sealed record ProjectFileLayoutPage(
     string? PageWidth,
     string? PageHeight,
     string? SpaceSize,
+    string? TranspositionType,
+    bool? Condensing,
     IReadOnlyList<ProjectFileTreeField> Margins,
     IReadOnlyList<ProjectFileTreeField> CastingOff,
     int FrameChainOverrides);
@@ -204,10 +215,18 @@ internal sealed record ProjectFileScoreInfo(
     string? Originator);
 
 /// <summary>A player (an instrumentalist) and the instruments it holds.</summary>
+/// <param name="IsSoloist">
+/// The file's own <c>isSoloist</c> on the <c>scorePlayer</c> node, which is what "the second violins must not be a
+/// soloist" (checklist item 3) is about. Measured: a section string player wrote <c>false</c>, and
+/// <c>Project.Player.SetAsSoloist?PlayerID=&amp;Set=true</c> turned it into <c>true</c> and renamed the player to
+/// <c>Solo Violin</c> in the saved file; the same command with <c>Set=false</c> left it <c>true</c>. Null when the
+/// file states none.
+/// </param>
 internal sealed record ProjectFilePlayer(
     int Id,
     string? Name,
     string? ShortName,
+    bool? IsSoloist,
     IReadOnlyList<ProjectFileInstrument> Instruments);
 
 internal sealed record ProjectFileInstrument(

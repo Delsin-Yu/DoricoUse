@@ -26,6 +26,7 @@
     <Compile Include="../../src/DoricoUse.Cli/Dorico/ProjectFile*.cs" />
     <Compile Include="../../src/DoricoUse.Cli/Dorico/NodeRead.cs" />
     <Compile Include="../../src/DoricoUse.Cli/Dorico/LiveReadDump.cs" />
+    <Compile Include="../../src/DoricoUse.Cli/Dorico/LivePlayersDump.cs" />
     <Compile Include="../../src/DoricoUse.Cli/Dorico/DoricoProtocol.cs" />
     <Compile Include="../../src/DoricoUse.Cli/Json/JsonArr.cs" />
     <Compile Include="../../src/DoricoUse.Cli/Views/Pattern.cs" />

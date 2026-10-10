@@ -718,6 +718,65 @@ Check("a dump without its header yields nothing rather than half-read data", Nod
 var empty = LiveReadDump.Parse(["dorico-use live read\t2", "score\t0\t6.2.30b6245", "notes\t0"], 0);
 Check("an empty dump says so in its caveats", (NodeRead.Arr(empty, "caveats") ?? []).Any(item => (NodeRead.Text(item) ?? string.Empty).Contains("No flow at all")));
 
+// Rehearsal marks are on the flow's timebase stream, not on a voice stream, and the lines below are the shape the
+// script writes for one. The printer text is Dorico's own: "300 (300): kRehearsalMarkEvent (id:69445) at 300" is
+// what the layer prints for a mark (docs/scripting.md §3C), and the measured fact that it carries no text is what
+// the null below asserts.
+var rehearsalRead = LiveReadDump.Parse(
+[
+    "dorico-use live read\t2",
+    "score\t7\t6.2.30b6245",
+    "stream\t1\t3\t2\tkNoteEvent=2",
+    "timebase\t1\t0\t4\tkBarDivisionEvent=2 kRehearsalMarkEvent=2",
+    "rehearsal\t1\t0\t69445\t300\t\t300 (300): kRehearsalMarkEvent (id:69445) at 300",
+    "rehearsal\t1\t0\t69460\t600\tB\t600 (600): kRehearsalMarkEvent (id:69460) at 600 \"B\"",
+    "notes\t0",
+], 0);
+
+var markCounts = NodeRead.Obj(rehearsalRead, "counts")!;
+Check("a timebase stream is counted apart from the voice streams", NodeRead.Long(markCounts, "timebaseStreams") == 1, NodeRead.Long(markCounts, "timebaseStreams")?.ToString());
+Check("the timebase kinds are kept out of the voice kinds", NodeRead.Int(NodeRead.Obj(rehearsalRead, "timebaseKinds"), "kRehearsalMarkEvent") == 2 && NodeRead.Int(NodeRead.Obj(rehearsalRead, "kinds"), "kRehearsalMarkEvent") is null, rehearsalRead.ToJsonString().Length.ToString());
+Check("the rehearsal marks are counted in counts", NodeRead.Long(markCounts, "rehearsals") == 2, NodeRead.Long(markCounts, "rehearsals")?.ToString());
+Check("a mark does not become a note", NodeRead.Long(markCounts, "notes") == 0 && NodeRead.Long(markCounts, "streams") == 1);
+
+var markList = NodeRead.Arr(rehearsalRead, "rehearsals")!;
+Check("a mark carries its position and its event id", NodeRead.Str(markList[0], "position") == "300" && NodeRead.Long(markList[0], "eventId") == 69445L, markList[0]?.ToJsonString());
+Check("a mark with no text in the printer's line reports null, not an empty string", NodeRead.Str(markList[0], "text") is null, NodeRead.Str(markList[0], "text"));
+Check("a quoted mark text is carried when the printer prints one", NodeRead.Str(markList[1], "text") == "B", NodeRead.Str(markList[1], "text"));
+Check("the printer's whole line is kept beside the parsed fields", (NodeRead.Str(markList[0], "line") ?? string.Empty).EndsWith("at 300", StringComparison.Ordinal), NodeRead.Str(markList[0], "line"));
+
+var markFlows = NodeRead.Arr(rehearsalRead, "flows")!;
+Check(
+    "a flow with no voice stream still reports its timebase stream",
+    NodeRead.Arr(markFlows[0], "timebaseStreams") is { Count: 1 } timebase && NodeRead.Int(timebase[0], "id") == 0,
+    markFlows[0]?.ToJsonString().Length.ToString());
+
+// The player read. There is no protocol request for players, so the listing is whatever the scripting layer
+// answered — including the members it does not implement, which are reported instead of being left looking null.
+var livePlayers = LivePlayersDump.Parse(
+[
+    "dorico-use live players\t1",
+    "score\t14\t6.2.30b6245",
+    "count\t2",
+    "player\t1\tPiano",
+    "member\t1\tinstruments\t1",
+    "memberfail\t1\tid\tnil",
+    "memberfail\t1\tsoloPlayer\tnil",
+    "player\t2\tViolin I",
+    "member\t2\tname\tViolin I",
+    "junk\t2\twhatever",
+]);
+
+Check("the player listing reports the count it was told", NodeRead.Int(livePlayers, "count") == 2 && NodeRead.Int(livePlayers, "reported") == 2, livePlayers.ToJsonString());
+Check("the score id comes through", NodeRead.Int(NodeRead.Obj(livePlayers, "score"), "openScoreId") == 14);
+var liveList = NodeRead.Arr(livePlayers, "players")!;
+Check("a player carries the text Dorico describes it with", NodeRead.Str(liveList[0], "described") == "Piano");
+Check("a member the layer answers is a field", NodeRead.Long(liveList[0], "instruments") == 1, NodeRead.Long(liveList[0], "instruments")?.ToString());
+Check("a member the layer refuses is named, not silently absent", (NodeRead.Arr(liveList[0], "unavailable") ?? []).Count == 2 && (NodeRead.Text(NodeRead.Arr(liveList[0], "unavailable")![0]) ?? string.Empty).StartsWith("id:", StringComparison.Ordinal));
+Check("a second player's answered member lands on that player", NodeRead.Str(liveList[1], "name") == "Violin I");
+Check("a line that is neither a player nor a member is counted, not guessed at", NodeRead.Arr(livePlayers, "unparsedLines") is { Count: 1 });
+Check("the caveats name the missing protocol request", (NodeRead.Arr(livePlayers, "caveats") ?? []).Any(item => (NodeRead.Text(item) ?? string.Empty).Contains("no Remote Control request that returns players")));
+
 Head($"dynamics against a second file: {FourthCorpus}");
 
 if (!File.Exists(FourthCorpus))

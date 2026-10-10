@@ -872,6 +872,7 @@ internal static partial class ProjectFileScoreReader
                     (int)player.Id,
                     DisplayName(player.Name),
                     DisplayName(player.ShortName),
+                    player.IsSoloist,
                     [.. player.Instruments.Select(instrument => new ProjectFileInstrument(
                         (int)instrument.Id,
                         instrument.EntityId,
@@ -915,6 +916,8 @@ internal static partial class ProjectFileScoreReader
                         layout.PageWidth,
                         layout.PageHeight,
                         layout.SpaceSize,
+                        layout.TranspositionType,
+                        layout.Condensing,
                         [.. layout.Margins],
                         [.. layout.CastingOff],
                         layout.FrameChainOverrides))],
@@ -1384,6 +1387,7 @@ internal static partial class ProjectFileScoreReader
         public long Id;
         public string? Name;
         public string? ShortName;
+        public bool? IsSoloist;
         public List<InstrumentDraft> Instruments { get; } = [];
     }
 
@@ -1414,6 +1418,8 @@ internal static partial class ProjectFileScoreReader
         public string? PageWidth;
         public string? PageHeight;
         public string? SpaceSize;
+        public string? TranspositionType;
+        public bool? Condensing;
         public int FrameChainOverrides;
         public List<ProjectFileTreeField> Margins { get; } = [];
         public List<ProjectFileTreeField> CastingOff { get; } = [];

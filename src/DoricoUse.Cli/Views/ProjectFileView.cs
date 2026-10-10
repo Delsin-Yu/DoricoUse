@@ -395,6 +395,7 @@ internal static partial class ProjectFileView
                 ["id"] = player.Id,
                 ["name"] = player.Name,
                 ["shortName"] = player.ShortName,
+                ["isSoloist"] = player.IsSoloist,
                 ["instruments"] = instruments,
             });
         }
@@ -720,6 +721,14 @@ internal static partial class ProjectFileView
             + "are relative to the page and to the other frames when 'contentRelative' is true, which is why the gaps "
             + "they write are not a rectangle — the numbers are reported as the file writes them, and no independent "
             + "source in the corpus confirms the frame geometry itself."),
+        (JsonNode?)JsonValue.Create(
+            "the two view-state fields are the read-back for two checklist items and nothing more. "
+            + "'transpositionType' is the layout's concert-pitch / transposing state: measured, a project's full "
+            + "score wrote 'kScoreInC' and its part layout 'kTransposingScore', and toggling that layout's "
+            + "transposition in Dorico (the live option path 'transpositionType' reads 'kTransposingScore' "
+            + "afterwards) changed exactly this field in the saved file. 'condensing' is the layout's "
+            + "'enableCondensing' and is the same fact the live status reports as 'condensingEnabled'; it is null "
+            + "when the file states no such option for that layout."),
     ];
 
     /// <summary>
