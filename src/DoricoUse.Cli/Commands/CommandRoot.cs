@@ -13,6 +13,12 @@ internal static class CommandRoot
         root.Subcommands.Add(SessionCommands.Build());
         root.Subcommands.Add(HostCommands.Build());
         root.Subcommands.Add(CommandCommands.Build());
+        root.Subcommands.Add(ProjectCommands.Build());
+        root.Subcommands.Add(OptionsCommands.Build());
+        root.Subcommands.Add(ScoreCommands.BuildLibrary());
+        root.Subcommands.Add(ScoreCommands.BuildPlayback());
+        root.Subcommands.Add(ScoreCommands.BuildProperties());
+        root.Subcommands.Add(NoteCommands.Build());
         return root;
     }
 

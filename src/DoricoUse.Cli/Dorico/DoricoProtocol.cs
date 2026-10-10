@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.Json.Nodes;
+using DoricoUse.Cli.Json;
 
 namespace DoricoUse.Cli.Dorico;
 
@@ -28,6 +29,16 @@ internal static class DoricoProtocol
     public const string IdGetAppInfo = "getappinfo";
     public const string IdGetCommands = "getcommands";
     public const string IdCommand = "command";
+    public const string IdGetFlows = "getflows";
+    public const string IdGetLayouts = "getlayouts";
+    public const string IdGetOptions = "getoptions";
+    public const string IdSetOptions = "setoptions";
+    public const string IdGetProperties = "getproperties";
+    public const string IdGetPlaybackTechniques = "getplaybacktechniques";
+    public const string IdGetLibraryCollections = "getlibrarycollections";
+
+    /// <summary>The library entries request is called "entities", not "entries".</summary>
+    public const string IdGetLibraryEntities = "getlibraryentities";
 
     // Response ids ("message" field of a response).
     public const string RidSessionToken = "sessiontoken";
@@ -35,6 +46,13 @@ internal static class DoricoProtocol
     public const string RidVersion = "version";
     public const string RidCommandList = "commandlist";
     public const string RidResponse = "response";
+    public const string RidFlowsList = "flowslist";
+    public const string RidLayoutsList = "layoutslist";
+    public const string RidOptionsList = "optionslist";
+    public const string RidPropertiesList = "propertieslist";
+    public const string RidPlaybackTechniquesList = "playbacktechniqueslist";
+    public const string RidLibraryCollectionsList = "librarycollectionslist";
+    public const string RidLibraryEntitiesList = "libraryentitieslist";
     public const string RidSelectionChanged = "selectionchanged";
     public const string RidOptionsChanged = "optionschanged";
     public const string RidLibraryChanged = "librarychanged";
@@ -90,6 +108,89 @@ internal static class DoricoProtocol
 
         return Object(("message", IdCommand), ("command", text.ToString()));
     }
+
+    // Option kinds, as Dorico spells them.
+    public const string OptionsEngraving = "kEngraving";
+    public const string OptionsLayout = "kLayout";
+    public const string OptionsNotation = "kNotation";
+
+    public static string GetFlows() => Object(("message", IdGetFlows));
+
+    public static string GetLayouts() => Object(("message", IdGetLayouts));
+
+    public static string GetProperties() => Object(("message", IdGetProperties));
+
+    public static string GetPlaybackTechniques() => Object(("message", IdGetPlaybackTechniques));
+
+    public static string GetLibraryCollections() => Object(("message", IdGetLibraryCollections));
+
+    public static string GetLibraryEntities(string collection)
+        => Object(("message", IdGetLibraryEntities), ("collection", collection));
+
+    /// <summary>Engraving options are global; layout options need a layout ID and notation options a flow ID.</summary>
+    public static string GetOptions(string optionsType, int? targetId)
+    {
+        var message = new JsonObject
+        {
+            ["message"] = IdGetOptions,
+            ["optionsType"] = optionsType,
+        };
+
+        if (targetId is not null)
+        {
+            message[IdKey(optionsType, plural: false)] = targetId.Value;
+        }
+
+        return message.ToJsonString();
+    }
+
+    /// <param name="values">Paths and values, as "path" and "value" per option.</param>
+    /// <param name="targetIds">Layout IDs for kLayout, flow IDs for kNotation, nothing for kEngraving.</param>
+    public static string SetOptions(
+        string optionsType,
+        IReadOnlyList<KeyValuePair<string, string>> values,
+        IReadOnlyList<int>? targetIds = null)
+    {
+        var message = new JsonObject
+        {
+            ["message"] = IdSetOptions,
+            ["optionsType"] = optionsType,
+        };
+
+        var optionValues = new JsonArray();
+
+        foreach (var (path, value) in values)
+        {
+            JsonArr.AddNode(optionValues, new JsonObject
+            {
+                ["path"] = path,
+                ["value"] = value,
+            });
+        }
+
+        message["optionvalues"] = optionValues;
+
+        if (targetIds is { Count: > 0 })
+        {
+            var ids = new JsonArray();
+
+            foreach (var id in targetIds)
+            {
+                JsonArr.AddNumber(ids, id);
+            }
+
+            message[IdKey(optionsType, plural: true)] = ids;
+        }
+
+        return message.ToJsonString();
+    }
+
+    private static string IdKey(string optionsType, bool plural) => optionsType switch
+    {
+        OptionsLayout => plural ? "layoutIDs" : "layoutID",
+        OptionsNotation => plural ? "flowIDs" : "flowID",
+        _ => plural ? "ids" : "id",
+    };
 
     private static string Object(params (string Key, string Value)[] pairs)
     {

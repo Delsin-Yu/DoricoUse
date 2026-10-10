@@ -188,7 +188,17 @@ internal sealed class HostServer(HostOptions options, HostLog log)
                 HostProtocol.OpConnect => (HostProtocol.Ok(await ConnectAsync(args, timeout).ConfigureAwait(false)), false),
                 HostProtocol.OpCommands => (HostProtocol.Ok(await CommandsAsync(args, timeout).ConfigureAwait(false)), false),
                 HostProtocol.OpCommand => (HostProtocol.Ok(await CommandAsync(args, timeout).ConfigureAwait(false)), false),
+                HostProtocol.OpSequence => (HostProtocol.Ok(await SequenceAsync(args, timeout).ConfigureAwait(false)), false),
+                HostProtocol.OpNoteInsert => (HostProtocol.Ok(await NoteInsertAsync(args, timeout).ConfigureAwait(false)), false),
                 HostProtocol.OpEvents => (HostProtocol.Ok(Events(args)), false),
+                HostProtocol.OpFlows => (HostProtocol.Ok(await FlowsAsync(timeout).ConfigureAwait(false)), false),
+                HostProtocol.OpLayouts => (HostProtocol.Ok(await LayoutsAsync(args, timeout).ConfigureAwait(false)), false),
+                HostProtocol.OpOptionsGet => (HostProtocol.Ok(await OptionsGetAsync(args, timeout).ConfigureAwait(false)), false),
+                HostProtocol.OpOptionsSet => (HostProtocol.Ok(await OptionsSetAsync(args, timeout).ConfigureAwait(false)), false),
+                HostProtocol.OpProperties => (HostProtocol.Ok(await PropertiesAsync(timeout).ConfigureAwait(false)), false),
+                HostProtocol.OpTechniques => (HostProtocol.Ok(await TechniquesAsync(timeout).ConfigureAwait(false)), false),
+                HostProtocol.OpLibraryCollections => (HostProtocol.Ok(await LibraryCollectionsAsync(timeout).ConfigureAwait(false)), false),
+                HostProtocol.OpLibraryEntities => (HostProtocol.Ok(await LibraryEntitiesAsync(args, timeout).ConfigureAwait(false)), false),
                 HostProtocol.OpShutdown => (HostProtocol.Ok(new JsonObject { ["stopping"] = true }), true),
                 _ => (HostProtocol.Error("UnknownOp", $"Unknown host operation '{op}'.", 1), false),
             };
@@ -295,7 +305,7 @@ internal sealed class HostServer(HostOptions options, HostLog log)
             throw new CliException("InvalidArgument", "The command operation needs a name.", 1);
         }
 
-        var parameters = ReadParameters(args);
+        var parameters = ReadParameterMap(NodeRead.Obj(args, "parameters"));
         var waitMs = Math.Clamp(NodeRead.Long(args, "waitMs") ?? 0, 0, 120_000);
         var verify = NodeRead.Bool(args, "verify") ?? true;
 
@@ -336,6 +346,612 @@ internal sealed class HostServer(HostOptions options, HostLog log)
         }, timeout + TimeSpan.FromMilliseconds(waitMs), _cts.Token).ConfigureAwait(false);
     }
 
+
+    private async Task<JsonObject> NoteInsertAsync(JsonObject args, TimeSpan timeout)
+    {
+        var notes = ReadStringArray(args, "notes");
+        var rest = NodeRead.Bool(args, "rest") ?? false;
+        var duration = NodeRead.Str(args, "duration");
+        var grid = NodeRead.Str(args, "grid");
+        var exit = NodeRead.Bool(args, "exit") ?? true;
+        var waitMs = Math.Clamp(NodeRead.Long(args, "waitMs") ?? 0, 0, 120_000);
+        var verify = NodeRead.Bool(args, "verify") ?? true;
+        var dryRun = NodeRead.Bool(args, "dryRun") ?? false;
+
+        if (notes.Count == 0 && !rest)
+        {
+            throw new CliException(
+                "InvalidArgument",
+                "note insert needs notes (--pitch/--octave or --notes) or --rest.",
+                1);
+        }
+
+        var steps = new List<Step>();
+        string? resolvedDuration = null;
+
+        if (!string.IsNullOrWhiteSpace(duration))
+        {
+            if (!NoteValue.TryResolve(duration, out resolvedDuration))
+            {
+                throw new CliException(
+                    "InvalidArgument",
+                    $"'{duration}' is not a note value. Use {NoteValue.Names()}.",
+                    1);
+            }
+
+            // The parameter is called LogDuration but it takes the rhythm value enum.
+            steps.Add(new Step("NoteInput.NoteValue", [new("LogDuration", resolvedDuration)]));
+        }
+
+        if (!string.IsNullOrWhiteSpace(grid))
+        {
+            // The grid is where the caret snaps; it is not the note value.
+            steps.Add(new Step("NoteInput.SetGridResolution", [new("RhythmicGridResolutionValue", grid)]));
+        }
+
+        foreach (var text in notes)
+        {
+            if (!NoteName.TryParse(text, out var pitch, out var octave, out var accidental))
+            {
+                throw new CliException(
+                    "InvalidArgument",
+                    $"Could not read the note name '{text}'. Write it like F#5, Bb4 or C4.",
+                    1);
+            }
+
+            if (accidental is not null)
+            {
+                steps.Add(new Step("NoteInput.SetAccidental", [new("Type", accidental)]));
+            }
+
+            steps.Add(new Step("NoteInput.Pitch", [new("Pitch", pitch), new("OctaveValue", Invariant(octave))]));
+
+            // No advance here: NoteInput.Pitch commits the note and moves the caret on by the current note value.
+            // Sending MoveAdvance as well would insert a rest after every note.
+        }
+
+        if (rest)
+        {
+            // Advancing the caret is what inserts a rest.
+            steps.Add(new Step("NoteInput.MoveAdvance"));
+        }
+
+        if (exit)
+        {
+            steps.Add(new Step("NoteInput.Exit"));
+        }
+
+        if (dryRun)
+        {
+            return new JsonObject
+            {
+                ["note"] = new JsonObject
+                {
+                    ["dryRun"] = true,
+                    ["notes"] = NotesJson(notes),
+                    ["rest"] = rest,
+                    ["duration"] = resolvedDuration,
+                    ["grid"] = grid,
+                    ["steps"] = StepsJson(steps),
+                    ["enterDecision"] = "Note input needs Write mode, and NoteInput.Enter is a toggle, so both are "
+                        + "sent only when the status says they are needed. Run without --dry-run to see which ones "
+                        + "were.",
+                },
+            };
+        }
+
+        var stepTimeout = timeout < TimeSpan.FromSeconds(5) ? timeout : TimeSpan.FromSeconds(5);
+        var statusTimeout = timeout;
+        var budget = (stepTimeout * (steps.Count + 2)) + statusTimeout + TimeSpan.FromMilliseconds(waitMs);
+
+        return await _keeper.ExecuteAsync("note insert", async client =>
+        {
+            var results = new JsonArray();
+            var started = Stopwatch.GetTimestamp();
+            var enteredNoteInput = false;
+
+            var status = await client.GetStatusAsync(statusTimeout, _cts.Token).ConfigureAwait(false);
+            var enteredWriteMode = false;
+
+            // A fresh project starts in Setup mode, where there is no caret to write at.
+            if (NodeRead.Str(status, "windowMode") is { } windowMode && windowMode != "kWriteMode")
+            {
+                var switchParameters = new List<KeyValuePair<string, string>> { new("WindowMode", "kWriteMode") };
+                var switchStarted = Stopwatch.GetTimestamp();
+                var switchAck = await client.SendCommandAsync(
+                    "Window.SwitchMode",
+                    switchParameters,
+                    stepTimeout,
+                    _cts.Token).ConfigureAwait(false);
+
+                enteredWriteMode = true;
+                JsonArr.AddNode(results, AckJson(
+                    "Window.SwitchMode",
+                    switchParameters,
+                    switchAck,
+                    (long)Stopwatch.GetElapsedTime(switchStarted).TotalMilliseconds));
+            }
+
+            if (NodeRead.Bool(status, "noteInputActive") != true)
+            {
+                var enterAck = await client.SendCommandAsync("NoteInput.Enter", null, stepTimeout, _cts.Token)
+                    .ConfigureAwait(false);
+
+                enteredNoteInput = true;
+                JsonArr.AddNode(results, AckJson("NoteInput.Enter", null, enterAck, 0));
+            }
+
+            string? stoppedAt = null;
+
+            foreach (var step in steps)
+            {
+                var stepStarted = Stopwatch.GetTimestamp();
+                var ack = await client.SendCommandAsync(step.Name, step.Parameters, stepTimeout, _cts.Token)
+                    .ConfigureAwait(false);
+
+                JsonArr.AddNode(results, AckJson(
+                    step.Name,
+                    step.Parameters,
+                    ack,
+                    (long)Stopwatch.GetElapsedTime(stepStarted).TotalMilliseconds));
+
+                if (NodeRead.IsError(ack))
+                {
+                    stoppedAt = step.Name;
+                    break;
+                }
+            }
+
+            var payload = new JsonObject
+            {
+                ["notes"] = NotesJson(notes),
+                ["rest"] = rest,
+                ["duration"] = resolvedDuration,
+                ["grid"] = grid,
+                ["enteredWriteMode"] = enteredWriteMode,
+                ["enteredNoteInput"] = enteredNoteInput,
+                ["steps"] = results,
+                ["roundTripMs"] = (long)Stopwatch.GetElapsedTime(started).TotalMilliseconds,
+            };
+
+            if (stoppedAt is not null)
+            {
+                payload["stoppedAt"] = stoppedAt;
+                payload["note"] = "The sequence stopped at the first command Dorico refused.";
+
+                return new JsonObject { ["note"] = payload };
+            }
+
+            if (!verify)
+            {
+                return new JsonObject { ["note"] = payload };
+            }
+
+            if (waitMs > 0)
+            {
+                await Task.Delay((int)waitMs, _cts.Token).ConfigureAwait(false);
+            }
+
+            var after = await client.GetStatusAsync(statusTimeout, _cts.Token).ConfigureAwait(false);
+            payload["status"] = SessionView.Status(after);
+            payload["note"] = "kOK only acknowledges receipt; the status shows the caret is where the commands left "
+                + "it, not which notes landed. Check the score (or an undo) to be sure.";
+
+            return new JsonObject { ["note"] = payload };
+        }, budget, _cts.Token).ConfigureAwait(false);
+    }
+
+    private static JsonObject AckJson(
+        string name,
+        List<KeyValuePair<string, string>>? parameters,
+        JsonObject ack,
+        long milliseconds)
+    {
+        var entry = new JsonObject
+        {
+            ["name"] = name,
+            ["ack"] = NodeRead.Str(ack, "code") ?? NodeRead.Str(ack, "message") ?? "unknown",
+        };
+
+        if (parameters is { Count: > 0 })
+        {
+            entry["parameters"] = ParametersJson(parameters);
+        }
+
+        var detail = NodeRead.Str(ack, "detail");
+
+        if (detail is not null)
+        {
+            entry["detail"] = detail;
+        }
+
+        if (milliseconds > 0)
+        {
+            entry["ms"] = milliseconds;
+        }
+
+        return entry;
+    }
+
+    private static JsonArray StepsJson(List<Step> steps)
+    {
+        var json = new JsonArray();
+
+        foreach (var step in steps)
+        {
+            var entry = new JsonObject { ["name"] = step.Name };
+
+            if (step.Parameters is { Count: > 0 })
+            {
+                entry["parameters"] = ParametersJson(step.Parameters);
+            }
+
+            JsonArr.AddNode(json, entry);
+        }
+
+        return json;
+    }
+
+    private static JsonArray NotesJson(List<string> notes)
+    {
+        var json = new JsonArray();
+
+        foreach (var note in notes)
+        {
+            JsonArr.AddText(json, note);
+        }
+
+        return json;
+    }
+
+    private static List<string> ReadStringArray(JsonObject args, string key)
+    {
+        var values = new List<string>();
+        var array = NodeRead.Arr(args, key);
+
+        if (array is null)
+        {
+            return values;
+        }
+
+        foreach (var item in array)
+        {
+            var text = NodeRead.Text(item);
+
+            if (!string.IsNullOrWhiteSpace(text))
+            {
+                values.Add(text);
+            }
+        }
+
+        return values;
+    }
+
+    private static string Invariant(int value) => value.ToString(System.Globalization.CultureInfo.InvariantCulture);
+
+    /// <summary>One command of a sequence, with the parameters it takes.</summary>
+    private sealed record Step(string Name, List<KeyValuePair<string, string>>? Parameters = null);
+
+    private async Task<JsonObject> SequenceAsync(JsonObject args, TimeSpan timeout)
+    {
+        var steps = NodeRead.Arr(args, "steps") ?? [];
+        var waitMs = Math.Clamp(NodeRead.Long(args, "waitMs") ?? 0, 0, 120_000);
+        var verify = NodeRead.Bool(args, "verify") ?? true;
+
+        if (steps.Count == 0)
+        {
+            throw new CliException("InvalidArgument", "The sequence operation needs at least one step.", 1);
+        }
+
+        return await _keeper.ExecuteAsync("sequence", async client =>
+        {
+            var results = new JsonArray();
+            var started = Stopwatch.GetTimestamp();
+            string? stoppedAt = null;
+
+            foreach (var step in steps)
+            {
+                var name = NodeRead.Str(step, "name");
+
+                if (string.IsNullOrWhiteSpace(name))
+                {
+                    throw new CliException("InvalidArgument", "Every sequence step needs a name.", 1);
+                }
+
+                var parameters = ReadParameterMap(NodeRead.Obj(step, "parameters"));
+                var stepStarted = Stopwatch.GetTimestamp();
+                var ack = await client.SendCommandAsync(name, parameters, timeout, _cts.Token).ConfigureAwait(false);
+
+                var entry = new JsonObject
+                {
+                    ["name"] = name,
+                    ["ms"] = (long)Stopwatch.GetElapsedTime(stepStarted).TotalMilliseconds,
+                    ["ack"] = NodeRead.Str(ack, "code") ?? NodeRead.Str(ack, "message") ?? "unknown",
+                };
+
+                if (parameters.Count > 0)
+                {
+                    entry["parameters"] = ParametersJson(parameters);
+                }
+
+                var detail = NodeRead.Str(ack, "detail");
+
+                if (detail is not null)
+                {
+                    entry["detail"] = detail;
+                }
+
+                JsonArr.AddNode(results, entry);
+
+                if (NodeRead.IsError(ack))
+                {
+                    stoppedAt = name;
+                    break;
+                }
+            }
+
+            var payload = new JsonObject
+            {
+                ["steps"] = results,
+                ["roundTripMs"] = (long)Stopwatch.GetElapsedTime(started).TotalMilliseconds,
+            };
+
+            if (stoppedAt is not null)
+            {
+                payload["stoppedAt"] = stoppedAt;
+                payload["note"] = "The sequence stopped at the first command Dorico refused.";
+                return payload;
+            }
+
+            if (!verify)
+            {
+                return payload;
+            }
+
+            if (waitMs > 0)
+            {
+                await Task.Delay((int)waitMs, _cts.Token).ConfigureAwait(false);
+            }
+
+            var status = await client.GetStatusAsync(timeout, _cts.Token).ConfigureAwait(false);
+            payload["status"] = SessionView.Status(status);
+            payload["note"] = "kOK only acknowledges receipt; status (or the window) is what proves the effect.";
+
+            return payload;
+        }, timeout * 4 + TimeSpan.FromMilliseconds(waitMs), _cts.Token).ConfigureAwait(false);
+    }
+
+    private Task<JsonObject> FlowsAsync(TimeSpan timeout)
+        => FetchAsync("flows", DoricoProtocol.RidFlowsList, DoricoProtocol.GetFlows(), ScoreView.Flows, timeout);
+
+    private Task<JsonObject> LayoutsAsync(JsonObject args, TimeSpan timeout)
+    {
+        var kind = NodeRead.Str(args, "kind");
+
+        return FetchAsync(
+            "layouts",
+            DoricoProtocol.RidLayoutsList,
+            DoricoProtocol.GetLayouts(),
+            response => ScoreView.Layouts(response, kind),
+            timeout);
+    }
+
+    private Task<JsonObject> PropertiesAsync(TimeSpan timeout)
+        => FetchAsync(
+            "properties",
+            DoricoProtocol.RidPropertiesList,
+            DoricoProtocol.GetProperties(),
+            ScoreView.Properties,
+            timeout);
+
+    private Task<JsonObject> TechniquesAsync(TimeSpan timeout)
+        => FetchAsync(
+            "playback techniques",
+            DoricoProtocol.RidPlaybackTechniquesList,
+            DoricoProtocol.GetPlaybackTechniques(),
+            ScoreView.Techniques,
+            timeout);
+
+    private Task<JsonObject> LibraryCollectionsAsync(TimeSpan timeout)
+        => FetchAsync(
+            "library collections",
+            DoricoProtocol.RidLibraryCollectionsList,
+            DoricoProtocol.GetLibraryCollections(),
+            ScoreView.LibraryCollections,
+            timeout);
+
+    private Task<JsonObject> LibraryEntitiesAsync(JsonObject args, TimeSpan timeout)
+    {
+        var collection = NodeRead.Str(args, "collection");
+
+        if (string.IsNullOrWhiteSpace(collection))
+        {
+            throw new CliException("InvalidArgument", "Library entities need a collection; see `library collections`.", 1);
+        }
+
+        return FetchAsync(
+            $"library entities {collection}",
+            DoricoProtocol.RidLibraryEntitiesList,
+            DoricoProtocol.GetLibraryEntities(collection),
+            ScoreView.LibraryEntities,
+            timeout);
+    }
+
+    private Task<JsonObject> OptionsGetAsync(JsonObject args, TimeSpan timeout)
+    {
+        var optionsType = ReadOptionsType(args);
+        var targetId = NodeRead.Int(args, "targetId");
+        var filter = NodeRead.Str(args, "filter");
+        var limit = (int)Math.Clamp(NodeRead.Long(args, "limit") ?? 200, 1, 5000);
+
+        GuardOptionsTarget(optionsType, targetId is not null ? [targetId.Value] : []);
+
+        return FetchAsync(
+            "options get",
+            DoricoProtocol.RidOptionsList,
+            DoricoProtocol.GetOptions(optionsType, targetId),
+            response => ScoreView.Options(response, filter, limit),
+            timeout);
+    }
+
+    private async Task<JsonObject> OptionsSetAsync(JsonObject args, TimeSpan timeout)
+    {
+        var optionsType = ReadOptionsType(args);
+        var values = ReadParameterMap(NodeRead.Obj(args, "values"));
+        var targets = ReadIntArray(args, "targets");
+        var verify = NodeRead.Bool(args, "verify") ?? true;
+
+        if (values.Count == 0)
+        {
+            throw new CliException("InvalidArgument", "options set needs at least one --value path=value.", 1);
+        }
+
+        GuardOptionsTarget(optionsType, targets);
+
+        return await _keeper.ExecuteAsync("options set", async client =>
+        {
+            var response = await client.Session.RequestAsync(
+                DoricoProtocol.RidResponse,
+                DoricoProtocol.SetOptions(optionsType, values, targets),
+                timeout,
+                _cts.Token).ConfigureAwait(false);
+
+            if (NodeRead.IsError(response))
+            {
+                throw new CliException(
+                    "DoricoError",
+                    $"Dorico refused setoptions: {NodeRead.Str(response, "detail") ?? "no detail"}",
+                    2);
+            }
+
+            var payload = new JsonObject
+            {
+                ["optionsType"] = optionsType,
+                ["ack"] = NodeRead.Str(response, "code") ?? "unknown",
+                ["set"] = ParametersJson(values),
+            };
+
+            if (!verify)
+            {
+                return payload;
+            }
+
+            var current = await client.Session.RequestAsync(
+                DoricoProtocol.RidOptionsList,
+                DoricoProtocol.GetOptions(optionsType, targets.Count > 0 ? targets[0] : null),
+                timeout,
+                _cts.Token).ConfigureAwait(false);
+
+            payload["verified"] = VerifyOptions(current, values);
+
+            return payload;
+        }, timeout * 2, _cts.Token).ConfigureAwait(false);
+    }
+
+    /// <summary>One protocol exchange projected into agent-friendly JSON.</summary>
+    private async Task<JsonObject> FetchAsync(
+        string what,
+        string expectedId,
+        string message,
+        Func<JsonObject, JsonObject> project,
+        TimeSpan timeout)
+        => await _keeper.ExecuteAsync(what, async client =>
+        {
+            var started = Stopwatch.GetTimestamp();
+            var response = await client.Session.RequestAsync(expectedId, message, timeout, _cts.Token)
+                .ConfigureAwait(false);
+
+            if (NodeRead.IsError(response))
+            {
+                throw new CliException(
+                    "DoricoError",
+                    $"Dorico refused {what}: {NodeRead.Str(response, "detail") ?? "no detail"}",
+                    2);
+            }
+
+            var payload = project(response);
+            payload["fetchMs"] = (long)Stopwatch.GetElapsedTime(started).TotalMilliseconds;
+
+            return payload;
+        }, timeout, _cts.Token).ConfigureAwait(false);
+
+    private static JsonObject VerifyOptions(JsonObject response, List<KeyValuePair<string, string>> values)
+    {
+        var options = NodeRead.Arr(response, "options") ?? [];
+        var verification = new JsonObject();
+
+        foreach (var (path, wanted) in values)
+        {
+            string? actual = null;
+            var found = false;
+
+            foreach (var option in options)
+            {
+                if (NodeRead.Str(option, "path") == path)
+                {
+                    actual = NodeRead.Str(option, "currentValue");
+                    found = true;
+                    break;
+                }
+            }
+
+            verification[path] = new JsonObject
+            {
+                ["wanted"] = wanted,
+                ["actual"] = actual,
+                ["found"] = found,
+                ["ok"] = found && actual == wanted,
+            };
+        }
+
+        return verification;
+    }
+
+    private static string ReadOptionsType(JsonObject args) => NodeRead.Str(args, "optionsType") switch
+    {
+        DoricoProtocol.OptionsLayout => DoricoProtocol.OptionsLayout,
+        DoricoProtocol.OptionsNotation => DoricoProtocol.OptionsNotation,
+        _ => DoricoProtocol.OptionsEngraving,
+    };
+
+    private static void GuardOptionsTarget(string optionsType, IReadOnlyList<int> targets)
+    {
+        if (optionsType == DoricoProtocol.OptionsEngraving)
+        {
+            return;
+        }
+
+        var name = optionsType == DoricoProtocol.OptionsLayout ? "--layout" : "--flow";
+
+        if (targets.Count == 0)
+        {
+            throw new CliException(
+                "InvalidArgument",
+                $"{optionsType} options are per layout or flow: pass {name} with an ID (`project layouts` lists them).",
+                1);
+        }
+    }
+
+    private static List<int> ReadIntArray(JsonObject args, string key)
+    {
+        var values = new List<int>();
+        var array = NodeRead.Arr(args, key);
+
+        if (array is null)
+        {
+            return values;
+        }
+
+        foreach (var item in array)
+        {
+            if (item is JsonValue value && value.TryGetValue<int>(out var number))
+            {
+                values.Add(number);
+            }
+        }
+
+        return values;
+    }
 
     private JsonObject Events(JsonObject args)
     {
@@ -382,10 +998,9 @@ internal sealed class HostServer(HostOptions options, HostLog log)
         return new JsonObject { ["host"] = host };
     }
 
-    private static List<KeyValuePair<string, string>> ReadParameters(JsonObject args)
+    private static List<KeyValuePair<string, string>> ReadParameterMap(JsonObject? map)
     {
         var parameters = new List<KeyValuePair<string, string>>();
-        var map = NodeRead.Obj(args, "parameters");
 
         if (map is null)
         {

@@ -12,6 +12,12 @@ internal static class Program
         "session",
         "host",
         "command",
+        "project",
+        "options",
+        "library",
+        "playback",
+        "properties",
+        "note",
     ];
 
     private static int Main(string[] args)

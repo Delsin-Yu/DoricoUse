@@ -1,4 +1,3 @@
-using System.Text.RegularExpressions;
 using System.Text.Json.Nodes;
 using DoricoUse.Cli.Dorico;
 using DoricoUse.Cli.Json;
@@ -69,8 +68,8 @@ internal static class CatalogueView
             }
 
             if (filter is not null
-                && !Matches(commandName, filter)
-                && !Matches(NodeRead.Str(command, "displayName"), filter))
+                && !Pattern.Matches(commandName, filter)
+                && !Pattern.Matches(NodeRead.Str(command, "displayName"), filter))
             {
                 continue;
             }
@@ -86,8 +85,7 @@ internal static class CatalogueView
         return matches;
     }
 
-    public static JsonObject Families(JsonArray commands)
-    {
+    public static JsonObject Families(JsonArray commands)    {
         var families = new JsonObject();
 
         foreach (var command in commands)
@@ -105,24 +103,5 @@ internal static class CatalogueView
         }
 
         return families;
-    }
-
-    /// <summary>A glob when the pattern has * or ?, a case-insensitive substring otherwise.</summary>
-    private static bool Matches(string? value, string pattern)
-    {
-        if (value is null)
-        {
-            return false;
-        }
-
-        if (!pattern.Contains('*', StringComparison.Ordinal) && !pattern.Contains('?', StringComparison.Ordinal))
-        {
-            return value.Contains(pattern, StringComparison.OrdinalIgnoreCase);
-        }
-
-        var regex = "^" + Regex.Escape(pattern).Replace("\\*", ".*", StringComparison.Ordinal)
-            .Replace("\\?", ".", StringComparison.Ordinal) + "$";
-
-        return Regex.IsMatch(value, regex, RegexOptions.IgnoreCase, TimeSpan.FromSeconds(1));
     }
 }

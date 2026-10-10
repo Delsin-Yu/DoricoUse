@@ -17,7 +17,17 @@ internal static class HostProtocol
     public const string OpConnect = "connect";
     public const string OpCommands = "commands";
     public const string OpCommand = "command";
+    public const string OpSequence = "sequence";
+    public const string OpNoteInsert = "note.insert";
     public const string OpEvents = "events";
+    public const string OpFlows = "flows";
+    public const string OpLayouts = "layouts";
+    public const string OpOptionsGet = "options.get";
+    public const string OpOptionsSet = "options.set";
+    public const string OpProperties = "properties";
+    public const string OpTechniques = "techniques";
+    public const string OpLibraryCollections = "library.collections";
+    public const string OpLibraryEntities = "library.entities";
     public const string OpShutdown = "shutdown";
 
     /// <summary>How long the host may take to answer before the CLI gives up on it.</summary>

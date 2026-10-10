@@ -14,6 +14,13 @@ namespace DoricoUse.Cli.Dorico;
 /// </remarks>
 internal sealed class DoricoSession : IAsyncDisposable
 {
+    /// <summary>
+    /// Passed as an expected id to complete on the next message Dorico sends, whatever it is. This is how a
+    /// message whose answer id is unknown gets discovered: status patches and notifications are skipped, since
+    /// they arrive on their own.
+    /// </summary>
+    public const string AnyMessageId = "*";
+
     private readonly ClientWebSocket _socket = new();
     private readonly ConcurrentQueue<PendingRequest> _pending = new();
     private readonly CancellationTokenSource _cts = new();
@@ -267,7 +274,7 @@ internal sealed class DoricoSession : IAsyncDisposable
         DropAbandoned();
 
         // An unsolicited status is a partial patch; the one answering getstatus is merged the same way.
-        if (id == DoricoProtocol.RidStatus && !NextExpects(id))
+        if (id == DoricoProtocol.RidStatus && !NextExpectsExactly(id))
         {
             Status.Apply(message);
             Record(id, message);
@@ -302,10 +309,10 @@ internal sealed class DoricoSession : IAsyncDisposable
             or DoricoProtocol.RidLibraryChanged
             or DoricoProtocol.RidPlaybackConfigurationChanged;
 
-    private bool NextExpects(string id)
+    private bool NextExpectsExactly(string id)
     {
         DropAbandoned();
-        return _pending.TryPeek(out var pending) && pending.Expects(id);
+        return _pending.TryPeek(out var pending) && pending.ExpectsExactly(id);
     }
 
     private void DropAbandoned()
@@ -370,7 +377,10 @@ internal sealed class DoricoSession : IAsyncDisposable
 
         public bool Abandoned { get; private set; }
 
-        public bool Expects(string id) => Array.IndexOf(_expectedIds, id) >= 0;
+        public bool Expects(string id)
+            => Array.IndexOf(_expectedIds, id) >= 0 || Array.IndexOf(_expectedIds, AnyMessageId) >= 0;
+
+        public bool ExpectsExactly(string id) => Array.IndexOf(_expectedIds, id) >= 0;
 
         public void Complete(JsonObject response) => Completion.TrySetResult(response);
 
