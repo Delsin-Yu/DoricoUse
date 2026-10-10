@@ -1304,6 +1304,9 @@ internal sealed class HostServer(HostOptions options, HostLog log)
 
         return await _keeper.ExecuteAsync("options set", async client =>
         {
+            // Setting an option changes the document Dorico has active, so it takes the same document guard.
+            await EnsureExpectedScoreAsync(client, args, timeout).ConfigureAwait(false);
+
             var response = await client.Session.RequestAsync(
                 DoricoProtocol.RidResponse,
                 DoricoProtocol.SetOptions(optionsType, values, targets),

@@ -146,7 +146,12 @@ internal static class SaveCopy
         TimeSpan timeout,
         CancellationToken cancellationToken,
         int? expectScore = null)
-        => SaveAsync(path, timeout, cancellationToken, expectScore, SendThroughHostAsync);
+        => SendThroughHostAsync(
+            SaveAsCommand,
+            [new KeyValuePair<string, string>(PathParameter, path)],
+            timeout,
+            cancellationToken,
+            expectScore);
 
     /// <summary>
     /// The same save, sent over a connection the caller already owns. <c>note insert --read</c> uses this so the
@@ -154,8 +159,10 @@ internal static class SaveCopy
     /// changes between the two would make File.SaveAs write somebody else's document.
     /// </summary>
     /// <remarks>
-    /// <paramref name="expectScore"/> is not sent here: a caller that owns the live connection guards the document
-    /// itself (a status read in the same exchange), because the guard is a host operation, not a Dorico parameter.
+    /// <paramref name="expectScore"/> is not sent over the wire here: this overload exists for a caller that
+    /// already owns the live connection (the host itself, for <c>note insert --read</c>), and such a caller must
+    /// guard the document with its own status read inside the same exchange. The route through the host process
+    /// is <see cref="SaveAsync(string, TimeSpan, CancellationToken, int?)"/>, which does pass the guard on.
     /// </remarks>
     public static Task<JsonObject> SaveAsync(
         string path,
@@ -174,11 +181,17 @@ internal static class SaveCopy
     }
 
     /// <summary>The default route: through the host process, which owns the Dorico connection.</summary>
+    /// <param name="expectScore">
+    /// Passed to the host as the document guard. It must travel with the request: the host refuses the command when
+    /// Dorico's active document is not this one, which is the only thing standing between a stale window and
+    /// <c>File.SaveAs</c> writing somebody else's project. It is not a Dorico parameter - it is a host-side check.
+    /// </param>
     private static async Task<JsonObject> SendThroughHostAsync(
         string name,
         IReadOnlyList<KeyValuePair<string, string>>? parameters,
         TimeSpan timeout,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        int? expectScore = null)
     {
         var parameterJson = new JsonObject();
 
@@ -194,6 +207,11 @@ internal static class SaveCopy
             ["waitMs"] = 0,
             ["verify"] = false,
         };
+
+        if (expectScore is not null)
+        {
+            args["expectScore"] = expectScore.Value;
+        }
 
         var payload = await HostClient
             .CallAsync(HostProtocol.OpCommand, args, timeout, cancellationToken)

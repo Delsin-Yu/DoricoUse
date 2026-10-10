@@ -104,6 +104,7 @@ internal static class OptionsCommands
         };
 
         var timeout = CommandRoot.TimeoutOption();
+        var expectScore = CommandRoot.ExpectScoreOption();
 
         var command = new Command("set", "Set option values, then read them back to prove it.")
         {
@@ -113,6 +114,7 @@ internal static class OptionsCommands
             flow,
             noVerify,
             timeout,
+            expectScore,
         };
 
         command.SetAction(parse => CommandRoot.RunAsync("options set", async () =>
