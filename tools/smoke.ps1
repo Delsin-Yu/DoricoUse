@@ -3,8 +3,8 @@
 
     WHAT THIS IS
       Nothing in CI can reach Dorico, so `session`, `host`, `project`, `options`, `library`, `playback`,
-      `properties`, `command`, `note`, `export` and the live half of `session read` have no regression cover at
-      all. This script is that cover, run by hand: it runs each of those paths once, parses the one JSON object
+      `properties`, `command`, `note`, `export`, `ui` and the live half of `session read` have no regression cover
+      at all. This script is that cover, run by hand: it runs each of those paths once, parses the one JSON object
       the CLI prints, asserts something real about it, and prints ONE line per check - `PASS  <name>` or
       `FAIL  <name>` plus the JSON it saw - so the output can be pasted into a release report.
       It exits non-zero when any check failed, and also when a check could not be run at all (Dorico closed, or
@@ -12,7 +12,7 @@
 
     HOW TO RUN IT
       powershell -NoProfile -File tools/smoke.ps1
-      powershell -NoProfile -File tools/smoke.ps1 -Exe src/DoricoUse.Cli/bin/Debug/net10.0/dorico-use.exe
+      powershell -NoProfile -File tools/smoke.ps1 -Exe src/DoricoUse.Cli/bin/Debug/net10.0-windows/dorico-use.exe
       pwsh      -NoProfile -File tools/smoke.ps1 -AllowWrite         # the write checks too (scratch project!)
       powershell -NoProfile -File tools/smoke.ps1 -AllowUnsafeScriptRunApi   # only for a build made with
                                                                             # -p:ExposeUnsafeScriptRunApi=true
@@ -30,8 +30,8 @@
 
       Where the CLI comes from, in order:
         1. -Exe, when given (a path, or a name looked up on PATH);
-        2. src/DoricoUse.Cli/bin/Release/net10.0/win-x64/publish/dorico-use.exe   (the published binary);
-        3. src/DoricoUse.Cli/bin/Debug/net10.0/dorico-use.exe                     (a plain build);
+        2. src/DoricoUse.Cli/bin/Release/net10.0-windows/win-x64/publish/dorico-use.exe (the published binary);
+        3. src/DoricoUse.Cli/bin/Debug/net10.0-windows/dorico-use.exe             (a plain build);
         4. `dorico-use` on PATH.
 
     WHAT IT TOUCHES
@@ -64,6 +64,7 @@
 
     EXIT CODES
       0  every check passed (SKIP is not a failure - it means -AllowWrite was not given)
+         the real dialogs are a printed checklist at the end of the run, not a check: a script cannot raise one
       1  at least one check FAILED
       2  no check failed, but at least one was not run (Dorico unreachable, or no document open)
 #>
@@ -116,6 +117,7 @@ $script:HostPidBeforeRestart = $null
 $script:HostPidAfterRestart  = $null
 $script:ReportedUnsafe      = $null
 $script:LastJson            = $null
+$script:Dialogue            = $null
 
 # --------------------------------------------------------------------------------------------------------------
 # Printing. Every line goes to stdout, so the whole run can be redirected into a file and pasted into a report.
@@ -348,8 +350,8 @@ function Resolve-SmokeExe {
     }
 
     $candidates = @(
-        (Join-Path $script:RepoRoot 'src\DoricoUse.Cli\bin\Release\net10.0\win-x64\publish\dorico-use.exe'),
-        (Join-Path $script:RepoRoot 'src\DoricoUse.Cli\bin\Debug\net10.0\dorico-use.exe')
+        (Join-Path $script:RepoRoot 'src\DoricoUse.Cli\bin\Release\net10.0-windows\win-x64\publish\dorico-use.exe'),
+        (Join-Path $script:RepoRoot 'src\DoricoUse.Cli\bin\Debug\net10.0-windows\dorico-use.exe')
     )
 
     foreach ($candidate in $candidates) {
@@ -823,6 +825,80 @@ Invoke-Check -Name 'command send --name Script.RunScript (must be refused)' -Arg
 }
 
 # --------------------------------------------------------------------------------------------------------------
+# the modal-dialog surface. Read-only: nothing here presses a button, and the two checks that need a real dialog
+# are printed by hand at the end, because a script cannot raise one.
+# --------------------------------------------------------------------------------------------------------------
+
+# The probe runs on every invocation, so a payload without the field means the funnel lost it - which is exactly
+# what this asserts while Dorico is live.
+Invoke-Check -Name 'session status carries the dialog field' -Arguments @('session', 'status') -Assert {
+    param($j, $code)
+
+    $ok = Assert-Ok $j $code
+    if ($ok -ne $true) { return $ok }
+
+    if ($j.PSObject.Properties.Name -notcontains 'dialog') {
+        return 'the payload has no `dialog` field: every payload must carry it, null when nothing is modal'
+    }
+
+    if ($null -eq $j.dialog) {
+        $script:Dialogue = $null
+        return $true
+    }
+
+    $script:Dialogue = $j.dialog
+
+    if ([string]::IsNullOrEmpty("$($j.dialog.id)")) { return 'dialog is present but carries no id' }
+    if ($null -eq $j.dialog.buttons) { return 'dialog is present but carries no buttons array' }
+    return $true
+}
+
+Invoke-Check -Name 'ui dialog' -Arguments @('ui', 'dialog') -Offline -Assert {
+    param($j, $code)
+
+    # Offline on purpose: this command needs no host and no document, so it runs and reports even with Dorico
+    # closed, and a probe that cannot run at all must say so rather than look like "nothing is modal".
+    $ok = Assert-Ok $j $code
+    if ($ok -ne $true) { return $ok }
+
+    if ($j.PSObject.Properties.Name -notcontains 'dialog') { return 'the payload has no `dialog` field' }
+    if ($null -eq $j.probe) { return 'probe is absent: the answer must say what the probe cost even when it found nothing' }
+    if ([string]::IsNullOrEmpty("$($j.probe.how)")) { return 'probe.how is absent' }
+    if ($j.probe.degraded -eq $true) { return ('the probe itself failed: {0}' -f (Format-Value $j.probe.error)) }
+
+    if ($null -eq $j.dialog) {
+        # The expected state on a Dorico with nothing modal, and the field the whole feature is built on.
+        $script:Dialogue = $null
+        return $true
+    }
+
+    # A dialog being up is not a failure of this check - it is a state the run has to report, because everything
+    # below it acts on whichever document Dorico has active.
+    $script:Dialogue = $j.dialog
+    Write-Line ('      NOTE  a modal dialog is up right now: {0} - {1}' -f (Format-Value $j.dialog.id), (Format-Value $j.dialog.title))
+    Write-Line ('            pressWith: {0}' -f (Format-Value $j.dialog.pressWith))
+    return $true
+}
+
+# The refusal is the contract, and it needs no dialog at all: with nothing modal there is nothing to press in.
+Invoke-Check -Name 'ui press with nothing modal refuses DialogNotFound' -Arguments @('ui', 'press', '--dialog', 'nope', '--button', 'b1') -Offline -Assert {
+    param($j, $code)
+
+    if ($null -eq $j) { return ('stdout was not one JSON object (exit code {0})' -f $code) }
+    if ($j.ok -eq $true) {
+        return ('the press was accepted, but nothing is modal: `pressed` is {0}' -f (Format-Value $j.pressed))
+    }
+
+    if ($code -ne 1) { return ('exit code was {0}, expected 1 for a refusal' -f $code) }
+    if ("$($j.error.code)" -ne 'DialogNotFound') { return ('error.code is {0}, expected DialogNotFound' -f (Format-Value $j.error.code)) }
+    if ($null -eq $j.error.message) { return 'the refusal carries no message' }
+    if ($j.PSObject.Properties.Name -notcontains 'dialog') { return 'the failure payload has no `dialog` field, but every payload must carry it' }
+
+    # A refusal is the caller's fault and a probe failure is not, so the two exit codes have to stay apart.
+    return $true
+}
+
+# --------------------------------------------------------------------------------------------------------------
 # reading the open document back: the live read is the default and has no side effect
 # --------------------------------------------------------------------------------------------------------------
 
@@ -988,6 +1064,26 @@ Invoke-WriteCheck -Name 'note insert (real write, at the start of the first flow
 
     return $true
 }
+
+# --------------------------------------------------------------------------------------------------------------
+# BY HAND: the real dialogs. A check cannot raise one, so this is a checklist rather than a check - it prints
+# nothing into the counts above and the run stays green without it. Raise ONE dialog at a time, read it, and
+# compare what came back with what the window really shows. Add a line here when a catalogue entry is added.
+#
+# For each one:  dorico-use ui dialog        (then, to answer it: ui press --dialog <id> --button <id>)
+#
+#   dorico.export-musicxml   raise it: dorico-use export musicxml --path .\export --wait-ms 120000
+#                            expect: title 导出MusicXML, buttons 确定/取消, two labelled 选择全部, one labelled
+#                            with a glyph, and pressWith pointing at `cancel`.
+#   dorico.folder-picker     raise it: ui press --dialog dorico.export-musicxml --button folder-picker
+#                            expect: title 选择文件夹, class #32770, buttons accept (classic id 1) and cancel (2).
+#                            It has NO file-name box, so ui press --path must refuse PickerNotSettable.
+#   dorico.unsaved-changes   raise it: change a scratch document, then close it (File.Close)
+#                            NOT MEASURED YET: its caption has never been read, so it is matched on the labels
+#                            丢弃 and 取消 alone, and 丢弃 must be refused without --allow-destructive.
+#
+# Everything else is reported as unknown and refused, which is the designed answer for a dialog nobody has read.
+# --------------------------------------------------------------------------------------------------------------
 
 # --------------------------------------------------------------------------------------------------------------
 # What the run added up to. Anything not run keeps the exit code non-zero, so a green run means every check ran.

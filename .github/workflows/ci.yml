@@ -43,14 +43,14 @@ jobs:
       - name: what was published
         shell: pwsh
         run: |
-          Get-Item src/DoricoUse.Cli/bin/Release/net10.0/win-x64/publish/dorico-use.exe |
+          Get-Item src/DoricoUse.Cli/bin/Release/net10.0-windows/win-x64/publish/dorico-use.exe |
             Select-Object FullName, Length
 
       - uses: actions/upload-artifact@v7
         with:
           name: dorico-use-win-x64
           path: |
-            src/DoricoUse.Cli/bin/Release/net10.0/win-x64/publish/dorico-use.exe
+            src/DoricoUse.Cli/bin/Release/net10.0-windows/win-x64/publish/dorico-use.exe
             README.md
             LICENSE
             NOTICE

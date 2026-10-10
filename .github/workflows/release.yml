@@ -54,7 +54,7 @@ jobs:
         # Read once, from the published binary, because the artifact is what the name and the notes have to
         # describe: the tag and the csproj are both just claims about it.
         shell: pwsh
-        working-directory: src/DoricoUse.Cli/bin/Release/net10.0/win-x64/publish
+        working-directory: src/DoricoUse.Cli/bin/Release/net10.0-windows/win-x64/publish
         run: |
           $v = & .\dorico-use.exe version | ConvertFrom-Json
           # `informational` is `<Version>+<commit sha>` once the SDK stamps the source revision. The zip name uses
@@ -70,7 +70,7 @@ jobs:
         # the artifact itself instead of trusting the command line. If a default ever flips, the release stops
         # here rather than handing out a binary with the scripting surface on.
         shell: pwsh
-        working-directory: src/DoricoUse.Cli/bin/Release/net10.0/win-x64/publish
+        working-directory: src/DoricoUse.Cli/bin/Release/net10.0-windows/win-x64/publish
         run: |
           $v = & .\dorico-use.exe version | ConvertFrom-Json
           # A missing group would make the check below vacuously false and pass, which is the one way this step
@@ -85,7 +85,7 @@ jobs:
         # licences and the changelog travel with the binary they describe.
         shell: pwsh
         run: |
-          $publish = 'src/DoricoUse.Cli/bin/Release/net10.0/win-x64/publish'
+          $publish = 'src/DoricoUse.Cli/bin/Release/net10.0-windows/win-x64/publish'
           $files = @("$publish/dorico-use.exe", 'README.md', 'LICENSE', 'NOTICE', 'CHANGELOG.md')
 
           # `if-no-files-found: error` in ci.yml's upload is the model: a zip that quietly lacks the licence is
