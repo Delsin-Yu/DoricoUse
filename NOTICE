@@ -33,6 +33,14 @@ are a short built-in table of the parameters it actually sends, each one either 
 taken from Dorico's own command catalogue. No extractor script ships, no per-user vocabulary file is generated, and
 no string table from Steinberg's binary is stored in this repository or in the released executable.
 
+## Prior work
+
+The Remote Control protocol was documented first by [Dorico.Net](https://github.com/scott-janssens/Dorico.Net)
+(MIT, © its contributors). No source code from that project is copied here: this repository's client was written
+from scratch, and Dorico.Net was used as a reference for message ids and parameter and enum spellings. Thanks
+also to the Dorico forum threads quoted in `docs/scripting.md`, which is where the shape of the Lua layer is
+described.
+
 ## Files you bring
 
 Test fixtures named in `tests/` are files on the maintainer's machine. They are **not** in this repository. If you

@@ -327,6 +327,11 @@ already running when `host serve` was asked to start.
 
 ## What is true about Dorico's API
 
+The protocol shapes recorded here were learned from and cross-checked against
+[Dorico.Net](https://github.com/scott-janssens/Dorico.Net) (MIT), the community library that documented Dorico's
+Remote Control API first. This project reimplements a much smaller client instead of depending on it; the enum
+spellings it validates come from the same source.
+
 Verified against Dorico Pro 6.2.30 on Windows 11:
 
 - WebSocket at `ws://127.0.0.1:4560`, one JSON object per message, **answers come back in request order**.

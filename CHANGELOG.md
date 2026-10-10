@@ -28,7 +28,7 @@ Control API — see `README.md`.
 - `error.data.stack` when `DORICO_USE_DEBUG` is set: an unexpected failure then carries its stack trace, which is
   what a bug report needs and what the JSON message alone never has.
 
-## [0.1.0] - 2026-10-10
+## [0.1.0] - 2026-10-11
 
 The first release: a stateless JSON CLI that lets an agent or a script steer a running Dorico, and a from-scratch
 decoder for `.dorico` files that needs no Dorico at all.
@@ -57,7 +57,12 @@ decoder for `.dorico` files that needs no Dorico at all.
 - **Tests** — `ProjectFileCheck` (153 checks against real projects and against Dorico's own MusicXML exports) and
   `VocabularyCheck` (96 checks; it extracts from a synthetic executable and needs no Dorico).
 
+### Thanks
+- Thanks to [Dorico.Net](https://github.com/scott-janssens/Dorico.Net) and the Dorico forum authors whose
+  measurements made this possible.
+
 ### Note
 - Windows is the only platform tested. Nothing in the tool uses a Windows-only API, so a macOS port is a
   contribution waiting to happen rather than a rewrite — see `CONTRIBUTING.md`.
 - A generic "send any protocol message" command is deliberately **not** shipped.
+- Tested against Dorico Pro 6.2.30 on Windows 11.
