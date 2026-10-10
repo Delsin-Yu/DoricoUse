@@ -108,12 +108,13 @@ string, not JSON — the `version` command is the one with the envelope.
 Every command acts on **whichever document Dorico has active**, and bringing any window to the front changes that —
 there is no query for it and no way to address a document. When more than one agent uses the same Dorico, that is
 how a save lands in someone else's project. So every **mutating** command (`command send`, `note insert`,
-`session read`, `export musicxml`, `export text`, `options set`) takes `--expect-score <id>`: the host reads the
-status first and refuses with `WrongActiveScore` (`error.data {expected, actual}`) when the active document is not
+`session read --rebind`, `export musicxml`, `export text`, `options set`) takes `--expect-score <id>`: the host reads
+the status first and refuses with `WrongActiveScore` (`error.data {expected, actual}`) when the active document is not
 the one named. `session status` and `host status` (`activeScoreId`) report the ID. The check runs inside the same
 gated exchange as the action, so the window between them is one round trip — a stolen focus can only cause a
-refusal. Verify it the way it can fail: `session read --expect-score 999` must refuse, and so must every other
-command in that list.
+refusal. A live read (`session read`, `note insert --read`) sends the same guard with the `Script.RunScript` command
+that does the reading, because that script also reads whichever document is active. Verify it the way it can fail:
+`session read --expect-score 999` must refuse, and so must every other command in that list.
 
 ### Entering notes
 
@@ -158,9 +159,18 @@ dorico-use note insert --notes "C5 E5" --duration minim --dry-run         # the 
 - **A click in the window is not a safe way to place the caret while note input is on**: Dorico treats it as
   entering a note at that point (position from x, pitch from y, tied to zoom and scroll). Turn note input off
   first, or accept the note.
-- `--read [--read-to <path>] [--limit n|all] [--measure m|a-b] [--player <glob>]` writes and proves in one call:
-  after the notes, the host saves a copy the way `session read` does and the CLI decodes it, so the payload
-  carries the notes that are really in the score. `read.*` has exactly `session read`'s shape.
+- `--read [--limit n|all]` writes and proves in one call: after the notes, the CLI has Dorico run the same
+  read-only script `session read` does by default and parses the file it wrote, so the payload carries the notes
+  that are really in the score while **nothing is saved and the document is not rebound**. `read.source` is
+  `"live"`, and `read.*` has exactly `session read`'s shape. `--limit` works on both routes; on the live route `0`
+  means every note.
+- `--read --read-rebind [--read-to <path>] [--limit n|all] [--measure m|a-b] [--player <glob>]` is the other route
+  to the same proof, kept for the exact data: Dorico saves a copy inside the same gated exchange (`File.SaveAs`)
+  and the CLI decodes it, so `read.score.notes` carries positions, MIDI numbers, accidentals and layout — at the
+  price of **the open document being rebound to that copy**. `--read-to`, `--measure` and `--player` only mean
+  anything here: without `--read-rebind` they are an `InvalidArgument` (exit 1) that points at
+  `session read --rebind`, and `--read-rebind` without `--read` is refused the same way. `--limit 0` means the
+  shape alone on this route.
 - **Chord input is a toggle with no query** (`NoteInput.StartEndChord`; its `Set` parameter is ignored and the
   status dumps are identical with it on and off). `note insert` toggles it around each chord group, so a chord
   comes out stacked unless the user had left chord input on by hand — which the CLI cannot detect.
@@ -186,7 +196,8 @@ is saved, nothing is rebound, and the document is untouched. In one invocation, 
 from Dorico's own printer (`dump()`), parsed with regular expressions, so **no MIDI number, accidental, dynamic
 value or layout** comes out of it, and a line this build cannot read is counted in `counts.unparsedLines` rather
 than guessed at. `pitch` here is the name the score prints, so it is the spelled name (a B flat is `Bb`, not
-`A#`). A live read also cannot filter by measure or player — those options belong to `--rebind`.
+`A#`). A live read also cannot filter by measure or player — those options belong to `--rebind`: `session read
+--rebind`, or `note insert --read --read-rebind` for the same proof in one call with the write.
 
 ```bash
 dorico-use command send --name Edit.SelectNone          # caret back to the top

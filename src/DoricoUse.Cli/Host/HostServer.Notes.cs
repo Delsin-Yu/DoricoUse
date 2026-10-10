@@ -28,15 +28,30 @@ internal sealed partial class HostServer
         var mode = NodeRead.Str(args, "mode");
         var fromStart = NodeRead.Bool(args, "fromStart") ?? false;
         var read = NodeRead.Bool(args, "read") ?? false;
+        var readRebind = NodeRead.Bool(args, "readRebind") ?? false;
         var readPath = NodeRead.Str(args, "readPath");
         var readOptions = ReadReadOptions(NodeRead.Obj(args, "readOptions"));
         string? requestedMode = null;
 
-        if (read && string.IsNullOrWhiteSpace(readPath))
+        // `--read` has two routes and only one of them saves a file, so the whole difference is this flag. The
+        // rebind route is File.SaveAs and needs a path; the live route is a read-only script the CLI runs after
+        // this call returns, so the host has nothing to do for it and must not ask for a path it will not use.
+        var rebind = read && readRebind;
+
+        if (readRebind && !read)
         {
             throw new CliException(
                 "InvalidArgument",
-                "note insert --read needs the path of the copy to save (the CLI resolves it from --read-to).",
+                "note insert --read-rebind says how --read reads, so it needs --read as well.",
+                1);
+        }
+
+        if (rebind && string.IsNullOrWhiteSpace(readPath))
+        {
+            throw new CliException(
+                "InvalidArgument",
+                "note insert --read --read-rebind needs the path of the copy to save (the CLI resolves it from "
+                + "--read-to).",
                 1);
         }
 
@@ -223,7 +238,12 @@ internal sealed partial class HostServer
 
             if (read)
             {
-                plan["read"] = ReadPlan(readPath!, readOptions);
+                // Each route says what it will do, because the difference between them is a side effect on the
+                // document the user has open, and --dry-run is where that difference has to be readable before
+                // anything is sent.
+                plan["read"] = rebind
+                    ? ReadPlan(readPath!, readOptions)
+                    : LiveReadPlan(PlannedReadLimit(args));
             }
 
             if (chordCount > 0)
@@ -245,9 +265,10 @@ internal sealed partial class HostServer
         // +3 covers the two conditional preamble commands (write mode, note input) and the note input mode.
         var budget = (stepTimeout * (steps.Count + 3)) + statusTimeout + TimeSpan.FromMilliseconds(waitMs);
 
-        if (read)
+        if (rebind)
         {
-            // Writing the copy and decoding it: the save is about a second, the watch budget is the rest.
+            // Writing the copy and decoding it: the save is about a second, the watch budget is the rest. The live
+            // route saves nothing, so it adds nothing here - its wait belongs to the CLI, which runs the read.
             budget += SaveCopy.DefaultWait + TimeSpan.FromSeconds(10);
         }
 
@@ -418,9 +439,13 @@ internal sealed partial class HostServer
             // inside the same gated exchange as the notes, because File.SaveAs saves whichever document is active
             // and a window that comes to the front in between would send the copy to somebody else's project; the
             // guard is read again immediately before the save. The CLI decodes the copy (see NoteReadback).
+            //
+            // The live route has nothing to do here: it saves no copy, so it has no proof to set up, and the CLI
+            // fills in `read` itself after this call returns (see LiveRead). Inventing a `read` object here would
+            // say a save happened when none did.
             async Task AddReadAsync()
             {
-                if (!read)
+                if (!rebind)
                 {
                     return;
                 }
@@ -456,12 +481,18 @@ internal sealed partial class HostServer
             var after = await client.GetStatusAsync(statusTimeout, _cts.Token).ConfigureAwait(false);
             payload["status"] = SessionView.Status(after);
             payload["mode"] = modePayload(NodeRead.Str(after, "noteInputMode"));
-            payload["note"] = read
+            payload["note"] = rebind
                 ? "kOK only acknowledges receipt; 'read' is the answer. Dorico was asked to write a copy of the "
-                    + "document it just wrote into (File.SaveAs, the same round trip as `session read`) and the CLI "
-                    + "decoded it, so read.score.notes is the position of every note that is really in the score."
-                : "kOK only acknowledges receipt; the status shows the caret is where the commands left it and the "
-                    + "mode that was in force, not which notes landed. Check the score (or an undo) to be sure.";
+                    + "document it just wrote into (File.SaveAs, the same round trip as `session read --rebind`) and "
+                    + "the CLI decoded it, so read.score.notes is the position of every note that is really in the "
+                    + "score. The document is rebound to that copy."
+                : read
+                    ? "kOK only acknowledges receipt; 'read' is the answer. After this returns the CLI has Dorico run "
+                        + "the read-only read script (Script.RunScript) against the document the notes went into and "
+                        + "parses the file that script wrote, so read.source is 'live' and read.notes is what the "
+                        + "score holds. Nothing is saved and the document is not rebound."
+                    : "kOK only acknowledges receipt; the status shows the caret is where the commands left it and the "
+                        + "mode that was in force, not which notes landed. Check the score (or an undo) to be sure.";
 
             await AddReadAsync().ConfigureAwait(false);
 
@@ -491,7 +522,7 @@ internal sealed partial class HostServer
         return planned;
     }
 
-    /// <summary>What the planned read would do, for the dry-run plan.</summary>
+    /// <summary>What the planned rebind read would do, for the dry-run plan.</summary>
     private static JsonObject ReadPlan(string path, ProjectFileView.Options options)
     {
         var measures = options.FirstMeasure is { } first && options.LastMeasure is { } last
@@ -502,6 +533,7 @@ internal sealed partial class HostServer
 
         return new JsonObject
         {
+            ["route"] = "rebind",
             ["path"] = path,
             ["saveCommand"] = $"{SaveCopy.SaveAsCommand}?{SaveCopy.PathParameter}={path}",
             ["options"] = new JsonObject
@@ -516,6 +548,42 @@ internal sealed partial class HostServer
                 + "copy (File.SaveAs) - see read.save.document.",
         };
     }
+
+    /// <summary>
+    /// The note limit the CLI resolved for a read, as it reached the host. Only the plan needs it: the live read
+    /// itself is handed the number by the CLI, and the rebind route carries its own options.
+    /// </summary>
+    private static int PlannedReadLimit(JsonObject args) => (int)Math.Clamp(
+        NodeRead.Long(args, "readLimit") ?? ProjectFileView.DefaultNoteLimit,
+        -1,
+        100_000);
+
+    /// <summary>
+    /// What the planned live read would do, for the dry-run plan: one read-only command, no save and no path.
+    /// </summary>
+    /// <remarks>
+    /// The number here is the one the CLI resolved and the note lines come from Dorico's own printer, so this route
+    /// can narrow how many notes are listed and nothing else: a measure or a player filter belongs to the copy the
+    /// rebind route saves, and both options are refused without --read-rebind.
+    /// </remarks>
+    private static JsonObject LiveReadPlan(int noteLimit) => new()
+    {
+        ["route"] = "live",
+        ["command"] = "Script.RunScript",
+        ["script"] = LiveRead.ScriptPath.Replace('\\', '/'),
+        ["output"] = LiveRead.OutputPath.Replace('\\', '/'),
+        ["saves"] = false,
+        ["path"] = null,
+        ["options"] = new JsonObject
+        {
+            // The script reads 0 as "every note", so the plan says that rather than repeating the number back.
+            ["noteLimit"] = noteLimit <= 0 ? null : noteLimit,
+        },
+        ["note"] = "After the notes are entered, the CLI has Dorico run the read-only read script "
+            + "(Script.RunScript, ShowConsole=false) and parses the file it writes: nothing is saved, no path is "
+            + "chosen and the document is not rebound. What comes back is the text Dorico's own printer writes, so "
+            + "read.source is 'live' and there is no measure or player to filter on.",
+    };
 
     /// <summary>
     /// The read options the CLI resolved: how many notes, which measures, which player.

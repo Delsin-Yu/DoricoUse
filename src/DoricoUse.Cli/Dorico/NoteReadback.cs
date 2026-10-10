@@ -3,8 +3,9 @@ using System.Text.Json.Nodes;
 namespace DoricoUse.Cli.Dorico;
 
 /// <summary>
-/// The half of <c>note insert --read</c> that must run inside the host: asking Dorico to write a copy of the
-/// document the notes just went into.
+/// The half of <c>note insert --read --read-rebind</c> that must run inside the host: asking Dorico to write a copy
+/// of the document the notes just went into. The default <c>--read</c> does not come through here — it saves
+/// nothing, so its read is <see cref="LiveRead"/> and the CLI runs it after the notes.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -80,7 +81,8 @@ internal static class NoteReadback
             ["decodedFrom"] = path,
             ["sideEffects"] = new JsonArray((JsonNode?)JsonValue.Create(SaveCopy.SaveDocumentNote)),
             ["note"] = "The copy is written and the document is rebound to it. The payload's read carries the "
-                + "decoded project: read.score.notes is what is really in the score now.",
+                + "decoded project: read.score.notes is what is really in the score now. This is the rebind route "
+                + "only - the default live read saves nothing and fills in its own payload.",
         };
     }
 }

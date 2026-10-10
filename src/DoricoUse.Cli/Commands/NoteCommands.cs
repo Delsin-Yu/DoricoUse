@@ -113,33 +113,46 @@ internal static class NoteCommands
 
         var read = new Option<bool>("--read")
         {
-            Description = "After the notes are entered, make Dorico save a copy of the document (File.SaveAs, the "
-                + "same round trip as `session read`) and decode it, so the payload carries the notes that are "
-                + "really in the score. One call writes and proves it.",
+            Description = "After the notes are entered, prove them by reading the running document - the same live "
+                + "read `session read` does by default: a read-only script, no save, no side effect, and the payload "
+                + "carries read.source \"live\". Add --read-rebind for the exact data instead.",
+        };
+
+        var readRebind = new Option<bool>("--read-rebind")
+        {
+            Description = "--read proves the notes by reading the running document (a read-only script, no save, no "
+                + "side effect); --read-rebind saves a copy instead, which gives the exact data but rebinds the open "
+                + "document to that copy. Needs --read, and it is the route --read-to, --measure and --player "
+                + "belong to.",
         };
 
         var readTo = new Option<string?>("--read-to")
         {
-            Description = "Where the copy for --read goes. Default: a timestamped file in the system temporary "
-                + "directory. An existing file is never overwritten, and the open document is rebound to the copy "
-                + "(that is File.SaveAs; see read.save.document).",
+            Description = "Where the copy for --read --read-rebind goes. Default: a timestamped file in the system "
+                + "temporary directory. An existing file is never overwritten, and the open document is rebound to "
+                + "the copy (that is File.SaveAs; see read.save.document). The live read (the default --read) saves "
+                + "nothing, so it takes no path and this option is refused without --read-rebind.",
         };
 
         var readLimit = new Option<string?>("--limit")
         {
-            Description = "How many notes the read-back returns: a count, 'all' for every note, or 0 for the shape "
-                + $"alone. Only used with --read; the default is {ProjectFileView.DefaultNoteLimit}.",
+            Description = "How many notes the read-back returns: a count, or 'all' for every note. Both routes take "
+                + $"it, and the default is {ProjectFileView.DefaultNoteLimit}. On --read-rebind 0 means the shape "
+                + "alone (a decoded file can describe a score without listing notes); the live read has no shape to "
+                + "report, so it reads 0 as every note.",
         };
 
         var readMeasure = new Option<string?>("--measure")
         {
-            Description = "Only read back notes in one measure (12) or a range (12-16). Only used with --read.",
+            Description = "Only read back notes in one measure (12) or a range (12-16). --read --read-rebind only: "
+                + "the live read walks the streams Dorico prints and has no measure to filter on.",
         };
 
         var readPlayer = new Option<string?>("--player")
         {
             Description = "Only read back notes of players, instruments or staves matching this glob, e.g. "
-                + "*Flute*. Only used with --read.",
+                + "*Flute*. --read --read-rebind only: the live read walks the streams Dorico prints and cannot "
+                + "name the player they belong to.",
         };
 
         var waitMs = new Option<int>("--wait-ms")
@@ -168,6 +181,7 @@ internal static class NoteCommands
             allowUnknownEnum,
             fromStart,
             read,
+            readRebind,
             readTo,
             readLimit,
             readMeasure,
@@ -260,6 +274,7 @@ internal static class NoteCommands
             }
 
             var readRequested = parse.GetValue(read);
+            var rebindRequested = parse.GetValue(readRebind);
             var readToValue = parse.GetValue(readTo);
             var measureValue = parse.GetValue(readMeasure);
             var playerValue = parse.GetValue(readPlayer);
@@ -275,22 +290,57 @@ internal static class NoteCommands
                     1);
             }
 
+            if (rebindRequested && !readRequested)
+            {
+                throw new CliException(
+                    "InvalidArgument",
+                    "--read-rebind says how --read reads, so it needs --read: add --read for the read-back, or drop "
+                    + "--read-rebind for a read that saves nothing.",
+                    1);
+            }
+
+            if (readRequested && !rebindRequested
+                && (readToValue is not null || measureValue is not null || playerValue is not null))
+            {
+                throw new CliException(
+                    "InvalidArgument",
+                    "--read-to, --measure and --player describe the copy that --read --read-rebind saves, and the "
+                    + "default --read saves no copy: it reads the running document with a read-only script, which "
+                    + "can only return the note lines Dorico prints. Add --read-rebind to use them, or use "
+                    + "`session read --rebind` for the exact data in a read of its own.",
+                    1);
+            }
+
+            // The one resolved limit, because both routes read it the same way out of --limit and only differ in
+            // what the number means to the reader behind them.
+            var readNoteLimit = limitValue is null
+                ? ProjectFileView.DefaultNoteLimit
+                : ProjectFileView.ParseLimit(limitValue);
+
             string? readPath = null;
             JsonObject? readOptions = null;
 
             if (readRequested)
             {
+                args["read"] = true;
+
+                // The host carries the number only so its dry-run plan can say which route was chosen; the live
+                // read itself gets it from the CLI, after this call returns.
+                args["readLimit"] = readNoteLimit;
+            }
+
+            if (readRequested && rebindRequested)
+            {
                 // Resolved here so a bad path or an existing file is a usage error (exit 1) before anything is
-                // written, and the host is handed a path that is already known to be free.
+                // written, and the host is handed a path that is already known to be free. Only this route does
+                // that: the live read writes no copy, so it must not create a folder or refuse a file either.
                 readPath = SaveCopy.Resolve(readToValue, DateTimeOffset.Now);
                 SaveCopy.RefuseExisting(readPath);
 
                 var measures = ProjectFileView.ParseMeasures(measureValue);
                 readOptions = new JsonObject
                 {
-                    ["noteLimit"] = limitValue is null
-                        ? ProjectFileView.DefaultNoteLimit
-                        : ProjectFileView.ParseLimit(limitValue),
+                    ["noteLimit"] = readNoteLimit,
                     ["player"] = playerValue,
                 };
 
@@ -300,7 +350,7 @@ internal static class NoteCommands
                     readOptions["lastMeasure"] = range.Last;
                 }
 
-                args["read"] = true;
+                args["readRebind"] = true;
                 args["readPath"] = readPath;
                 args["readOptions"] = readOptions;
             }
@@ -377,8 +427,12 @@ internal static class NoteCommands
 
             if (readRequested)
             {
-                // The read-back adds the save and the decode, inside the same host call.
-                budget += SaveCopy.DefaultWait + TimeSpan.FromSeconds(15);
+                // The rebind route adds the save and the decode, inside this same host call. The live route reads
+                // nothing in the host - its read is a second exchange after this one returns - so what it adds is
+                // the wait that read script gets, kept here so the command's budget does not silently omit it.
+                budget += rebindRequested
+                    ? SaveCopy.DefaultWait + TimeSpan.FromSeconds(15)
+                    : LiveRead.DefaultWait;
             }
 
             var payload = await HostClient
@@ -391,15 +445,29 @@ internal static class NoteCommands
             }
 
             // A dry run sends and writes nothing, so there is no file to wait for: skip the read half instead of
-            // blocking on a copy that will never appear.
+            // blocking on a copy or a script output that will never appear.
             if (readRequested && !parse.GetValue(dryRun))
             {
-                await CompleteReadAsync(
-                    payload,
-                    readOptions!,
-                    readPath!,
-                    CommandRoot.Timeout(parse, timeout),
-                    CancellationToken.None).ConfigureAwait(false);
+                var protocolTimeout = CommandRoot.Timeout(parse, timeout);
+
+                if (rebindRequested)
+                {
+                    await CompleteReadAsync(
+                        payload,
+                        readOptions!,
+                        readPath!,
+                        protocolTimeout,
+                        CancellationToken.None).ConfigureAwait(false);
+                }
+                else
+                {
+                    await CompleteLiveReadAsync(
+                        payload,
+                        readNoteLimit,
+                        parse.GetValue(expectScore),
+                        protocolTimeout,
+                        CancellationToken.None).ConfigureAwait(false);
+                }
             }
 
             return payload;
@@ -409,9 +477,43 @@ internal static class NoteCommands
     }
 
     /// <summary>
-    /// The second half of <c>--read</c>: wait for the copy the host asked Dorico to write, decode it, and put the
-    /// report into the same payload. This is the round trip <c>session read</c> performs, with the save already
-    /// done inside the host, using the shared <see cref="SaveCopy"/> helpers and the shared decoder
+    /// The second half of the default <c>--read</c>: read the document Dorico has open and put that report into the
+    /// note payload. It is exactly what <c>session read</c> does by default (<see cref="LiveRead.RunAsync"/>), run
+    /// after the notes instead of before them, so a live payload and a <c>session read</c> payload can be read the
+    /// same way - <c>read.source</c> is <c>"live"</c> in both.
+    /// </summary>
+    /// <remarks>
+    /// It runs in the CLI rather than inside the host's gated exchange on purpose: the notes are already entered and
+    /// the read has no side effect to keep inside the same gate (nothing is saved, nothing is rebound), so handing
+    /// the read script to Dorico is one more command like any other. <paramref name="expectScore"/> travels with
+    /// that command, because the host's guard is what refuses a window that changed in between.
+    /// </remarks>
+    private static async Task CompleteLiveReadAsync(
+        JsonObject payload,
+        int noteLimit,
+        int? expectScore,
+        TimeSpan timeout,
+        CancellationToken cancellationToken)
+    {
+        if (NodeRead.Obj(payload, "note") is not { } note)
+        {
+            return;
+        }
+
+        // The run's own wait for the script's output file is this number, so it must be at least
+        // LiveRead.DefaultWait; there is no copy to watch and no decode to run, so nothing else on the route needs
+        // budget.
+        var readWait = timeout < LiveRead.DefaultWait ? LiveRead.DefaultWait : timeout;
+
+        note["read"] = await LiveRead
+            .RunAsync(readWait, noteLimit, cancellationToken, expectScore)
+            .ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// The second half of <c>--read --read-rebind</c>: wait for the copy the host asked Dorico to write, decode it,
+    /// and put the report into the same payload. This is the round trip <c>session read --rebind</c> performs, with
+    /// the save already done inside the host, using the shared <see cref="SaveCopy"/> helpers and the shared decoder
     /// (<see cref="ProjectFileReader"/> plus <see cref="ProjectFileView"/>); nothing is re-implemented here.
     /// </summary>
     /// <remarks>

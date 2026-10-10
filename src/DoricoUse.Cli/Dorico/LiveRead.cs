@@ -16,6 +16,11 @@ namespace DoricoUse.Cli.Dorico;
 /// caveats it carries come from <see cref="LiveReadDump"/>, which is what turns that text into JSON.
 /// </para>
 /// <para>
+/// This is the read both <c>session read</c> and <c>note insert --read</c> do by default, in one invocation and
+/// without a save; asking for <c>--rebind</c> (or <c>note insert --read-rebind</c>) is how a caller opts into
+/// <see cref="SaveCopy"/> and the exact data instead.
+/// </para>
+/// <para>
 /// The scripting layer can crash Dorico when it is probed blindly (see <c>docs/scripting.md</c> §8). The script
 /// here calls five things only — <c>DoApp.DoApp</c>, <c>currentScore</c>, <c>flows</c>, <c>voiceStreams</c> and
 /// <c>dump</c> — and every one of them was exercised before it was shipped.
@@ -118,12 +123,33 @@ internal sealed class LiveRead
     /// script is deleted afterwards, and the only thing it ever did was write a file.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// The ack proves nothing — Dorico answers <c>kOK</c> to a <c>RunScript</c> that dies on its first line, and
     /// with <c>ShowConsole=false</c> there is nowhere for a Lua error to go — and it answers <c>kOK</c> just as
     /// readily when something modal is holding its command queue, in which case the script runs minutes later. The
     /// proof is the file, so this waits for it, and says exactly that when it never appears.
+    /// </para>
+    /// <para>
+    /// This is what both <c>session read</c> and <c>note insert --read</c> run by default; the <c>--rebind</c> form
+    /// of either reads a saved copy instead (<see cref="SaveCopy"/>).
+    /// </para>
     /// </remarks>
-    public static async Task<JsonObject> RunAsync(TimeSpan timeout, int noteLimit, CancellationToken cancellationToken)
+    /// <param name="timeout">
+    /// How long Dorico has to run the script and how long its output file is then watched for, so it has to cover
+    /// both.
+    /// </param>
+    /// <param name="noteLimit">How many notes to write. Zero or less means every note in every stream.</param>
+    /// <param name="cancellationToken">Cancellation.</param>
+    /// <param name="expectScore">
+    /// The document guard, when the caller knows which document it means: the script reads whichever document is
+    /// active, so the host is handed this with the <c>Script.RunScript</c> request and refuses the wrong one
+    /// (<c>WrongActiveScore</c>). Null sends no guard, which is what a caller with no document in mind wants.
+    /// </param>
+    public static async Task<JsonObject> RunAsync(
+        TimeSpan timeout,
+        int noteLimit,
+        CancellationToken cancellationToken,
+        int? expectScore = null)
     {
         var folder = Path.GetDirectoryName(OutputPath);
 
@@ -145,7 +171,8 @@ internal sealed class LiveRead
                     new("ShowConsole", "false"),
                 ],
                 timeout,
-                cancellationToken)
+                cancellationToken,
+                expectScore)
             .ConfigureAwait(false);
 
         var lines = await WaitForDumpAsync(timeout, cancellationToken).ConfigureAwait(false);

@@ -33,6 +33,12 @@ namespace DoricoUse.Cli.Dorico;
 /// than the file the user opened. That is a side effect of Dorico's own command, not of this helper, and the caller
 /// has to say so: <see cref="SaveDocumentNote"/> is the sentence the report carries.
 /// </para>
+/// <para>
+/// <b>Nothing here runs unless a caller asks for it by name.</b> The read this tool does by default is
+/// <see cref="LiveRead"/>, which writes no copy and touches nothing; going through a save is the opt-in second route
+/// (<c>session read --rebind</c>, <c>note insert --read --read-rebind</c>) and is opt-in because of the rebinding
+/// above.
+/// </para>
 /// </remarks>
 internal static class SaveCopy
 {
@@ -65,6 +71,11 @@ internal static class SaveCopy
     /// The absolute path to save to: <c>--to</c> when given, otherwise a timestamped file under
     /// <see cref="DefaultFolder"/>, i.e. in the system temporary directory.
     /// </summary>
+    /// <remarks>
+    /// Only a caller that is really going to save calls this: the default read (<see cref="LiveRead"/>) writes no
+    /// copy, so it must not create a folder — and <see cref="RefuseExisting"/> must not refuse a file — that
+    /// nothing was ever going to write to.
+    /// </remarks>
     public static string Resolve(string? requested, DateTimeOffset now)
     {
         var candidate = string.IsNullOrWhiteSpace(requested)
@@ -157,15 +168,16 @@ internal static class SaveCopy
             expectScore);
 
     /// <summary>
-    /// The same save, sent over a connection the caller already owns. <c>note insert --read</c> uses this so the
-    /// save happens inside the host's gated exchange with the notes, and not a round trip later — a window that
-    /// changes between the two would make File.SaveAs write somebody else's document.
+    /// The same save, sent over a connection the caller already owns. <c>note insert --read --read-rebind</c> uses
+    /// this so the save happens inside the host's gated exchange with the notes, and not a round trip later — a
+    /// window that changes between the two would make File.SaveAs write somebody else's document.
     /// </summary>
     /// <remarks>
     /// <paramref name="expectScore"/> is not sent over the wire here: this overload exists for a caller that
-    /// already owns the live connection (the host itself, for <c>note insert --read</c>), and such a caller must
-    /// guard the document with its own status read inside the same exchange. The route through the host process
-    /// is <see cref="SaveAsync(string, TimeSpan, CancellationToken, int?)"/>, which does pass the guard on.
+    /// already owns the live connection (the host itself, for <c>note insert --read --read-rebind</c>), and such a
+    /// caller must guard the document with its own status read inside the same exchange. The route through the
+    /// host process is <see cref="SaveAsync(string, TimeSpan, CancellationToken, int?)"/>, which does pass the
+    /// guard on.
     /// </remarks>
     public static Task<JsonObject> SaveAsync(
         string path,
@@ -193,12 +205,22 @@ internal static class SaveCopy
     /// Sends one Dorico command through the host and returns the host's receipt for it. Used by the live reader,
     /// which needs to run a script and not a save.
     /// </summary>
+    /// <param name="name">The Dorico command name.</param>
+    /// <param name="parameters">Its parameters.</param>
+    /// <param name="timeout">How long to wait for the answer.</param>
+    /// <param name="cancellationToken">Cancellation.</param>
+    /// <param name="expectScore">
+    /// The document guard, handed to the host exactly as <c>SaveAsync</c> hands it over. A live read has no save to
+    /// protect, but the script still runs against whichever document is active, so a caller that knows which one it
+    /// means says so here and the host refuses the wrong one.
+    /// </param>
     public static Task<JsonObject> SendCommandAsync(
         string name,
         IReadOnlyList<KeyValuePair<string, string>> parameters,
         TimeSpan timeout,
-        CancellationToken cancellationToken)
-        => SendThroughHostAsync(name, parameters, timeout, cancellationToken);
+        CancellationToken cancellationToken,
+        int? expectScore = null)
+        => SendThroughHostAsync(name, parameters, timeout, cancellationToken, expectScore);
 
     private static async Task<JsonObject> SendThroughHostAsync(
         string name,
