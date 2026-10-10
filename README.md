@@ -349,11 +349,14 @@ to Dorico to see whether they execute.
 recorder is exactly a keystroke log (a recorded macro is three `app:doCommand([[EventEdit.NavigateDown]])` lines),
 while the object model behind it is real but half-built — `score.flows/players/layouts` and `EventStream:dump()`
 read fine, and the convenient getters answer `Not implemented - this may leave the score in an unpredictable state
-@ streamwrapper.cpp:162`. That is why the community says scripting has no meaningful access to score data: the
-front door is a macro recorder. §8 of that document adds the **write** methods' own C++ signatures, obtained by
-calling them through `Script.RunScript` with the wrong number of arguments — `createNote(RhythmicLength,
-RhythmicLength, MIDIPitchWithSpelling)`, `createRest(start, duration)`, `deleteEventsInRange(start, end)` and
-friends are bound for real. Whether their C++ argument types can be built from Lua is the one thing still open.
+@ streamwrapper.cpp:162`. The community's verdict ("scripting has no meaningful access to score data") describes
+the front door, not the layer: a script **can write**. `docs/scripting.md` §8 has the verified run — a script built
+its arguments (`RhythmicLength(0)`, `MIDIPitchWithSpelling(MIDIPitch(60), NoteName.fromString('C'))`), called
+`stream:createNote(...)`, and `session read` found the note in the file Dorico wrote, field for field (event id,
+measure, position 0, duration 2, C4, spelling C, Flute 1, stream 196), with the score going 30810 → 30811 notes.
+The catch is that nothing there is documented or safe: probing the constructors blind **crashed Dorico once**
+(`tools/analyze_minidump.py` reads the dump, and §8 carries the ACCESS_VIOLATION inside the C++ exception machinery),
+so the write path is real but has to be walked one zero-argument call at a time.
 
 ## Architecture
 

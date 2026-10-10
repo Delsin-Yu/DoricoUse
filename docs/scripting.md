@@ -702,14 +702,34 @@ LengthUtils.getRhythmicDurationForRational() -> bool getRhythmicDurationForRatio
 
 So the three arguments `createNote` wants are all constructible from Lua: a `RhythmicLength` from a number, and a
 `MIDIPitchWithSpelling` from a `MIDIPitch` plus a `NoteName` — MIDI number and spelling letter, the same pair the
-project file stores. What is still missing is only a **document with a player** to write into (a fresh project is
-a Setup-mode shell with no staves) and one call:
+project file stores.
 
-```lua
-local stream = DoApp.DoApp().currentScore.flows[1].voiceStreams[1]
-stream:createNote(DoCore.RhythmicLength(0), DoCore.RhythmicLength(4),
-                  DoCore.MIDIPitchWithSpelling(DoCore.MIDIPitch(60), DoCore.NoteName.fromString('C')))
+**And it writes.** Run against a recovered document (8 flows, 43 players, 30810 notes), `tools/probe-scripting-writes.lua`
+reported:
+
+```
+flows 8        voice streams 104      stream EventStream ID: 196 kVoiceStream, 34 events
+notes before 27
+RhythmicLength(0) -> true 0            RhythmicLength(2) -> true 2
+MIDIPitch(60) -> true 60               NoteName.fromString("C") -> true C
+MIDIPitchWithSpelling(MIDIPitch(60), "C") -> true C4
+stream:createNote(0, 2, C4) -> true NoteEvent ID: 239342
+notes after 28
 ```
 
-verified with `session read` afterwards, which reports the score's notes from the file Dorico itself writes.
+Dorico stayed alive, and `session read` — which decodes the file Dorico itself writes — confirmed it at file level:
+the score went from **30810 notes to 30811**, and the note that appeared is the one the script asked for, field for
+field:
+
+```
+eventId 239342 | measure 1 beat 1 position 0 duration 2 | pitch C4 midi 60 spelling C
+player Flute 1 | stave 13 voice 1 stream 196
+```
+
+**So the verdict on "scripts can only replay recorded actions" is: that is what the front door offers, not what the
+layer can do.** A script can read the object graph (`score.flows/players/layouts`, `EventStream:dump()`) and write
+into it (`createNote(start, duration, pitch)`, and the same-shaped `createRest`, `createTuplet`, `createText`,
+`deleteEventsInRange`, `copyRange`, `moveRange`, `addPlayer`, …). What it cannot do is anything *convenient* or
+*safe*: there is no selection API, the structured accessors are deliberate stubs, nothing is documented, and poking
+the constructors blind crashes the application — as happened here, once.
 
