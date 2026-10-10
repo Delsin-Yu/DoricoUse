@@ -11,19 +11,16 @@
   </PropertyGroup>
 
   <!--
-    The check compiles the vocabulary's own sources instead of referencing the CLI: the CLI is an executable
-    with a top-level Program, and the point here is to exercise the extractor and the lookup with no Dorico, no
-    host and no 154 MB executable in sight.
-
-    EnumVocabulary sits beside SessionStore (it lives in the same per-user directory), so the session store and
-    the two files it reads come along; nothing here opens a socket.
+    The check compiles the vocabulary's own sources instead of referencing the CLI: the CLI is an executable with a
+    top-level Program. It needs nothing else - no Dorico, no host, no extracted file, and no Python: the table is
+    built in, which is the whole point of the check.
   -->
   <ItemGroup>
     <Compile Include="../../src/DoricoUse.Cli/CliException.cs" />
     <Compile Include="../../src/DoricoUse.Cli/Dorico/EnumVocabulary.cs" />
+    <Compile Include="../../src/DoricoUse.Cli/Dorico/NoteValue.cs" />
     <Compile Include="../../src/DoricoUse.Cli/Dorico/NodeRead.cs" />
     <Compile Include="../../src/DoricoUse.Cli/Dorico/DoricoProtocol.cs" />
-    <Compile Include="../../src/DoricoUse.Cli/Dorico/SessionStore.cs" />
     <Compile Include="../../src/DoricoUse.Cli/Json/JsonArr.cs" />
   </ItemGroup>
 

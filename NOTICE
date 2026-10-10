@@ -23,14 +23,15 @@ Everything here works with a Dorico installation the user already has and has li
 
 ## Reverse engineering, and the vocabulary question
 
-Commands, parameter names and enum spellings were learned by observing the application: its `application.log`
-(which echoes every command Dorico performs), the command catalogue it publishes over the API, and — for the
-unpublished surface — strings inside the executable on the maintainer's own machine.
+Commands, parameter names and the values their enums take were learned by observing the application: its
+`application.log` (which echoes every command Dorico performs), the command catalogue it publishes over the API,
+and the XML files Dorico itself exports. Some of the enum spellings in `EnumVocabulary` were seen in the
+application's own strings.
 
-The extracted vocabulary is **deliberately not** part of this repository. `tools/extract_vocabulary.py` reads a
-locally installed Dorico executable and writes a per-user file under `%LOCALAPPDATA%\dorico-use\` for local
-validation only; the list itself is never committed and never shipped. This is the same line the open-source
-Dorico clients drawn on here have kept.
+Nothing extracted in that way is distributed here, and there is nothing to extract: the values the CLI validates
+are a short built-in table of the parameters it actually sends, each one either read back from Dorico's status or
+taken from Dorico's own command catalogue. No extractor script ships, no per-user vocabulary file is generated, and
+no string table from Steinberg's binary is stored in this repository or in the released executable.
 
 ## Files you bring
 

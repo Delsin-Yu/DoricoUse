@@ -9,6 +9,14 @@ Control API — see `README.md`.
 
 ## [Unreleased]
 
+### Changed
+- The enum values the CLI validates are now a **built-in table** instead of a per-user file produced by an
+  extractor script: `command send`, `note insert --duration/--grid` and `options set --value` catch a typo out of
+  the box, with no setup step, and only for the parameters this build knows — a value for any other parameter goes
+  to Dorico unchecked, so a newer Dorico's spellings are never refused.
+- The vocabulary extractor and the `%LOCALAPPDATA%\dorico-use\vocabulary.json` mechanism are gone, along with the
+  need for Python in the tests.
+
 ### Added
 - Continuous integration: build, the two test projects, and a Native AOT publish on every push.
 

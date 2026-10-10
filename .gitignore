@@ -5,3 +5,7 @@ obj/
 *.suo
 TestResults/
 .spinney/
+
+# Python bytecode from the optional tools
+__pycache__/
+*.pyc

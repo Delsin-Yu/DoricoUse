@@ -56,7 +56,7 @@ Two things live outside the executable:
 
 | Path | What | Removing it |
 |---|---|---|
-| `%LOCALAPPDATA%\dorico-use\` | `session.json` (connection settings and the session token Dorico granted this client), `host.json` (the running host's pid and pipe), `host.log`, and `vocabulary.json` if you generated one | delete the folder |
+| `%LOCALAPPDATA%\dorico-use\` | `session.json` (connection settings and the session token Dorico granted this client), `host.json` (the running host's pid and pipe) and `host.log` | delete the folder |
 | a running `host` process | `host start` leaves one background process alive by design: the connection has to stay open for the status stream Dorico pushes | `dorico-use host stop` |
 
 **Upgrading: stop the host first.** A running host holds the executable open, so replacing it while it runs fails;
@@ -371,16 +371,18 @@ Verified against Dorico Pro 6.2.30 on Windows 11:
 The application carries far more than the remote API publishes, and two of the three additions here come from
 reading that surface rather than from the protocol. The repo ships the **extractors, never the extracted data**.
 
-**Enum validation.** Dorico answers `kOK` to an unknown enum value and silently substitutes another, so a typo in
-`--param` used to be invisible. `python tools/extract_vocabulary.py "<path to Dorico6.exe>"` scans the binary (it
-takes the executable as an argument; nothing is hard-coded) and writes **5384 `k` spellings, 9103 type names, 1182
-command literals and 6816 option paths** to `%LOCALAPPDATA%\dorico-use\vocabulary.json` — a per-user file that is
-never committed and never redistributed. With it present, `command send --param`, `note insert --duration/--grid`
-and `options set --value` refuse a spelling this build does not know and suggest the nearest ones
-(`LogDuration=kQuavor` → `kQuaver, kBreve, kSemiQuaver, kLong`), and `--allow-unknown-enum` overrides that when you
-mean it. With no vocabulary on the machine the value is accepted and the payload says why, so the tool still works
-for someone who never ran the extractor. A hit proves the spelling exists in that build, not that the parameter
-accepts it.
+**Enum validation.** Dorico answers `kOK` to an unknown enum value and silently substitutes another — an unknown
+`LogDuration` becomes a semibreve — so a typo in `--param` would otherwise be invisible until you heard the wrong
+music. The values of the parameters this build knows are **built into the CLI**: the note values, the note-input
+modes, the window modes, the grid resolutions, the accidental types and the option types. So
+`command send --param LogDuration=kQuavor` is refused before anything is sent, with the nearest spellings in the
+message and in `error.data` (`kQuaver`), and `--allow-unknown-enum` sends it anyway when you mean it. Nothing has
+to be installed, extracted or kept up to date for this to work.
+
+**Only those parameters are checked.** A value passed to any other parameter goes to Dorico unchecked, because a
+spelling this build has never heard of is far more likely to be something a newer Dorico accepts than a typo —
+refusing it would break working commands. The payload always says what happened: `vocabulary.source` is
+`"built in"`, and `vocabulary.lookedAt` lists each value that was checked and the verdict.
 
 **Unpublished commands.** `docs/hidden-commands.md` diffs the binary's command-name pool against the live
 catalogue: **1191 names in the application, 1029 of them published, 162 not** — including `File.New` (Ctrl+N),
@@ -433,16 +435,18 @@ against another, the per-note spelling letter matched onset by onset against a t
 with the export's `<transpose>` table asserted), score-order and overlap invariants, the generic tree walker
 compared with the typed reader, that the report can be built three times in one process (a shared node parented
 twice throws), and every error path (`NotFound`, `NotAContainer`, `MissingScoreData`, `MalformedMember`,
-`UnsupportedScoreData`). 132 checks pass and one is a documented `skip` — reading a real lyric, which needs a file
+`UnsupportedScoreData`). 153 checks pass and one is a documented `skip` — reading a real lyric, which needs a file
 with lyrics.
 
 ```bash
 dotnet build tests/VocabularyCheck/VocabularyCheck.csproj -v q --nologo
-./tests/VocabularyCheck/bin/Debug/net10.0/vocabulary-check.exe    # 96 checks: extraction + validation, no exe needed
+./tests/VocabularyCheck/bin/Debug/net10.0/vocabulary-check.exe    # 63 checks: the built-in table, no setup at all
 ```
 
-`VocabularyCheck` extracts from a small synthetic executable it writes itself, so it needs neither the 154 MB app
-nor Dorico; a check that cannot run reports `skip` instead of passing.
+`VocabularyCheck` needs nothing but the framework: no Dorico, no host, no extraction step. It checks the table
+against the code that uses it (the note values the CLI resolves are exactly the ones it validates), the shape rule,
+the refusal and its suggestions, and the one behaviour that matters for forward compatibility — a value for a
+parameter this build does not know is never refused.
 
 ## Troubleshooting
 

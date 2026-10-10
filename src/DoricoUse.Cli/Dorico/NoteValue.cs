@@ -138,6 +138,9 @@ internal static class NoteValue
     /// <summary>The spellings this class accepts outright, in the order the binary lists them.</summary>
     public static IReadOnlyList<string> Spellings => LogDurationSpellings;
 
+    /// <summary>Every spelling <see cref="TryResolve"/> accepts, including the older names and the dotted forms.</summary>
+    public static IReadOnlyCollection<string> AllSpellings => Known;
+
     public static string Names() => string.Join(
         ", ",
         "maxima/longa/breve, semibreve/whole, minim/half, crotchet/quarter, quaver/eighth, semiquaver/16th, "
