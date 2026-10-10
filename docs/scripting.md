@@ -672,3 +672,44 @@ cat .spinney/scripting/probe4.out
 If a `RhythmicLength` and a `MIDIPitchWithSpelling` can be built, the write itself is one more call:
 `stream:createNote(start, duration, pitch)`, verified against the file with `session read`.
 
+### 8.1 The answer: the argument types **can** be built, and one probe does crash Dorico
+
+The probes above were run through `Script.RunScript`. Two results, one of them costly.
+
+**It can crash the application, and a Lua `pcall` does not save you.** A probe that called candidate constructors
+with *several plausible argument counts* (`klass(4)`, `klass(60)`, `klass("C", 4)`) killed Dorico: the dump
+(`Dorico6.exe.<pid>.dmp`, 80 MB, written at the same minute the probe ran) shows an
+`ACCESS_VIOLATION` **inside the MSVC C++ exception machinery** — faulting instruction in
+`VCRUNTIME140.dll+0x1e137`, a stack full of `VCRUNTIME140_1` unwind helpers, read of an unmapped
+`0x206211ff8`. That is an exception thrown by a call going wrong while it unwound; `pcall` only catches a Lua
+error, and this never became one. `tools/analyze_minidump.py` reads such a dump without a debugger (exception
+record, module map, pseudo-stack) and is committed for next time.
+
+**The safe way in is a zero-argument call.** luabind resolves overloads *before* invoking, so `klass()` on a
+constructor that wants arguments answers with its signature and runs nothing. That produced:
+
+```
+RhythmicLength()            -> true  0          RhythmicLength(4)      -> true  4
+MIDIPitch()                 -> true  0          MIDIPitch(60)          -> true  60
+NoteName.fromString("C")    -> true  C          NoteName.fromString("F#") -> true F
+MIDIPitchWithSpelling()     -> void __init(luabind::argument const&, MIDIPitch, NoteName)
+MIDIPitchWithSpelling(MIDIPitch(60), NoteName.fromString("C"))  -> true  C4
+Interval()                  -> void __init(luabind::argument const&, IntervalDegree, IntervalType)
+TupletDefinition()          -> true  1:1 q      NotatedLength()        -> true  Notated length
+LogDuration / CaretLocation / AccidentalType -> not callable (no Lua constructor)
+LengthUtils.getRhythmicDurationForRational() -> bool getRhythmicDurationForRational(RhythmicLength const&, NotatedLength&)
+```
+
+So the three arguments `createNote` wants are all constructible from Lua: a `RhythmicLength` from a number, and a
+`MIDIPitchWithSpelling` from a `MIDIPitch` plus a `NoteName` — MIDI number and spelling letter, the same pair the
+project file stores. What is still missing is only a **document with a player** to write into (a fresh project is
+a Setup-mode shell with no staves) and one call:
+
+```lua
+local stream = DoApp.DoApp().currentScore.flows[1].voiceStreams[1]
+stream:createNote(DoCore.RhythmicLength(0), DoCore.RhythmicLength(4),
+                  DoCore.MIDIPitchWithSpelling(DoCore.MIDIPitch(60), DoCore.NoteName.fromString('C')))
+```
+
+verified with `session read` afterwards, which reports the score's notes from the file Dorico itself writes.
+

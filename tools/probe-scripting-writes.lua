@@ -1,21 +1,25 @@
--- Can the C++ argument types of the scripting write methods be built from Lua?
+-- Does a script actually write to the score? This is the final step of the scripting investigation.
 --
--- Run it with Dorico open, from a shell:
+-- Prerequisites, learned the hard way:
+--   * Dorico open, WITH a document that has at least one player - a brand-new project is a Setup-mode shell with
+--     no staves, so it has no voice stream to write into.
+--   * Your work saved: a probe like this has already crashed Dorico once, by calling C++ constructors with
+--     plausible-but-wrong argument lists (the crash was an ACCESS_VIOLATION inside the MSVC exception machinery,
+--     so a Lua pcall does not protect you). Everything below calls only constructors whose signatures are known,
+--     but "known" is not "safe".
+--
+-- Run it:
 --   dorico-use command send --name Script.RunScript \
 --     --param "ScriptPath=<repo>/tools/probe-scripting-writes.lua" --param ShowConsole=false
---   (adjust the path to wherever this file is), then read .spinney/scripting/probe4.out.
+--   cat .spinney/scripting/write-probe.out
 --
--- Why it is written this way: a RunScript without a console has no output channel, so a probe that dies
--- half-way leaves no trace at all - that happened once while writing this. The findings file is therefore
--- opened first and written as the probe goes, and the whole body runs inside pcall so a failure is recorded
--- rather than swallowed.
---
--- Introspection only: nothing here writes to the score. The write calls are made with the WRONG number of
--- arguments on purpose, which luabind rejects before it invokes anything, and its error text is the C++
--- signature of the method - that is how createNote's arguments became known.
+-- The output file is written and flushed line by line, so if the process dies the last line names the call that
+-- did it. Nothing is saved to disk by this script; the write lives in the document until you undecide it (Ctrl+Z),
+-- which is also what `session read` will show afterwards.
 
-local path = '<repo>/.spinney/scripting/probe4.out'
+local path = '<repo>/.spinney/scripting/write-probe.out'
 local file = io.open(path, 'w')
+
 local function w(...)
   local parts = {}
   for index = 1, select('#', ...) do parts[#parts + 1] = tostring((select(index, ...))) end
@@ -26,51 +30,68 @@ end
 local function attempt(label, body)
   local ok, result = pcall(body)
   w(label, '->', tostring(ok), tostring(result))
-  return result
+  return ok, result
 end
 
-w('=== probe4: can the write arguments be constructed? ===')
+w('=== write probe ===')
+local app = DoApp.DoApp()
+w('versionString', app.versionString)
 
-local ok = pcall(function()
-  local app = DoApp.DoApp()
-  w('versionString', app.versionString)
-  local score = app.currentScore
-  w('score', tostring(score))
-  local flow = score.flows[1]
-  local stream = flow.voiceStreams[1]
-  w('stream', tostring(stream))
+local score = app.currentScore
+w('score', tostring(score))
 
-  -- 1. Which of the registered helper classes are reachable as class-reps, and what does each constructor
-  --    want? A class-rep answers a wrong call with its signature.
-  local helpers = {
-    'MIDIPitchWithSpelling', 'MIDIPitch', 'NotatedLength', 'LogDuration', 'RhythmicLength',
-    'TupletDefinition', 'CaretLocation', 'Interval', 'AccidentalType', 'NoteName', 'DynamicIntensity', 'Variant',
-  }
+local flows = score.flows
+w('flows', tostring(#flows))
 
-  w('--- constructors on the DoCore class-reps ---')
-  for _, name in ipairs(helpers) do
-    local klass = attempt('DoCore.' .. name, function() return DoCore[name] end)
-    if klass then
-      attempt('   ' .. name .. '()', function() return klass() end)
-      attempt('   ' .. name .. '(4)', function() return klass(4) end)
-      attempt('   ' .. name .. '(4, 4)', function() return klass(4, 4) end)
-      attempt('   ' .. name .. '("C", 4)', function() return klass('C', 4) end)
-    end
-  end
+if #flows == 0 then
+  w('no flow in this document: open a project that has at least one player and run this again')
+  w('=== end ===')
+  file:close()
+  return
+end
 
-  w('--- the length helper, whose signature was seen earlier ---')
-  attempt('LengthUtils.getRhythmicDurationForRational()', function() return LengthUtils.getRhythmicDurationForRational() end)
-  attempt('DoCore.LengthUtils.getRhythmicDurationForRational()', function() return DoCore.LengthUtils.getRhythmicDurationForRational() end)
+local flow = flows[1]
+local streams = flow.voiceStreams
+w('voice streams', tostring(#streams))
 
-  -- 2. If a pitch and a length can be built, an actual write can be attempted next run - with the arguments
-  --    printed here. This probe stops short of writing on purpose.
-  w('--- what a write would need, restated ---')
-  attempt('stream.createNote()', function() return stream.createNote() end)
+if #streams == 0 then
+  w('no voice stream in this flow: the document has no staves yet')
+  w('=== end ===')
+  file:close()
+  return
+end
+
+local stream = streams[1]
+w('stream', tostring(stream))
+
+local function notes()
+  local count = 0
+  for _ in string.gmatch(stream:dump(), 'kNoteEvent') do count = count + 1 end
+  return count
+end
+
+w('notes before', notes())
+
+-- The three arguments, built from the types the registration exposes: a length from a number, and a pitch from a
+-- MIDI number plus the spelling letter - the same pair the project file stores.
+local Length = DoCore.RhythmicLength
+local Pitch = DoCore.MIDIPitch
+local Spelled = DoCore.MIDIPitchWithSpelling
+local Name = DoCore.NoteName
+
+w('--- building the arguments ---')
+attempt('RhythmicLength(0)', function() return Length(0) end)
+attempt('RhythmicLength(2)', function() return Length(2) end)
+attempt('MIDIPitch(60)', function() return Pitch(60) end)
+attempt('NoteName.fromString("C")', function() return Name.fromString('C') end)
+attempt('MIDIPitchWithSpelling(MIDIPitch(60), "C")', function() return Spelled(Pitch(60), Name.fromString('C')) end)
+
+w('--- the write itself ---')
+local ok, created = attempt('stream:createNote(0, 2, C4)', function()
+  return stream:createNote(Length(0), Length(2), Spelled(Pitch(60), Name.fromString('C')))
 end)
+w('created', tostring(created))
 
-if not ok then
-  w('the probe body failed; see the lines above')
-end
-
-w('=== end probe4 ===')
+w('notes after', notes())
+w('=== end ===')
 file:close()
