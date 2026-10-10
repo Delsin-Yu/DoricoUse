@@ -30,13 +30,13 @@ namespace DoricoUse.Cli.Dorico;
 internal sealed class LiveRead
 {
     /// <summary>How long the output file is allowed to take, after the script answers.</summary>
-    public static readonly TimeSpan DefaultWait = TimeSpan.FromSeconds(20);
+    public static readonly TimeSpan DefaultWait = LiveScript.DefaultWait;
 
     /// <summary>Where the script writes: a per-user file under the system temporary directory.</summary>
-    public static string OutputPath { get; } = Path.Combine(Path.GetTempPath(), "dorico-use", "live-read.tsv");
+    public static string OutputPath { get; } = Path.Combine(LiveScript.Folder, "live-read.tsv");
 
     /// <summary>Where the generated script is written before Dorico is asked to run it.</summary>
-    public static string ScriptPath { get; } = Path.Combine(Path.GetTempPath(), "dorico-use", "live-read.lua");
+    public static string ScriptPath { get; } = Path.Combine(LiveScript.Folder, "live-read.lua");
 
     /// <summary>
     /// The Lua the CLI asks Dorico to run. Generated rather than shipped as a file because Dorico's
@@ -112,11 +112,61 @@ internal sealed class LiveRead
         text.AppendLine("      end");
         text.AppendLine("    end");
         text.AppendLine("  end");
+        AppendTimebase(text);
         text.AppendLine("end");
         text.AppendLine("w('notes', written)");
         text.AppendLine("out:close()");
 
         return text.ToString();
+    }
+
+    /// <summary>
+    /// The Lua that walks one flow's <b>timebase</b> streams, where the bar divisions, the tonalities and the
+    /// rehearsal marks live.
+    /// </summary>
+    /// <remarks>
+    /// A separate block from the voice walk on purpose, and appended to it rather than folded into it: the
+    /// timebase stream is not a voice, so letting it into the stream lines would have moved
+    /// <c>counts.streams</c> and <c>kinds</c> for every document at once. Measured (<c>docs/scripting.md</c> §3C):
+    /// a timebase dump holds <c>kBarDivisionEvent</c>, <c>kTonalityDivisionEvent</c>,
+    /// <c>kImmediateTempoChangeEvent</c> and <c>kRehearsalMarkEvent</c> lines such as
+    /// <c>300 (300): kRehearsalMarkEvent (id:69445) at 300</c> — the position is there and so is the event id, and
+    /// whether the mark's own text is printed at all is what <c>rehearsal</c> lines report.
+    /// </remarks>
+    private static void AppendTimebase(StringBuilder text)
+    {
+        text.AppendLine("local timebase = flows[fi].timebaseStreams");
+        text.AppendLine("if timebase ~= nil then");
+        text.AppendLine("  for ti = 1, #timebase do");
+        text.AppendLine("    local stream = timebase[ti]");
+        text.AppendLine("    local ok3, message = pcall(function() return stream:dump() end)");
+        text.AppendLine("    if not ok3 then");
+        text.AppendLine("      w('timebase', fi, stream.id, '-1', 'dump failed: ' .. tostring(message))");
+        text.AppendLine("    else");
+        text.AppendLine("      local kinds = {}");
+        text.AppendLine("      local marks = {}");
+        text.AppendLine("      for line in string.gmatch(message, '[^\\n]+') do");
+        text.AppendLine("        local kind = string.match(line, '(k[A-Za-z]+Event)')");
+        text.AppendLine("        if kind then kinds[kind] = (kinds[kind] or 0) + 1 end");
+        text.AppendLine("        if kind == 'kRehearsalMarkEvent' then marks[#marks + 1] = line end");
+        text.AppendLine("      end");
+        text.AppendLine("      local summary = {}");
+        text.AppendLine("      local total = 0");
+        text.AppendLine("      for kind, count in pairs(kinds) do");
+        text.AppendLine("        summary[#summary + 1] = kind .. '=' .. count");
+        text.AppendLine("        total = total + count");
+        text.AppendLine("      end");
+        text.AppendLine("      table.sort(summary)");
+        text.AppendLine("      w('timebase', fi, stream.id, total, table.concat(summary, ' '))");
+        text.AppendLine("      for _, line in ipairs(marks) do");
+        text.AppendLine("        local id = string.match(line, '%(id:(%-?%d+)%)') or '-1'");
+        text.AppendLine("        local position = string.match(line, 'at ([^ ]+)') or ''");
+        text.AppendLine("        local text = string.match(line, '\"([^\"]*)\"') or ''");
+        text.AppendLine("        w('rehearsal', fi, stream.id, id, position, text, line)");
+        text.AppendLine("      end");
+        text.AppendLine("    end");
+        text.AppendLine("  end");
+        text.AppendLine("end");
     }
 
     /// <summary>
@@ -152,114 +202,22 @@ internal sealed class LiveRead
         CancellationToken cancellationToken,
         int? expectScore = null)
     {
-        var folder = Path.GetDirectoryName(OutputPath);
+        await LiveScript.WriteAsync(ScriptPath, Script(OutputPath, noteLimit), cancellationToken).ConfigureAwait(false);
 
-        if (string.IsNullOrEmpty(folder))
-        {
-            throw new CliException("RuntimeError", "The temporary folder could not be determined.", 2);
-        }
-
-        Directory.CreateDirectory(folder);
-        File.Delete(OutputPath);
-        await File.WriteAllTextAsync(ScriptPath, Script(OutputPath, noteLimit), new UTF8Encoding(false), cancellationToken)
+        var (lines, dialog, acknowledgement) = await LiveScript
+            .RunAsync(ScriptPath, OutputPath, timeout, expectScore, "read", cancellationToken)
             .ConfigureAwait(false);
 
-        var acknowledgement = await SaveCopy
-            .SendCommandAsync(
-                "Script.RunScript",
-                [
-                    new("ScriptPath", ScriptPath.Replace('\\', '/')),
-                    new("ShowConsole", "false"),
-                ],
-                timeout,
-                cancellationToken,
-                expectScore)
-            .ConfigureAwait(false);
+        LiveScript.Forget(ScriptPath);
 
-        var dump = await WaitForDumpAsync(timeout, cancellationToken).ConfigureAwait(false);
-
-        try
-        {
-            File.Delete(ScriptPath);
-        }
-        catch (IOException)
-        {
-            // A leftover script in the temporary folder is harmless.
-        }
-
-        var payload = LiveReadDump.Parse(dump.Lines, noteLimit);
+        var payload = LiveReadDump.Parse(lines, noteLimit);
 
         // The wait is where a dialog shows up: the script is queued behind one and the file never appears. Saying
         // which dialog it was, and which button answers it, is the difference between a mystery and one extra
         // command for the agent.
-        payload["dialogWhileWaiting"] = dump.Dialog;
-
-        payload["script"] = new JsonObject
-        {
-            ["command"] = "Script.RunScript",
-            ["ack"] = NodeRead.Str(acknowledgement, "ack") ?? "unknown",
-            ["note"] = "kOK is a receipt: with ShowConsole=false a script that fails leaves no trace, and a modal "
-                + "dialog elsewhere in Dorico means the command is queued rather than run. The proof is the file this "
-                + "read parsed, not the acknowledgement.",
-        };
+        payload["dialogWhileWaiting"] = dialog;
+        payload["script"] = LiveScript.Report(acknowledgement);
 
         return payload;
-    }
-
-    /// <summary>What the wait for the script's output file saw: the lines, and the dialog that was up during it.</summary>
-    private sealed record Dump(string[] Lines, JsonObject? Dialog);
-
-    private static async Task<Dump> WaitForDumpAsync(TimeSpan timeout, CancellationToken cancellationToken)
-    {
-        var deadline = DateTimeOffset.UtcNow + timeout;
-        var quiet = 0;
-        long previous = -1;
-        JsonObject? dialog = null;
-
-        while (DateTimeOffset.UtcNow < deadline)
-        {
-            await Task.Delay(100, cancellationToken).ConfigureAwait(false);
-
-            dialog ??= DialogSurface.Peek();
-
-            if (!File.Exists(OutputPath))
-            {
-                continue;
-            }
-
-            var size = new FileInfo(OutputPath).Length;
-
-            if (size == previous && size > 0)
-            {
-                if (++quiet >= 2)
-                {
-                    try
-                    {
-                        return new Dump(
-                            await File.ReadAllLinesAsync(OutputPath, cancellationToken).ConfigureAwait(false),
-                            dialog);
-                    }
-                    catch (IOException ex)
-                    {
-                        throw new CliException("LiveReadFailed", $"The script's output could not be read: {ex.Message}", 2);
-                    }
-                }
-
-                continue;
-            }
-
-            quiet = 0;
-            previous = size;
-        }
-
-        throw new CliException(
-            "LiveReadWroteNothing",
-            $"The read script produced no output at '{OutputPath}' within {timeout.TotalSeconds:0.#} s. Dorico "
-            + "answers kOK to Script.RunScript whether the script runs, dies or sits behind a dialog, and with "
-            + "ShowConsole=false a Lua error has nowhere to go, so this is all that can be reported. Check that a "
-            + "document with at least one player is open (`session status`), that nothing modal is holding Dorico's "
-            + "command queue (see %APPDATA%\\Steinberg\\Dorico 6\\application.log), and see docs/scripting.md before "
-            + "probing the scripting layer further.",
-            2);
     }
 }
