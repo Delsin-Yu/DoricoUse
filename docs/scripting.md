@@ -606,3 +606,56 @@ menu bar; either close it or untick **总是靠上**.
 | `.spinney/scripting/run-in-console.sh`, `snap-invoke.sh`, `wins.ps1` | the driving scripts used here |
 
 `.spinney/` is gitignored — the decisive transcripts are quoted in full in §3.
+
+---
+
+## 8. Addendum: the write methods' signatures, and what a `RunScript` run costs
+
+Measured after §1–§7, by calling the scripts through the **Remote Control API** instead of the console —
+`Script.RunScript?ScriptPath=…&ShowConsole=false` — with the probe writing its findings to a file through `io`.
+This needed no console and no mouse.
+
+**A `RunScript` with `ShowConsole=false` has no output channel, and a script that throws leaves no trace.** The
+command answers `kOK` in 6 ms whether the script succeeded or died on the first line; `application.log` records
+only the command itself. One probe here produced no file and no log line, and there was nothing to tell the
+difference between "the script did nothing" and "the script failed". Write findings to a file **incrementally**
+(open it, write as you go) if you want evidence of a partial run.
+
+**Wrong-argument calls are safe and answer with the C++ signature.** luabind resolves overloads before it invokes
+anything, so each of these returned an error and wrote nothing:
+
+```
+stream.createNote()        -> luabind::object createNote(EventStream&,lua_State*,RhythmicLength,RhythmicLength,MIDIPitchWithSpelling const&)
+stream.createRest()        -> luabind::object createRest(EventStream&,lua_State*,RhythmicLength,RhythmicLength)
+stream.createBarRest()     -> luabind::object createBarRest(EventStream&,lua_State*,RhythmicLength)
+stream.createTuplet()      -> luabind::object createTuplet(EventStream&,lua_State*,RhythmicLength,TupletDefinition const&)
+stream.createGraceNote()   -> luabind::object createGraceNote(EventStream&,lua_State*,RhythmicLength,RhythmicLength,RhythmicLength,MIDIPitchWithSpelling const&)
+stream.createText()        -> luabind::object createText(EventStream&,lua_State*,RhythmicLength,RhythmicLength,std::string)
+stream.createDynamicGroup() -> luabind::object createDynamicGroup(EventStream&,lua_State*,RhythmicLength,DynamicGroupElement&)
+stream.deleteEventsInRange() -> void deleteEventsInRange(EventStream&,RhythmicLength,RhythmicLength)
+stream.copyRange()         -> void copyRange(EventStream&,RhythmicLength,RhythmicLength,EventStream&,RhythmicLength,int)
+stream.moveRange()         -> void moveRange(EventStream&,RhythmicLength,RhythmicLength,EventStream&,RhythmicLength,int)
+stream.addBlockInstance()  -> void addBlockInstance(EventStream&,RhythmicLength,EventBlock&)
+stream.findBlockInstanceAtPoint() -> luabind::object findBlockInstanceAtPoint(EventStream&,lua_State*,RhythmicLength)
+```
+
+So the binding is real and complete: `createNote(start, duration, pitch)` is a three-argument call on a stream
+that exists (`flow.voiceStreams[1]` → `EventStream ID: 196 kVoiceStream, 34 events`). What is **not** established
+is whether the argument types can be built from Lua — `RhythmicLength` and `MIDIPitchWithSpelling` are C++ types,
+and the registered helpers (`LengthUtils.getRhythmicDurationForRational(RhythmicLength const&, NotatedLength&)`,
+`MIDIPitch`, `MIDIPitchWithSpelling`, `NotatedLength`, `LogDuration`, `TupletDefinition`) are themselves the
+candidates for doing it. That is the next probe, and it is cheap: call each candidate constructor with the wrong
+argument count and read the signature, exactly as above.
+
+**Reading, for contrast, works without any of this**: `stream.dump()` returned 3409 bytes for that 34-event
+stream, in Dorico's own printer format —
+
+```
+Start block id: 1196 position: 0
+4.25 (17/4 (4.25)) dur: 1/4 (0.25): kNoteEvent (id:147911) at 17/4 (4.25), duration 1/4 (0.25)  D5 (ends 9/2 (4.5))
+```
+
+— while `stream.events`, the structured accessor, is still the deliberate stub
+(`Not implemented - this may leave the score in an unpredictable state @ …streamwrapper.cpp:162`). A script can
+therefore read a stream by parsing `dump()`, and cannot yet be shown to write one.
+

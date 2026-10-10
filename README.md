@@ -100,8 +100,12 @@ dorico-use note insert --notes "C5 E5" --duration minim --dry-run         # the 
   so omitting the flag never changes anything. `overwrite` replaces the notes at the caret, `insert` pushes them
   right. The payload always reports `mode.before` and `mode.effective`, and a fresh project starts in overwrite.
 - `--duration` is the **note value** (`NoteInput.NoteValue?LogDuration=`): `crotchet`, `quaver`, `minim`,
-  `semibreve`, `dottedcrotchet`, ... or a Dorico name such as `kQuaver`. `--grid` is the rhythm grid
-  (`NoteInput.SetGridResolution`) and is a different thing.
+  `semibreve`, `breve`, `long`, `maxima`, `semiquaver`, `demisemiquaver`, `hemidemisemiquaver`, a dotted form
+  (`dottedcrotchet`), a fraction (`1/8`), or a Dorico spelling. The accepted spellings are the ten the binary's
+  own `LogDuration` template lists (`kMaxima`, `kLong`, `kBreve`, `kSemibreve`, `kMinim`, `kCrotchet`, `kQuaver`,
+  `kSemiQuaver`, `kDemiSemiQuaver`, `kHemiDemiSemiQuaver`) — note that the *grid* command spells 16ths
+  `kSemiquaver`, and both spellings exist, so `--grid kSemiquaver` and `--duration semiquaver` are correct as
+  written. `--grid` is the rhythm grid (`NoteInput.SetGridResolution`) and is a different thing.
 - `--pitch`/`--octave` use Dorico's octave numbering: **C4 is middle C** (MIDI 60), C5 is MIDI 72.
 - `note insert` switches to Write mode and turns note input on only when the status says they are needed, because
   `NoteInput.Enter` is a toggle. `--stay` leaves note input on.
@@ -344,9 +348,12 @@ to Dorico to see whether they execute.
 **The scripting layer.** `docs/scripting.md` records what Dorico's Lua console really exposes, measured: the
 recorder is exactly a keystroke log (a recorded macro is three `app:doCommand([[EventEdit.NavigateDown]])` lines),
 while the object model behind it is real but half-built — `score.flows/players/layouts` and `EventStream:dump()`
-read fine, `createNote`/`copyRange`/`addPlayer` exist, and the convenient getters answer
-`Not implemented - this may leave the score in an unpredictable state @ streamwrapper.cpp:162`. That is why the
-community says scripting has no meaningful access to score data: the front door is a macro recorder.
+read fine, and the convenient getters answer `Not implemented - this may leave the score in an unpredictable state
+@ streamwrapper.cpp:162`. That is why the community says scripting has no meaningful access to score data: the
+front door is a macro recorder. §8 of that document adds the **write** methods' own C++ signatures, obtained by
+calling them through `Script.RunScript` with the wrong number of arguments — `createNote(RhythmicLength,
+RhythmicLength, MIDIPitchWithSpelling)`, `createRest(start, duration)`, `deleteEventsInRange(start, end)` and
+friends are bound for real. Whether their C++ argument types can be built from Lua is the one thing still open.
 
 ## Architecture
 
@@ -406,11 +413,11 @@ nor Dorico; a check that cannot run reports `skip` instead of passing.
    command, a proven Native AOT publish, and slurs/articulations/ties/beams/techniques/layout in `file read`.
 7. **Done** — the vocabulary extractor with enum validation, the unpublished-command diff (`docs/hidden-commands.md`)
    and the scripting-layer analysis (`docs/scripting.md`), plus lyric *modelling* from the binary's own vocabulary.
-8. **Next, and mostly waiting on data only you can produce** — a file with lyrics (the reader is built and skipped
-   until one exists), a scratch project to find out whether the scripting write methods (`createNote`, …) actually
-   write, one command to test whether an unpublished name like `File.New` executes when sent, a phrase that spans
-   calls without restarting at the top, positional entry if Dorico ever exposes it, and the accidental that
-   `spelling` + `midi` would let the reader derive.
+8. **Next, and mostly waiting on data only you can produce** — the scripting write methods' argument types (their
+   signatures are known and in `docs/scripting.md` §8; every probe run needs Dorico running), one command to test
+   whether an unpublished name like `File.New` executes when sent, a phrase that spans calls without restarting at
+   the top, positional entry if Dorico ever exposes it, `session read` gaining the same block options `file read`
+   has, and the accidental that `spelling` + `midi` would let the reader derive.
 
 Deliberately **not** planned: a cached command catalogue, on disk or otherwise. Dorico answers `getcommands` in
 4 ms (98 KB, 1090 commands) and a `command list` call costs about 86 ms end to end, nearly all of it process

@@ -423,18 +423,92 @@ else
         score.Lyrics.Read.Count == 0 && score.Lyrics.Events.Count == 0 && score.Lyrics.EventTotal == 0,
         $"{score.Lyrics.Read.Count} read, {score.Lyrics.EventTotal} events");
 
-    // The reading itself cannot be checked here: it rests on the application's vocabulary because no file on this
-    // machine has a lyric. Assert the link it would use is absent when the table is empty - the same escape hatch a
-    // user would reach for - and say plainly what file would settle the rest.
+    // The reading itself cannot be checked against this file. Assert the link it would use is absent when the table
+    // is empty - the same escape hatch a user would reach for.
     var lyricData = ProjectFileReader.Open(Corpus).ScoreData;
     var lyricShape = ProjectFileTreeReader.Subtree(lyricData, "LyricElementDefinition", 1, -1);
     Check(
         "a lyric element is not present in the score data at all (nothing to read yet)",
         lyricShape.Matched == 0,
         lyricShape.Matched.ToString());
-    Skip(
-        "the reading of a lyric element and of LyricEventDefinition (no file on this machine has a lyric: every "
-        + "corpus file's LyricElementTableDefinition holds one `array` leaf and no element)");
+}
+
+// ---------------------------------------------------------------- lyrics, against the one file that has them
+
+Head(@"lyrics: a file with lyrics");
+
+// Every project on this machine has an empty lyric table, so this reader's non-empty path was written from the
+// application's own field vocabulary and had never been seen in data. One file settles it: a score carrying 4710
+// lyric elements - syllables under several verses, a translation line, and Chinese as well as Latin text. Its
+// numbers and its element/event link are asserted below; when it is not on the machine the block skips, which is
+// the honest outcome, because nothing else here can test it.
+const string LyricsProbe = @"TestPayload.dorico";
+
+if (!File.Exists(LyricsProbe))
+{
+    Skip("the lyric checks (no file with lyrics on this machine): the reader's non-empty path stays unverified");
+}
+else
+{
+    var probe = ProjectFileReader.Open(LyricsProbe);
+    var lyrics = probe.Score!.Lyrics;
+
+    Check("lyric tables", lyrics.Tables == 8, lyrics.Tables.ToString());
+    Check("lyric elements", lyrics.Elements == 4710, lyrics.Elements.ToString());
+    Check(
+        "the elements were read back",
+        lyrics.Read.Count > 0 && lyrics.Read.Count <= lyrics.Elements,
+        $"{lyrics.Read.Count} of {lyrics.Elements}");
+
+    // The guesses the reader had to make, now checked against data: the id and the text sit in `elementID` and
+    // `text`, and the line fields carry Dorico's own enum spellings.
+    var first = lyrics.Read[0];
+    Check("the id leaf is `elementID`", first.IdKey == "elementID" && first.Id == 77, $"{first.IdKey}={first.Id}");
+    Check("the text leaf is `text`", first.TextKey == "text" && first.Text == "A-", $"{first.TextKey}={first.Text}");
+    Check(
+        "the first two syllables are the ones typed",
+        string.Join('|', lyrics.Read.Take(2).Select(element => element.Text)) == "A-|lice",
+        string.Join('|', lyrics.Read.Take(2).Select(element => element.Text)));
+    Check(
+        "a syllable carries its line, its placement and its type",
+        first.SyllableType == "kWholeWord" && first.LineType == "kVerse" && first.LineLocation == "kBelow"
+        && first.LineNumber == "0",
+        $"{first.SyllableType}/{first.LineType}/{first.LineLocation}/{first.LineNumber}");
+    Check(
+        "every element has text",
+        lyrics.Read.All(element => !string.IsNullOrEmpty(element.Text)));
+    Check(
+        "text outside Latin-1 survives",
+        lyrics.Read.Any(element => (element.Text ?? string.Empty).Any(character => character > 0x2E80)));
+    Check(
+        "the lines are told apart",
+        lyrics.Read.Select(element => element.LineNumber).Distinct().Count() > 1
+        || lyrics.Read.Select(element => element.LineType).Distinct().Count() > 1,
+        string.Join(',', lyrics.Read.Select(element => $"{element.LineType}:{element.LineNumber}").Distinct().Take(4)));
+
+    // The event side resolves the same way a dynamic does, so it must land on real measures and staves.
+    Check("lyric events were found", lyrics.EventTotal == 4710, lyrics.EventTotal.ToString());
+    Check("a lyric event was read", lyrics.Events.Count > 0, lyrics.Events.Count.ToString());
+
+    if (lyrics.Events.Count > 0)
+    {
+        var placed = lyrics.Events[0];
+        Check(
+            "a lyric event resolves to a measure, a beat and a stave",
+            placed.EventId == 129187 && placed.Measure == 6 && placed.Beat == "2" && placed.Position == "16"
+            && placed.Element == 954 && placed.Stave == 834 && placed.Stream == 2344,
+            $"{placed.EventId} m{placed.Measure}/{placed.Beat} elem {placed.Element} stave {placed.Stave}");
+        Check("every lyric event names an element", lyrics.Events.All(item => item.Element > 0));
+    }
+
+    // The file states the element/event link from both ends, and there is exactly one event per element.
+    var data = probe.ScoreData;
+    Check(
+        "one lyric event per element in the whole file",
+        ProjectFileTreeReader.Subtree(data, "LyricElementDefinition", 1, -1).Matched == lyrics.Elements
+        && ProjectFileTreeReader.Subtree(data, "LyricEventDefinition", 1, -1).Matched == lyrics.EventTotal,
+        $"{ProjectFileTreeReader.Subtree(data, "LyricElementDefinition", 1, -1).Matched} elements, "
+        + $"{ProjectFileTreeReader.Subtree(data, "LyricEventDefinition", 1, -1).Matched} events");
 }
 
 Head($"dynamics against a second file: {FourthCorpus}");
