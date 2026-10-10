@@ -65,6 +65,49 @@ internal static class FileCommands
                 + "their contents.",
         };
 
+        var slurs = new Option<bool>("--slurs")
+        {
+            Description = "Include the slurs: where each one starts, how long it is, and the element it shares with "
+                + "the other slurs over the same chord.",
+        };
+
+        var articulations = new Option<bool>("--articulations")
+        {
+            Description = "Include the articulations stored on the notes (staccato, tenuto, accent, marcato), named "
+                + "from the score's own playing-technique catalogue.",
+        };
+
+        var ties = new Option<bool>("--ties")
+        {
+            Description = "Include what the file states about ties: a laissez-vibrer tie, a tie to a named event, a "
+                + "forced tie direction and a forced split of a chain. A tie chain itself is one note event, so its "
+                + "noteheads are engraving and are not stored.",
+        };
+
+        var beams = new Option<bool>("--beams")
+        {
+            Description = "Include the beam breaks the notes store. A beam group itself is computed at layout time "
+                + "and is not in the file, so an empty list is not a score without beams.",
+        };
+
+        var techniques = new Option<bool>("--techniques")
+        {
+            Description = "Include the playing techniques, both as events of their own and as properties of notes, "
+                + "with the appearance the file shows and the technique behind it.",
+        };
+
+        var layout = new Option<bool>("--layout")
+        {
+            Description = "Include the layout the file stores: the page box and margins of every layout, and the "
+                + "frames of every page template. Which measure lands on which page is not stored.",
+        };
+
+        var markLimit = new Option<string?>("--mark-limit")
+        {
+            Description = "How many slurs, articulations, ties, beams or techniques to list: a count, 'all', or -1. "
+                + "Separate from --limit, which stays the note count. Default 100.",
+        };
+
         var tree = new Option<string?>("--tree")
         {
             Description = "Dump the decoded record tree: a node name (e.g. DynamicGroupElementDefinition) shows every "
@@ -86,7 +129,8 @@ internal static class FileCommands
 
         var command = new Command(
             "read",
-            "Report what a .dorico project file contains: players, layouts, notes, dynamics, lyrics.")
+            "Report what a .dorico project file contains: players, layouts, notes, dynamics, slurs, articulations, "
+                + "techniques, lyrics.")
         {
             path,
             limit,
@@ -95,6 +139,13 @@ internal static class FileCommands
             dynamics,
             dynamicsLimit,
             lyrics,
+            slurs,
+            articulations,
+            ties,
+            beams,
+            techniques,
+            layout,
+            markLimit,
             tree,
             depth,
             treeLimit,
@@ -114,6 +165,13 @@ internal static class FileCommands
                 Dynamics = parse.GetValue(dynamics),
                 DynamicLimit = ProjectFileView.ParseOptionalLimit(parse.GetValue(dynamicsLimit), "--dynamics-limit"),
                 Lyrics = parse.GetValue(lyrics),
+                Slurs = parse.GetValue(slurs),
+                Articulations = parse.GetValue(articulations),
+                Ties = parse.GetValue(ties),
+                Beams = parse.GetValue(beams),
+                Techniques = parse.GetValue(techniques),
+                Layout = parse.GetValue(layout),
+                MarkLimit = ProjectFileView.ParseOptionalLimit(parse.GetValue(markLimit), "--mark-limit"),
                 Tree = parse.GetValue(tree),
                 Depth = ProjectFileView.ParseDepth(parse.GetValue(depth)),
                 TreeLimit = ProjectFileView.ParseOptionalLimit(parse.GetValue(treeLimit), "--tree-limit"),

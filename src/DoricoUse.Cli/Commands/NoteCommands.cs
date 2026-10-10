@@ -1,8 +1,10 @@
 using System.CommandLine;
+using System.Globalization;
 using System.Text.Json.Nodes;
 using DoricoUse.Cli.Dorico;
 using DoricoUse.Cli.Ipc;
 using DoricoUse.Cli.Json;
+using DoricoUse.Cli.Views;
 
 namespace DoricoUse.Cli.Commands;
 
@@ -91,6 +93,46 @@ internal static class NoteCommands
             Description = "Show the commands that would be sent, without sending them.",
         };
 
+        var fromStart = new Option<bool>("--from-start")
+        {
+            Description = "Put the caret at the start of the flow before entering the notes. Dorico has no caret "
+                + "query and no go-to-bar, so this is the only way to write from a known place: NoteInput.Exit "
+                + "(when note input is on), Edit.SelectNone and NoteInput.Enter are sent first, because Enter puts "
+                + "the caret at the top of the flow only when nothing is selected and it was off. Without it the "
+                + "caret stays where the last write (yours or another agent's) left it.",
+        };
+
+        var read = new Option<bool>("--read")
+        {
+            Description = "After the notes are entered, make Dorico save a copy of the document (File.SaveAs, the "
+                + "same round trip as `session read`) and decode it, so the payload carries the notes that are "
+                + "really in the score. One call writes and proves it.",
+        };
+
+        var readTo = new Option<string?>("--read-to")
+        {
+            Description = "Where the copy for --read goes. Default: .spinney/read/<timestamp>.dorico. An existing "
+                + "file is never overwritten, and the open document is rebound to the copy (that is File.SaveAs; see "
+                + "read.save.document).",
+        };
+
+        var readLimit = new Option<string?>("--limit")
+        {
+            Description = "How many notes the read-back returns: a count, 'all' for every note, or 0 for the shape "
+                + $"alone. Only used with --read; the default is {ProjectFileView.DefaultNoteLimit}.",
+        };
+
+        var readMeasure = new Option<string?>("--measure")
+        {
+            Description = "Only read back notes in one measure (12) or a range (12-16). Only used with --read.",
+        };
+
+        var readPlayer = new Option<string?>("--player")
+        {
+            Description = "Only read back notes of players, instruments or staves matching this glob, e.g. "
+                + "*Flute*. Only used with --read.",
+        };
+
         var waitMs = new Option<int>("--wait-ms")
         {
             Description = "Wait this long before reading the status back.",
@@ -114,6 +156,12 @@ internal static class NoteCommands
             mode,
             stay,
             dryRun,
+            fromStart,
+            read,
+            readTo,
+            readLimit,
+            readMeasure,
+            readPlayer,
             waitMs,
             timeout,
             expectScore,
@@ -196,6 +244,57 @@ internal static class NoteCommands
                 ["verify"] = true,
             };
 
+            if (parse.GetValue(fromStart))
+            {
+                args["fromStart"] = true;
+            }
+
+            var readRequested = parse.GetValue(read);
+            var readToValue = parse.GetValue(readTo);
+            var measureValue = parse.GetValue(readMeasure);
+            var playerValue = parse.GetValue(readPlayer);
+            var limitValue = parse.GetValue(readLimit);
+
+            if (!readRequested && (readToValue is not null || measureValue is not null || playerValue is not null
+                || limitValue is not null))
+            {
+                throw new CliException(
+                    "InvalidArgument",
+                    "--read-to, --limit, --measure and --player describe what --read returns. Add --read to write "
+                    + "and read back in one call, or use `session read` on the project afterwards.",
+                    1);
+            }
+
+            string? readPath = null;
+            JsonObject? readOptions = null;
+
+            if (readRequested)
+            {
+                // Resolved here so a bad path or an existing file is a usage error (exit 1) before anything is
+                // written, and the host is handed a path that is already known to be free.
+                readPath = SaveCopy.Resolve(readToValue, DateTimeOffset.Now);
+                SaveCopy.RefuseExisting(readPath);
+
+                var measures = ProjectFileView.ParseMeasures(measureValue);
+                readOptions = new JsonObject
+                {
+                    ["noteLimit"] = limitValue is null
+                        ? ProjectFileView.DefaultNoteLimit
+                        : ProjectFileView.ParseLimit(limitValue),
+                    ["player"] = playerValue,
+                };
+
+                if (measures is { } range)
+                {
+                    readOptions["firstMeasure"] = range.First;
+                    readOptions["lastMeasure"] = range.Last;
+                }
+
+                args["read"] = true;
+                args["readPath"] = readPath;
+                args["readOptions"] = readOptions;
+            }
+
             var durationValue = parse.GetValue(duration);
 
             if (!string.IsNullOrWhiteSpace(durationValue))
@@ -254,10 +353,141 @@ internal static class NoteCommands
                 + TimeSpan.FromMilliseconds((list.Count * 3 + staffValue.Length + 5) * 5000d)
                 + TimeSpan.FromMilliseconds(waitMsValue);
 
-            return await HostClient.CallAsync(HostProtocol.OpNoteInsert, args, budget, CancellationToken.None);
+            if (readRequested)
+            {
+                // The read-back adds the save and the decode, inside the same host call.
+                budget += SaveCopy.DefaultWait + TimeSpan.FromSeconds(15);
+            }
+
+            var payload = await HostClient
+                .CallAsync(HostProtocol.OpNoteInsert, args, budget, CancellationToken.None)
+                .ConfigureAwait(false);
+
+            // A dry run sends and writes nothing, so there is no file to wait for: skip the read half instead of
+            // blocking on a copy that will never appear.
+            if (readRequested && !parse.GetValue(dryRun))
+            {
+                await CompleteReadAsync(
+                    payload,
+                    readOptions!,
+                    readPath!,
+                    CommandRoot.Timeout(parse, timeout),
+                    CancellationToken.None).ConfigureAwait(false);
+            }
+
+            return payload;
         }));
 
         return command;
+    }
+
+    /// <summary>
+    /// The second half of <c>--read</c>: wait for the copy the host asked Dorico to write, decode it, and put the
+    /// report into the same payload. This is the round trip <c>session read</c> performs, with the save already
+    /// done inside the host, using the shared <see cref="SaveCopy"/> helpers and the shared decoder
+    /// (<see cref="ProjectFileReader"/> plus <see cref="ProjectFileView"/>); nothing is re-implemented here.
+    /// </summary>
+    /// <remarks>
+    /// It runs in the CLI process rather than in the host on purpose: the report is built once per process, and the
+    /// long-lived host would call it once per invocation (the view reuses a node, so a second call inside one
+    /// process throws "The node already has a parent."). A one-shot process has that property for free.
+    /// </remarks>
+    private static async Task CompleteReadAsync(
+        JsonObject payload,
+        JsonObject readOptions,
+        string path,
+        TimeSpan timeout,
+        CancellationToken cancellationToken)
+    {
+        if (NodeRead.Obj(NodeRead.Obj(payload, "note"), "read") is not { } read)
+        {
+            return;
+        }
+
+        var dimensions = NodeRead.Obj(read, "options");
+        var options = new ProjectFileView.Options
+        {
+            NoteLimit = (int)Math.Clamp(
+                NodeRead.Long(readOptions, "noteLimit") ?? ProjectFileView.DefaultNoteLimit,
+                -1,
+                100_000),
+            FirstMeasure = NodeRead.Int(readOptions, "firstMeasure"),
+            LastMeasure = NodeRead.Int(readOptions, "lastMeasure"),
+            Player = NodeRead.Str(readOptions, "player"),
+        };
+
+        var watchBudget = TimeSpan.FromMilliseconds(
+            Math.Min(SaveCopy.DefaultWait.TotalMilliseconds, timeout.TotalMilliseconds));
+
+        ProjectFile? file = null;
+        SaveCopy.SavedFile saved = new(path, 0, 0, Stable: false);
+        CliException? unfinished = null;
+
+        // Dorico answered before it wrote the last byte, so the file is watched until it stops growing; a ZIP that
+        // is still being written reads as NotAContainer, which is the one failure worth retrying.
+        for (var attempt = 1; attempt <= 2 && file is null; attempt++)
+        {
+            saved = await SaveCopy.WaitForFileAsync(path, watchBudget, cancellationToken).ConfigureAwait(false);
+
+            if (saved.Bytes == 0)
+            {
+                unfinished = new CliException(
+                    "SaveWroteNothing",
+                    $"The notes were entered, but the copy {SaveCopy.SaveAsCommand} was asked for never appeared at "
+                    + $"'{path}' within {watchBudget.TotalSeconds:0.#} s, so the result could not be read back. Check "
+                    + $"{SaveCopy.SaveAsCommand} in %APPDATA%\\Steinberg\\Dorico 6\\application.log: a command that "
+                    + "waits on a dialog writes nothing.",
+                    2);
+
+                break;
+            }
+
+            try
+            {
+                file = ProjectFileReader.Open(path);
+            }
+            catch (CliException ex) when (ex.Code is "NotAContainer" or "MalformedMember")
+            {
+                unfinished = ex;
+            }
+        }
+
+        if (file is null)
+        {
+            throw unfinished ?? new CliException("SaveWroteNothing", $"'{path}' could not be read back.", 2);
+        }
+
+        if (NodeRead.Obj(read, "save") is { } save)
+        {
+            save["file"] = new JsonObject
+            {
+                ["path"] = saved.Path,
+                ["bytes"] = saved.Bytes,
+                ["watchedMs"] = saved.WaitedMs,
+                ["stoppedGrowing"] = saved.Stable,
+            };
+        }
+
+        var measures = options.FirstMeasure is { } first && options.LastMeasure is { } last
+            ? first == last
+                ? first.ToString(CultureInfo.InvariantCulture)
+                : $"{first}-{last}"
+            : dimensions is null ? null : NodeRead.Str(dimensions, "measures");
+
+        read["options"] = new JsonObject
+        {
+            ["noteLimit"] = options.NoteLimit,
+            ["measures"] = measures,
+            ["player"] = options.Player,
+        };
+
+        read["decodedFrom"] = file.Path;
+
+        // Exactly what `file read` reports, so both can be read the same way.
+        foreach (var (key, value) in ProjectFileView.Report(file, options))
+        {
+            read[key] = value?.DeepClone();
+        }
     }
 
     /// <summary>

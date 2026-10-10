@@ -124,6 +124,94 @@ internal static class ProjectFileScoreReader
             $"score.dtn is not a Dorico score this reader understands: {why}.",
             2);
 
+    /// <summary>
+    /// The payload of one of the file's variant-encoded values: <c>string: "pt.accent"</c> carries
+    /// <c>pt.accent</c>, <c>int: 52</c> carries <c>52</c>, and <c>null: </c> carries nothing. A list keeps its
+    /// braces, because its items are what matters.
+    /// </summary>
+    internal static string? VariantText(string? text)
+    {
+        if (text is null)
+        {
+            return null;
+        }
+
+        var trimmed = text.Trim();
+        var colon = trimmed.IndexOf(':');
+
+        if (colon < 0)
+        {
+            return null;
+        }
+
+        var payload = trimmed[(colon + 1)..].Trim();
+
+        if (payload.Length == 0)
+        {
+            return null;
+        }
+
+        return payload.Length >= 2 && payload[0] == '"' && payload[^1] == '"'
+            ? payload[1..^1]
+            : payload;
+    }
+
+    /// <summary>
+    /// Which family a note property belongs to. The file writes the property with a prefix that differs by kind
+    /// (<c>kNote</c>, <c>kEvent</c>, <c>kArticulation</c>), so the name is matched by its tail and a version that
+    /// renames the prefix still lands here.
+    /// </summary>
+    internal static string MarkFamily(string property)
+        => property switch
+        {
+            _ when Ends(property, "ArticulationForceTieChainPosition") => "tie",
+            _ when Ends(property, "ArticulationDuration") || Ends(property, "ArticulationForce") => "articulation",
+            _ when Ends(property, "EndHasLVTie")
+                || Ends(property, "TiedToEvent")
+                || Ends(property, "ForcedTieDirection")
+                || Ends(property, "SplitDurations")
+                || Ends(property, "ForcedSplitPositions") => "tie",
+            _ when Ends(property, "BeamStart")
+                || Ends(property, "BeamEnd")
+                || Ends(property, "BeamNone")
+                || Ends(property, "BeamPartialBeamDirection") => "beam",
+            _ when Ends(property, "PlayingTechnique") => "technique",
+            _ => "other",
+        };
+
+    private static bool Ends(string property, string tail)
+        => property.Length > tail.Length && property.EndsWith(tail, StringComparison.Ordinal);
+
+    /// <summary>
+    /// The notation a note property stands for, when the file's own library names it. An articulation's value is an
+    /// enum (<c>kStaccato</c>) and the catalogue spells the same thing <c>pt.staccato</c>, so the name is looked up
+    /// rather than invented; a value the catalogue does not hold — a combination such as <c>kStaccatoTenuto</c>, 24
+    /// of them in the corpus — stays null and is reported as the file writes it.
+    /// </summary>
+    internal static string? MarkName(string property, string? value, Dictionary<string, string?> catalogue)
+    {
+        var text = VariantText(value);
+
+        if (text is null)
+        {
+            return null;
+        }
+
+        if (Ends(property, "PlayingTechnique"))
+        {
+            return catalogue.GetValueOrDefault(text);
+        }
+
+        if (!property.Contains("Articulation", StringComparison.Ordinal)
+            || text.Length < 2
+            || text[0] != 'k')
+        {
+            return null;
+        }
+
+        return catalogue.GetValueOrDefault("pt." + char.ToLowerInvariant(text[1]) + text[2..]);
+    }
+
     // ---------------------------------------------------------------- the tables in front of the stream
 
     // ---------------------------------------------------------------- the decoder
@@ -146,6 +234,15 @@ internal static class ProjectFileScoreReader
         private readonly Dictionary<long, ElementDraft> _barElements = [];
         private readonly Dictionary<long, StaveDraft> _streamStaves = [];
         private readonly Dictionary<long, string> _streamKinds = [];
+        private readonly List<SlurDraft> _slurs = [];
+        private readonly List<TechniqueEventDraft> _techniqueEvents = [];
+
+        /// <summary>The score library's own names: the playing techniques and their appearances.</summary>
+        private readonly List<TechniqueDefinitionDraft> _techniqueDefinitions = [];
+        private readonly List<TechniqueAppearanceDraft> _techniqueAppearances = [];
+
+        /// <summary>The library's page templates: which frames each page of a page pair holds.</summary>
+        private readonly List<PageSetDraft> _pageSets = [];
 
         /// <summary>Block id → the stream its <c>blockInstance</c> places it on.</summary>
         private readonly Dictionary<long, long> _blockStreams = [];
@@ -476,6 +573,7 @@ internal static class ProjectFileScoreReader
                 "layouts" => WalkLayouts(count),
                 "scorePlayers" => WalkPlayers(count),
                 "flows" => WalkFlows(count),
+                "library" => WalkLibrary(count),
                 _ => SkipChildren(count),
             };
         }
@@ -532,12 +630,410 @@ internal static class ProjectFileScoreReader
 
                         return true;
                     },
-                    (_, childCount, _) => SkipChildren(childCount));
+                    (key, childCount, _) => NameAt(key) switch
+                    {
+                        "layoutOptions" => WalkLayoutOptions(childCount, layout),
+                        "pageSequenceOverrides" => WalkPageSequenceOverrides(childCount, layout),
+                        _ => SkipChildren(childCount),
+                    });
 
                 _layouts.Add(layout);
 
                 return ok;
             });
+
+        /// <summary>
+        /// One layout's engraving options. Only the page box and the casting off are read: the rest is the engraving
+        /// and notation option tree, which <c>options get</c> reaches through Dorico itself.
+        /// </summary>
+        private bool WalkLayoutOptions(long count, LayoutDraft layout)
+            => WalkChildren(
+                count,
+                (key, value) =>
+                {
+                    switch (NameAt(key))
+                    {
+                        case "pagePairSetEntityID": layout.PageSet = Value(value); break;
+                        case "defaultSpaceSize": layout.SpaceSize = Value(value); break;
+                    }
+
+                    return true;
+                },
+                (key, childCount, _) => NameAt(key) switch
+                {
+                    "pageSizeAndMarginOptions" => WalkPageSize(childCount, layout),
+                    "castingOffOptions" => WalkCastingOff(childCount, layout),
+                    _ => SkipChildren(childCount),
+                });
+
+        /// <summary>The page box of one layout: <c>pageWidth</c>/<c>pageHeight</c> are in points, as are the margins.</summary>
+        private bool WalkPageSize(long count, LayoutDraft layout)
+            => WalkChildren(
+                count,
+                (key, value) =>
+                {
+                    switch (NameAt(key))
+                    {
+                        case "pageWidth": layout.PageWidth = Value(value); break;
+                        case "pageHeight": layout.PageHeight = Value(value); break;
+                    }
+
+                    return true;
+                },
+                (key, childCount, _) => NameAt(key) == "margins"
+                    ? WalkMargins(childCount, layout.Margins)
+                    : SkipChildren(childCount));
+
+        private bool WalkMargins(long count, List<ProjectFileTreeField> into)
+            => WalkChildren(
+                count,
+                (key, value) =>
+                {
+                    // `type` says whether the four margins are identical or mirrored; the numbers are the margins.
+                    if (NameAt(key) is "outer" or "inner" or "top" or "bottom" or "left" or "right" or "type")
+                    {
+                        Keep(into, NameAt(key), Value(value));
+                    }
+
+                    return true;
+                },
+                (key, childCount, _) => NameAt(key) == "margins"
+                    ? WalkMargins(childCount, into)
+                    : SkipChildren(childCount));
+
+        /// <summary>
+        /// The casting off: how the bars are made into systems and the systems into frames. A whole node of options,
+        /// kept as the file writes them.
+        /// </summary>
+        private bool WalkCastingOff(long count, LayoutDraft layout)
+            => WalkChildren(
+                count,
+                (key, value) =>
+                {
+                    if (layout.CastingOff.Count < 12)
+                    {
+                        Keep(layout.CastingOff, NameAt(key), Value(value));
+                    }
+
+                    return true;
+                },
+                (_, childCount, _) => SkipChildren(childCount));
+
+        /// <summary>
+        /// A layout's page-sequence overrides: the frames it moves or adds. The chain definitions themselves are
+        /// counted, not read: the geometry of a frame lives in the page template it belongs to.
+        /// </summary>
+        private bool WalkPageSequenceOverrides(long count, LayoutDraft layout)
+            => WalkChildren(
+                count,
+                null,
+                (key, childCount, _) => NameAt(key) switch
+                {
+                    "frameChainDefinitions" => WalkFrameChainDefinitions(childCount, layout),
+                    _ => SkipChildren(childCount),
+                });
+
+        private bool WalkFrameChainDefinitions(long count, LayoutDraft layout)
+            => WalkChildren(
+                count,
+                null,
+                (key, childCount, _) => NameAt(key) switch
+                {
+                    "musicFrameChains" => WalkChainList(childCount, layout, music: true),
+                    "textFrameChains" => WalkChainList(childCount, layout, music: false),
+                    _ => SkipChildren(childCount),
+                });
+
+        private bool WalkChainList(long count, LayoutDraft layout, bool music)
+            => WalkChildren(
+                count,
+                null,
+                (key, childCount, _) =>
+                {
+                    if (NameAt(key) != "musicFrameChains" && NameAt(key) != "textFrameChains")
+                    {
+                        return SkipChildren(childCount);
+                    }
+
+                    if (music)
+                    {
+                        layout.FrameChainOverrides++;
+                    }
+
+                    return SkipChildren(childCount);
+                });
+
+        /// <summary>The score library: its playing techniques, their appearances, and the page templates.</summary>
+        private bool WalkLibrary(long count)
+            => WalkChildren(
+                count,
+                null,
+                (key, childCount, _) => NameAt(key) switch
+                {
+                    "playingTechniques" => WalkCollection(childCount, "PlayingTechniqueDefinition", WalkTechniqueDefinition),
+                    "playingTechniqueAppearanceCollectionDefinition" => WalkCollection(
+                        childCount,
+                        "PlayingTechniqueAppearanceDefinition",
+                        WalkTechniqueAppearance),
+                    "pagePairDefinitionSets" => WalkCollection(
+                        childCount,
+                        "PagePairDefinitionSetDefinition",
+                        WalkPageSet),
+                    _ => SkipChildren(childCount),
+                });
+
+        /// <summary>Walks <c>a → entities → objects</c> and calls the handler for each object of one kind.</summary>
+        private bool WalkCollection(long count, string kind, Func<long, bool> onItem)
+            => WalkChildren(
+                count,
+                null,
+                (key, childCount, _) => NameAt(key) == "entities"
+                    ? WalkChildren(
+                        childCount,
+                        null,
+                        (itemKey, itemCount, _) => NameAt(itemKey) == kind
+                            ? onItem(itemCount)
+                            : SkipChildren(itemCount))
+                    : SkipChildren(childCount));
+
+        private bool WalkTechniqueDefinition(long count)
+        {
+            var definition = new TechniqueDefinitionDraft();
+
+            var ok = WalkChildren(
+                count,
+                (key, value) =>
+                {
+                    switch (NameAt(key))
+                    {
+                        case "entityID": definition.EntityId = Value(value); break;
+                        case "name": definition.Name = Value(value); break;
+                        case "articulationType": definition.ArticulationType = Value(value); break;
+                        case "groupType": definition.GroupType = Value(value); break;
+                        case "aliasForPlayingTechniqueID": definition.AliasFor = Value(value); break;
+                    }
+
+                    return true;
+                },
+                (_, childCount, _) => SkipChildren(childCount));
+
+            if (ok && definition.EntityId is not null)
+            {
+                _techniqueDefinitions.Add(definition);
+            }
+
+            return ok;
+        }
+
+        private bool WalkTechniqueAppearance(long count)
+        {
+            var appearance = new TechniqueAppearanceDraft();
+
+            var ok = WalkChildren(
+                count,
+                (key, value) =>
+                {
+                    switch (NameAt(key))
+                    {
+                        case "entityID": appearance.EntityId = Value(value); break;
+                        case "name": appearance.Name = Value(value); break;
+                        case "text": appearance.Text = Value(value); break;
+                        case "playingTechniqueEntityID": appearance.TechniqueId = Value(value); break;
+                        case "playingTechniqueAppearanceType": appearance.Type = Value(value); break;
+                        case "playingTechniqueAppearanceCategory": appearance.Category = Value(value); break;
+                        case "language": appearance.Language = Value(value); break;
+                    }
+
+                    return true;
+                },
+                (_, childCount, _) => SkipChildren(childCount));
+
+            if (ok && appearance.EntityId is not null)
+            {
+                _techniqueAppearances.Add(appearance);
+            }
+
+            return ok;
+        }
+
+        /// <summary>
+        /// One page template: the frames of the first page and of a normal page, left and right, and the frame chains
+        /// (a music chain carries the music, a text chain carries a heading or a page number).
+        /// </summary>
+        private bool WalkPageSet(long count)
+        {
+            var pageSet = new PageSetDraft();
+
+            var ok = WalkChildren(
+                count,
+                (key, value) =>
+                {
+                    switch (NameAt(key))
+                    {
+                        case "entityID": pageSet.EntityId = Value(value); break;
+                        case "name": pageSet.Name = Value(value); break;
+                        case "type": pageSet.Type = Value(value); break;
+                    }
+
+                    return true;
+                },
+                (key, childCount, _) => NameAt(key) switch
+                {
+                    "frameChainDefinitions" => WalkPageSetChains(childCount, pageSet),
+                    "firstPageDefinition" => WalkPageDefinition(childCount, pageSet, "first"),
+                    "normalPageDefinition" => WalkPageDefinition(childCount, pageSet, "normal"),
+                    _ => SkipChildren(childCount),
+                });
+
+            if (ok)
+            {
+                _pageSets.Add(pageSet);
+            }
+
+            return ok;
+        }
+
+        private bool WalkPageSetChains(long count, PageSetDraft pageSet)
+            => WalkChildren(
+                count,
+                null,
+                (key, childCount, _) => NameAt(key) switch
+                {
+                    "musicFrameChains" => WalkChainItems(childCount, pageSet.MusicChains),
+                    "textFrameChains" => WalkChainItems(childCount, pageSet.TextChains),
+                    _ => SkipChildren(childCount),
+                });
+
+        /// <summary>
+        /// A chain list is written twice over: an outer node named after the list, then one entry per chain. The outer
+        /// node and the entries share their name, so a name test alone would land on the wrong level.
+        /// </summary>
+        private bool WalkChainItems(long count, List<long> into)
+            => WalkChildren(
+                count,
+                null,
+                (key, childCount, _) => NameAt(key) is "musicFrameChains" or "textFrameChains"
+                    ? WalkChildren(
+                        childCount,
+                        (leafKey, leafValue) =>
+                        {
+                            if (NameAt(leafKey) == "frameChainDefinitionID")
+                            {
+                                into.Add(Number(leafValue));
+                            }
+
+                            return true;
+                        },
+                        (nodeKey, nodeCount, _) => NameAt(nodeKey) is "musicFrameChains" or "textFrameChains"
+                            ? WalkChainItems(nodeCount, into)
+                            : SkipChildren(nodeCount))
+                    : SkipChildren(childCount));
+
+        private bool WalkPageDefinition(long count, PageSetDraft pageSet, string kind)
+            => WalkChildren(
+                count,
+                null,
+                (key, childCount, _) => NameAt(key) switch
+                {
+                    "left" => WalkPageSide(childCount, pageSet, kind, "left"),
+                    "right" => WalkPageSide(childCount, pageSet, kind, "right"),
+                    _ => SkipChildren(childCount),
+                });
+
+        private bool WalkPageSide(long count, PageSetDraft pageSet, string kind, string side)
+            => WalkChildren(
+                count,
+                null,
+                (key, childCount, _) => NameAt(key) == "frames"
+                    ? WalkPageFrames(childCount, pageSet, kind, side)
+                    : SkipChildren(childCount));
+
+        private bool WalkPageFrames(long count, PageSetDraft pageSet, string kind, string side)
+            => WalkChildren(
+                count,
+                null,
+                (key, childCount, _) => NameAt(key) == "frame"
+                    ? WalkFrame(childCount, pageSet, kind, side)
+                    : SkipChildren(childCount));
+
+        private bool WalkFrame(long count, PageSetDraft pageSet, string kind, string side)
+        {
+            var frame = new FrameDraft { Kind = kind, Side = side };
+
+            var ok = WalkChildren(
+                count,
+                (key, value) =>
+                {
+                    switch (NameAt(key))
+                    {
+                        case "indexInFrameChainOnPage": frame.Index = (int)Number(value); break;
+                        case "contentRelative": frame.ContentRelative = Value(value) == "true"; break;
+                    }
+
+                    return true;
+                },
+                (key, childCount, _) => NameAt(key) switch
+                {
+                    "frameChainDefinitionID" => WalkFrameChain(childCount, frame),
+                    "constraints" => WalkFrameConstraints(childCount, frame),
+                    _ => SkipChildren(childCount),
+                });
+
+            if (ok)
+            {
+                pageSet.Frames.Add(frame);
+            }
+
+            return ok;
+        }
+
+        private bool WalkFrameChain(long count, FrameDraft frame)
+            => WalkChildren(
+                count,
+                (key, value) =>
+                {
+                    switch (NameAt(key))
+                    {
+                        case "frameChainDefinitionID": frame.Chain = Number(value); break;
+                        case "isLayoutSpecific": frame.LayoutSpecific = Value(value) == "true"; break;
+                    }
+
+                    return true;
+                },
+                (_, childCount, _) => SkipChildren(childCount));
+
+        private bool WalkFrameConstraints(long count, FrameDraft frame)
+            => WalkChildren(
+                count,
+                null,
+                (key, childCount, _) => NameAt(key) switch
+                {
+                    "positionConstraints" => WalkConstraints(childCount, frame.Position),
+                    "dimensionConstraints" => WalkConstraints(childCount, frame.Size),
+                    _ => SkipChildren(childCount),
+                });
+
+        private bool WalkConstraints(long count, List<ProjectFileTreeField> into)
+            => WalkChildren(
+                count,
+                (key, value) =>
+                {
+                    if (NameAt(key) is "left" or "right" or "top" or "bottom" or "width" or "height")
+                    {
+                        Keep(into, NameAt(key), Value(value));
+                    }
+
+                    return true;
+                },
+                (_, childCount, _) => SkipChildren(childCount));
+
+        private static void Keep(List<ProjectFileTreeField> into, string? key, string? value)
+        {
+            if (into.Count < 16)
+            {
+                into.Add(new ProjectFileTreeField(key ?? "?", value));
+            }
+        }
 
         private bool WalkPlayers(long count)
             => WalkItems(count, (_, children) =>
@@ -897,6 +1393,9 @@ internal static class ProjectFileScoreReader
 
                         return ok;
 
+                    case "SlurElementTableDefinition":
+                        return WalkElementItems(children, element => WalkSlurElement(element, flow), out _);
+
                     default:
                         return SkipChildren(children);
                 }
@@ -1047,7 +1546,9 @@ internal static class ProjectFileScoreReader
                 },
                 (_, childCount, _) => SkipChildren(childCount));
 
-        /// <summary>One lyric of a lyric element table. The shape is not known — no file in the corpus has one.</summary>
+        /// <summary>
+        /// One lyric of a lyric element table. The shape is not known — no file in the corpus has one.
+        /// </summary>
         private bool WalkLyricElement(long count, FlowDraft flow)
         {
             var fields = new List<string>();
@@ -1070,6 +1571,36 @@ internal static class ProjectFileScoreReader
             if (ok)
             {
                 flow.LyricShapes.Add(fields);
+            }
+
+            return ok;
+        }
+
+        /// <summary>
+        /// One slur element: the shared definition a slur's events point at. Its own content is the list of the events
+        /// that reference it — a slur over a chord is one element referenced by one event per notehead.
+        /// </summary>
+        private bool WalkSlurElement(long count, FlowDraft flow)
+        {
+            var element = new SlurElementDraft();
+
+            var ok = WalkChildren(
+                count,
+                (key, value) =>
+                {
+                    switch (NameAt(key))
+                    {
+                        case "elementID": element.Id = Number(value); break;
+                        case "referencingEventIDs": element.Events = Value(value); break;
+                    }
+
+                    return true;
+                },
+                (_, childCount, _) => SkipChildren(childCount));
+
+            if (ok && element.Id >= 0)
+            {
+                flow.SlurElements[element.Id] = element;
             }
 
             return ok;
@@ -1226,10 +1757,133 @@ internal static class ProjectFileScoreReader
                 (key, childCount, _) => NameAt(key) switch
                 {
                     "NoteEventDefinition" => WalkNote(childCount, stream, flow),
+                    "SlurEventDefinition" => WalkSlurEvent(childCount, stream, flow),
+                    "PlayingTechniqueEventDefinition" => WalkTechniqueEvent(childCount, stream, flow),
                     "BarDivisionEventDefinition" => WalkBarDivisionEvent(childCount),
                     "DynamicGroupEventDefinition" => WalkDynamicEvent(childCount, stream, flow),
                     _ => SkipChildren(childCount),
                 });
+
+        /// <summary>
+        /// One slur, placed in the music. The event carries where it starts and how long it is; the element it names
+        /// carries nothing but the list of the events that share it, so two events of the same element are two
+        /// noteheads of one slur.
+        /// </summary>
+        private bool WalkSlurEvent(long count, long stream, FlowDraft flow)
+        {
+            var slur = new SlurDraft { Stream = stream, Flow = flow };
+
+            var ok = WalkChildren(
+                count,
+                (key, value) =>
+                {
+                    switch (NameAt(key))
+                    {
+                        case "eventID": slur.EventId = Number(value); break;
+                        case "position": slur.Position = ScoreRational.Parse(Value(value)); break;
+                        case "duration": slur.Duration = Value(value) ?? string.Empty; break;
+                        case "slurElementID": slur.Element = Number(value); break;
+                    }
+
+                    return true;
+                },
+                (key, childCount, _) => NameAt(key) == "propertyTable"
+                    ? WalkPropertyTable(childCount, slur.Properties)
+                    : SkipChildren(childCount));
+
+            if (ok)
+            {
+                flow.Slurs++;
+                _slurs.Add(slur);
+            }
+
+            return ok;
+        }
+
+        /// <summary>
+        /// A playing technique placed in the music as its own event. The file writes which <i>appearance</i> is shown
+        /// (<c>pta.pizzText</c>); the appearance's definition names the technique (<c>pt.pizzicato</c>) behind it.
+        /// </summary>
+        private bool WalkTechniqueEvent(long count, long stream, FlowDraft flow)
+        {
+            var technique = new TechniqueEventDraft { Stream = stream };
+
+            var ok = WalkChildren(
+                count,
+                (key, value) =>
+                {
+                    switch (NameAt(key))
+                    {
+                        case "eventID": technique.EventId = Number(value); break;
+                        case "position": technique.Position = ScoreRational.Parse(Value(value)); break;
+                        case "duration": technique.Duration = Value(value) ?? string.Empty; break;
+                        case "appearanceEntityID": technique.AppearanceId = Value(value); break;
+                        case "appearanceType": technique.AppearanceType = Value(value); break;
+                        case "data": technique.Data = Value(value); break;
+                    }
+
+                    return true;
+                },
+                (key, childCount, _) => NameAt(key) == "propertyTable"
+                    ? WalkPropertyTable(childCount, technique.Properties)
+                    : SkipChildren(childCount));
+
+            if (ok)
+            {
+                flow.Techniques++;
+                _techniqueEvents.Add(technique);
+            }
+
+            return ok;
+        }
+
+        /// <summary>
+        /// A note's property table: the decorations that are not events of their own — articulations, a tie's
+        /// engraving, a beam break, a playing technique attached to the note. An empty table is written as a leaf
+        /// named <c>entries</c> with no value, so it is read through the leaf as well as the node.
+        /// </summary>
+        private bool WalkPropertyTable(long count, List<PropertyDraft> into)
+            => WalkChildren(
+                count,
+                null,
+                (key, childCount, _) => NameAt(key) == "entries"
+                    ? WalkPropertyEntries(childCount, into)
+                    : SkipChildren(childCount));
+
+        private bool WalkPropertyEntries(long count, List<PropertyDraft> into)
+            => WalkChildren(
+                count,
+                null,
+                (key, childCount, _) => NameAt(key) == "entry"
+                    ? WalkPropertyEntry(childCount, into)
+                    : SkipChildren(childCount));
+
+        private bool WalkPropertyEntry(long count, List<PropertyDraft> into)
+        {
+            string? type = null;
+            string? value = null;
+
+            var ok = WalkChildren(
+                count,
+                (key, leafValue) =>
+                {
+                    switch (NameAt(key))
+                    {
+                        case "propertyType": type = Value(leafValue); break;
+                        case "value": value = Value(leafValue); break;
+                    }
+
+                    return true;
+                },
+                (_, childCount, _) => SkipChildren(childCount));
+
+            if (ok && type is not null)
+            {
+                into.Add(new PropertyDraft(type, value));
+            }
+
+            return ok;
+        }
 
         /// <summary>
         /// A dynamic marking placed in the music. The event says where it goes and which group it is; the group
@@ -1283,7 +1937,9 @@ internal static class ProjectFileScoreReader
 
                     return true;
                 },
-                (_, childCount, _) => SkipChildren(childCount));
+                (key, childCount, _) => NameAt(key) == "propertyTable"
+                    ? WalkPropertyTable(childCount, note.Properties)
+                    : SkipChildren(childCount));
 
             if (ok)
             {
@@ -1461,6 +2117,82 @@ internal static class ProjectFileScoreReader
                 _flows.Sum(flow => flow.LyricElements),
                 _flows.SelectMany(flow => flow.LyricShapes).ToList());
 
+            var slurs = _slurs
+                .OrderBy(slur => slur.Position)
+                .ThenBy(slur => slur.Stream)
+                .ThenBy(slur => slur.EventId)
+                .Select(slur =>
+                {
+                    var element = Element(slur.Flow, slur.Element);
+
+                    return new ProjectFileSlur(
+                        Locate(spans, slur.Position, slur.EventId, slur.Duration, slur.Stream, names, instruments),
+                        slur.Element < 0 ? null : slur.Element,
+                        element is null ? 0 : Ids(element.Events).Count,
+                        Property(slur.Properties, "kSlurForcedDirection") is { } direction
+                            ? ProjectFileScoreReader.VariantText(direction)
+                            : null,
+                        AsInt(Property(slur.Properties, "kSlurEndVoiceID")),
+                        [.. slur.Properties.Select(property => AsField(property))]);
+                })
+                .ToList();
+
+            var slurElements = _flows
+                .SelectMany(flow => flow.SlurElements.Values)
+                .OrderBy(element => element.Id)
+                .Select(element => new ProjectFileSlurElement(element.Id, Ids(element.Events)))
+                .ToList();
+
+            // Every decoration a note carries as a property, in the file's own words. Notes are already sorted into
+            // score order, so the marks come out in the same order and can be read beside them.
+            var marks = new List<ProjectFileNoteMark>();
+            var catalogue = TechniqueCatalogue();
+
+            foreach (var note in _notes)
+            {
+                if (note.Properties.Count == 0)
+                {
+                    continue;
+                }
+
+                var midi = Midi(note.Pitch);
+                var location = Locate(spans, note.Position, note.EventId, note.Duration, note.Stream, names, instruments, midi);
+
+                foreach (var property in note.Properties)
+                {
+                    marks.Add(new ProjectFileNoteMark(
+                        location,
+                        MarkFamily(property.Type),
+                        property.Type,
+                        property.Value,
+                        MarkName(property.Type, property.Value, catalogue)));
+                }
+            }
+
+            var techniqueEvents = _techniqueEvents
+                .OrderBy(technique => technique.Position)
+                .ThenBy(technique => technique.Stream)
+                .ThenBy(technique => technique.EventId)
+                .Select(technique =>
+                {
+                    var appearance = _techniqueAppearances
+                        .FirstOrDefault(item => item.EntityId == technique.AppearanceId);
+                    var defined = appearance is null
+                        ? null
+                        : catalogue.GetValueOrDefault(appearance.TechniqueId ?? string.Empty);
+
+                    return new ProjectFileTechniqueEvent(
+                        Locate(spans, technique.Position, technique.EventId, technique.Duration, technique.Stream, names, instruments),
+                        technique.AppearanceId,
+                        technique.AppearanceType,
+                        appearance?.TechniqueId,
+                        defined,
+                        appearance?.Text,
+                        appearance?.Name,
+                        [.. technique.Properties.Select(property => AsField(property))]);
+                })
+                .ToList();
+
             return new ProjectFileScore(
                 _fileVersion,
                 _names.Count,
@@ -1489,9 +2221,136 @@ internal static class ProjectFileScoreReader
                 notes,
                 dynamics,
                 groups,
+                slurs,
+                slurElements,
+                marks,
+                techniqueEvents,
+                [.. _techniqueDefinitions.Select(definition => new ProjectFileTechniqueDefinition(
+                    definition.EntityId ?? string.Empty,
+                    definition.Name,
+                    definition.ArticulationType,
+                    definition.GroupType,
+                    definition.AliasFor))],
+                [.. _techniqueAppearances.Select(appearance => new ProjectFileTechniqueAppearance(
+                    appearance.EntityId ?? string.Empty,
+                    appearance.Name,
+                    appearance.Text,
+                    appearance.TechniqueId,
+                    appearance.Type,
+                    appearance.Category,
+                    appearance.Language))],
+                new ProjectFileLayoutData(
+                    [.. _layouts.Select(layout => new ProjectFileLayoutPage(
+                        (int)layout.Id,
+                        DisplayName(layout.Name),
+                        layout.Type,
+                        (int)layout.Number,
+                        layout.PageSet,
+                        layout.PageWidth,
+                        layout.PageHeight,
+                        layout.SpaceSize,
+                        [.. layout.Margins],
+                        [.. layout.CastingOff],
+                        layout.FrameChainOverrides))],
+                    [.. _pageSets.Select(pageSet => new ProjectFilePageSet(
+                        pageSet.EntityId,
+                        pageSet.Name,
+                        pageSet.Type,
+                        [.. pageSet.MusicChains],
+                        [.. pageSet.TextChains],
+                        [.. pageSet.Frames.Select(frame => new ProjectFileFrame(
+                            frame.Kind,
+                            frame.Side,
+                            frame.Chain,
+                            frame.LayoutSpecific,
+                            frame.Index,
+                            frame.ContentRelative,
+                            [.. frame.Position],
+                            [.. frame.Size]))]))],
+                    _layouts.Sum(layout => layout.FrameChainOverrides)),
                 lyrics,
                 lastMeasure);
         }
+
+        /// <summary>The flow a slur's element table belongs to: the flow whose blocks hold the slur event.</summary>
+        private static SlurElementDraft? Element(FlowDraft? flow, long element)
+            => flow is not null && element >= 0 && flow.SlurElements.TryGetValue(element, out var found) ? found : null;
+
+        /// <summary>The MIDI number a note event writes, or null when the field is not one.</summary>
+        private static int? Midi(string? pitch)
+            => int.TryParse(pitch, NumberStyles.Integer, CultureInfo.InvariantCulture, out var value) ? value : null;
+
+        /// <summary>A property of an event, by the file's own name for it.</summary>
+        private static string? Property(List<PropertyDraft> properties, string name)
+            => properties.FirstOrDefault(property => property.Type == name)?.Value;
+
+        private static int? AsInt(string? value)
+            => int.TryParse(VariantText(value), NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed)
+                ? parsed
+                : null;
+
+        private static ProjectFileTreeField AsField(PropertyDraft property)
+            => new(property.Type, property.Value);
+
+        /// <summary>
+        /// The location of one event: its own position and duration, the measure and beat the metre puts it at, and
+        /// the player, instrument, stave and voice of the stream it sounds in. The note text and the pitch name are
+        /// the ones the note reader already derived, or null for an event that is not a note.
+        /// </summary>
+        private ProjectFileLocation Locate(
+            List<MeterSpan> spans,
+            ScoreRational position,
+            long eventId,
+            string duration,
+            long stream,
+            Dictionary<long, string?> names,
+            Dictionary<(long Player, long Instrument), string?> instruments,
+            int? midi = null)
+        {
+            var (measure, beat) = Locate(spans, position);
+            _streamStaves.TryGetValue(stream, out var stave);
+
+            return new ProjectFileLocation(
+                eventId,
+                (int)measure,
+                beat.ToText(),
+                position.ToText(),
+                duration,
+                midi,
+                midi is null ? null : PitchName(midi.Value),
+                stream < 0 ? null : (int)stream,
+                stave is null || stave.PlayerId is null ? null : names.GetValueOrDefault(stave.PlayerId.Value),
+                stave is null || stave.PlayerId is null || stave.InstrumentId is null
+                    ? null
+                    : instruments.GetValueOrDefault((stave.PlayerId.Value, stave.InstrumentId.Value)),
+                stave?.Stave,
+                stave?.Voice);
+        }
+
+        /// <summary>The score's own playing-technique catalogue, by entity id.</summary>
+        private Dictionary<string, string?> TechniqueCatalogue()
+        {
+            var catalogue = new Dictionary<string, string?>(StringComparer.Ordinal);
+
+            foreach (var definition in _techniqueDefinitions)
+            {
+                if (definition.EntityId is not null)
+                {
+                    catalogue[definition.EntityId] = definition.Name;
+                }
+            }
+
+            return catalogue;
+        }
+
+        /// <summary>A comma-separated id list from the file, as numbers.</summary>
+        private static List<long> Ids(string? text)
+            => [.. (text ?? string.Empty)
+                .Split(',', StringSplitOptions.RemoveEmptyEntries)
+                .Select(part => long.TryParse(part.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var value)
+                    ? value
+                    : -1)
+                .Where(value => value >= 0)];
 
         private static ProjectFileDynamicMark AsMark(
             DynamicMarkDraft mark,
@@ -1785,6 +2644,13 @@ internal static class ProjectFileScoreReader
         public long Number;
         public string? Name;
         public string? Type;
+        public string? PageSet;
+        public string? PageWidth;
+        public string? PageHeight;
+        public string? SpaceSize;
+        public int FrameChainOverrides;
+        public List<ProjectFileTreeField> Margins { get; } = [];
+        public List<ProjectFileTreeField> CastingOff { get; } = [];
     }
 
     private sealed class FlowDraft
@@ -1795,10 +2661,90 @@ internal static class ProjectFileScoreReader
         public int Blocks;
         public int Notes;
         public int Dynamics;
+        public int Slurs;
+        public int Techniques;
         public int LyricTables;
         public int LyricElements;
         public List<List<string>> LyricShapes { get; } = [];
         public Dictionary<long, DynamicGroupDraft> Groups { get; } = [];
+        public Dictionary<long, SlurElementDraft> SlurElements { get; } = [];
+    }
+
+    /// <summary>A slur element: an id and the events that reference it.</summary>
+    private sealed class SlurElementDraft
+    {
+        public long Id = -1;
+        public string? Events;
+    }
+
+    /// <summary>One property of an event: the file's own name for it and its value, encoded as a variant.</summary>
+    private sealed record PropertyDraft(string Type, string? Value);
+
+    /// <summary>A slur placed in the music, before its measure, its stave and its element are resolved.</summary>
+    private sealed class SlurDraft
+    {
+        public long EventId;
+        public ScoreRational Position;
+        public string Duration = string.Empty;
+        public long Element = -1;
+        public long Stream = -1;
+        public FlowDraft? Flow;
+        public List<PropertyDraft> Properties { get; } = [];
+    }
+
+    /// <summary>A playing technique placed in the music, before its appearance and technique are resolved.</summary>
+    private sealed class TechniqueEventDraft
+    {
+        public long EventId;
+        public ScoreRational Position;
+        public string Duration = string.Empty;
+        public string? AppearanceId;
+        public string? AppearanceType;
+        public string? Data;
+        public long Stream = -1;
+        public List<PropertyDraft> Properties { get; } = [];
+    }
+
+    private sealed class TechniqueDefinitionDraft
+    {
+        public string? EntityId;
+        public string? Name;
+        public string? ArticulationType;
+        public string? GroupType;
+        public string? AliasFor;
+    }
+
+    private sealed class TechniqueAppearanceDraft
+    {
+        public string? EntityId;
+        public string? Name;
+        public string? Text;
+        public string? TechniqueId;
+        public string? Type;
+        public string? Category;
+        public string? Language;
+    }
+
+    private sealed class PageSetDraft
+    {
+        public string? EntityId;
+        public string? Name;
+        public string? Type;
+        public List<long> MusicChains { get; } = [];
+        public List<long> TextChains { get; } = [];
+        public List<FrameDraft> Frames { get; } = [];
+    }
+
+    private sealed class FrameDraft
+    {
+        public string Kind = "normal";
+        public string Side = "left";
+        public long? Chain;
+        public bool? LayoutSpecific;
+        public int? Index;
+        public bool? ContentRelative;
+        public List<ProjectFileTreeField> Position { get; } = [];
+        public List<ProjectFileTreeField> Size { get; } = [];
     }
 
     /// <summary>A dynamic group as the flow defines it: an id, the events that name it, and its parts.</summary>
@@ -1852,6 +2798,7 @@ internal static class ProjectFileScoreReader
         public string? Pitch;
         public int Stave;
         public long Stream = -1;
+        public List<PropertyDraft> Properties { get; } = [];
     }
 
     private sealed record MeterEventDraft(long ElementId, ScoreRational Position);

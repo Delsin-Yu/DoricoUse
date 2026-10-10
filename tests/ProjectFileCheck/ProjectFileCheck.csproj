@@ -17,6 +17,11 @@
   <ItemGroup>
     <Compile Include="../../src/DoricoUse.Cli/CliException.cs" />
     <Compile Include="../../src/DoricoUse.Cli/Dorico/ProjectFile*.cs" />
+    <Compile Include="../../src/DoricoUse.Cli/Dorico/NodeRead.cs" />
+    <Compile Include="../../src/DoricoUse.Cli/Dorico/DoricoProtocol.cs" />
+    <Compile Include="../../src/DoricoUse.Cli/Json/JsonArr.cs" />
+    <Compile Include="../../src/DoricoUse.Cli/Views/Pattern.cs" />
+    <Compile Include="../../src/DoricoUse.Cli/Views/ProjectFileView.cs" />
   </ItemGroup>
 
 </Project>

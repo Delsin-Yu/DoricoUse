@@ -121,30 +121,79 @@ internal static class SaveCopy
     }
 
     /// <summary>
+    /// Sends one Dorico command through whoever owns the connection: the CLI's host process (the default) or the
+    /// host itself, which already holds the connection and must not call back into its own pipe.
+    /// </summary>
+    /// <param name="name">The Dorico command name.</param>
+    /// <param name="parameters">Its parameters, or null for a command without any.</param>
+    /// <param name="timeout">How long to wait for the answer.</param>
+    /// <param name="cancellationToken">Cancellation.</param>
+    public delegate Task<JsonObject> CommandSender(
+        string name,
+        IReadOnlyList<KeyValuePair<string, string>>? parameters,
+        TimeSpan timeout,
+        CancellationToken cancellationToken);
+
+    /// <summary>
     /// Asks Dorico to write the open project to <paramref name="path"/> and returns the command's own receipt.
     /// </summary>
     /// <remarks>
     /// The status is deliberately not read back: what proves this command is the file on disk, not a status field,
     /// and the answer is a receipt either way (Dorico answers kOK before it has finished writing).
     /// </remarks>
-    public static async Task<JsonObject> SaveAsync(
+    public static Task<JsonObject> SaveAsync(
         string path,
         TimeSpan timeout,
         CancellationToken cancellationToken,
         int? expectScore = null)
+        => SaveAsync(path, timeout, cancellationToken, expectScore, SendThroughHostAsync);
+
+    /// <summary>
+    /// The same save, sent over a connection the caller already owns. <c>note insert --read</c> uses this so the
+    /// save happens inside the host's gated exchange with the notes, and not a round trip later — a window that
+    /// changes between the two would make File.SaveAs write somebody else's document.
+    /// </summary>
+    /// <remarks>
+    /// <paramref name="expectScore"/> is not sent here: a caller that owns the live connection guards the document
+    /// itself (a status read in the same exchange), because the guard is a host operation, not a Dorico parameter.
+    /// </remarks>
+    public static Task<JsonObject> SaveAsync(
+        string path,
+        TimeSpan timeout,
+        CancellationToken cancellationToken,
+        int? expectScore,
+        CommandSender sender)
     {
+        _ = expectScore;
+
+        return sender(
+            SaveAsCommand,
+            [new KeyValuePair<string, string>(PathParameter, path)],
+            timeout,
+            cancellationToken);
+    }
+
+    /// <summary>The default route: through the host process, which owns the Dorico connection.</summary>
+    private static async Task<JsonObject> SendThroughHostAsync(
+        string name,
+        IReadOnlyList<KeyValuePair<string, string>>? parameters,
+        TimeSpan timeout,
+        CancellationToken cancellationToken)
+    {
+        var parameterJson = new JsonObject();
+
+        foreach (var (key, value) in parameters ?? [])
+        {
+            parameterJson[key] = value;
+        }
+
         var args = new JsonObject
         {
-            ["name"] = SaveAsCommand,
-            ["parameters"] = new JsonObject { [PathParameter] = path },
+            ["name"] = name,
+            ["parameters"] = parameterJson,
             ["waitMs"] = 0,
             ["verify"] = false,
         };
-
-        if (expectScore is not null)
-        {
-            args["expectScore"] = expectScore.Value;
-        }
 
         var payload = await HostClient
             .CallAsync(HostProtocol.OpCommand, args, timeout, cancellationToken)

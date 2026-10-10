@@ -416,7 +416,19 @@ internal sealed class HostServer(HostOptions options, HostLog log)
         var verify = NodeRead.Bool(args, "verify") ?? true;
         var dryRun = NodeRead.Bool(args, "dryRun") ?? false;
         var mode = NodeRead.Str(args, "mode");
+        var fromStart = NodeRead.Bool(args, "fromStart") ?? false;
+        var read = NodeRead.Bool(args, "read") ?? false;
+        var readPath = NodeRead.Str(args, "readPath");
+        var readOptions = ReadReadOptions(NodeRead.Obj(args, "readOptions"));
         string? requestedMode = null;
+
+        if (read && string.IsNullOrWhiteSpace(readPath))
+        {
+            throw new CliException(
+                "InvalidArgument",
+                "note insert --read needs the path of the copy to save (the CLI resolves it from --read-to).",
+                1);
+        }
 
         if (!string.IsNullOrWhiteSpace(mode))
         {
@@ -569,7 +581,7 @@ internal sealed class HostServer(HostOptions options, HostLog log)
                 ["duration"] = resolvedDuration,
                 ["grid"] = grid,
                 ["tuplet"] = resolvedTuplet,
-                ["steps"] = StepsJson(steps),
+                ["steps"] = StepsJson(fromStart ? CaretResetSteps(steps) : steps),
                 ["enterDecision"] = "Note input needs Write mode, and NoteInput.Enter is a toggle, so both are "
                     + "sent only when the status says they are needed. Run without --dry-run to see which ones "
                     + "were.",
@@ -586,6 +598,23 @@ internal sealed class HostServer(HostOptions options, HostLog log)
                             + "only when it differs, so --dry-run cannot say whether it will be needed.",
                 },
             };
+
+            if (fromStart)
+            {
+                plan["fromStart"] = new JsonObject
+                {
+                    ["commands"] = new JsonArray(
+                        (JsonNode?)JsonValue.Create("NoteInput.Exit (only when note input is on)"),
+                        (JsonNode?)JsonValue.Create("Edit.SelectNone"),
+                        (JsonNode?)JsonValue.Create("NoteInput.Enter")),
+                    ["note"] = CaretResetNote,
+                };
+            }
+
+            if (read)
+            {
+                plan["read"] = ReadPlan(readPath!, readOptions);
+            }
 
             if (chordCount > 0)
             {
@@ -606,11 +635,19 @@ internal sealed class HostServer(HostOptions options, HostLog log)
         // +3 covers the two conditional preamble commands (write mode, note input) and the note input mode.
         var budget = (stepTimeout * (steps.Count + 3)) + statusTimeout + TimeSpan.FromMilliseconds(waitMs);
 
+        if (read)
+        {
+            // Writing the copy and decoding it: the save is about a second, the watch budget is the rest.
+            budget += SaveCopy.DefaultWait + TimeSpan.FromSeconds(10);
+        }
+
         return await _keeper.ExecuteAsync("note insert", async client =>
         {
             var results = new JsonArray();
             var started = Stopwatch.GetTimestamp();
             var enteredNoteInput = false;
+            var leftNoteInput = false;
+            var caretReset = false;
 
             var status = await client.GetStatusAsync(statusTimeout, _cts.Token).ConfigureAwait(false);
             EnsureExpectedScore(args, status);
@@ -635,7 +672,50 @@ internal sealed class HostServer(HostOptions options, HostLog log)
                     (long)Stopwatch.GetElapsedTime(switchStarted).TotalMilliseconds));
             }
 
-            if (NodeRead.Bool(status, "noteInputActive") != true)
+            var noteInputActive = NodeRead.Bool(status, "noteInputActive") == true;
+
+            if (fromStart)
+            {
+                // The only way back to a known place. NoteInput.Enter puts the caret at the start of the flow only
+                // when nothing is selected AND it was off, and Edit.SelectNone on its own leaves the caret where
+                // the last write left it, so the cycle is forced: off, deselect, enter.
+                if (noteInputActive)
+                {
+                    var exitStarted = Stopwatch.GetTimestamp();
+                    var exitAck = await client.SendCommandAsync("NoteInput.Exit", null, stepTimeout, _cts.Token)
+                        .ConfigureAwait(false);
+
+                    leftNoteInput = true;
+                    JsonArr.AddNode(results, AckJson(
+                        "NoteInput.Exit",
+                        null,
+                        exitAck,
+                        (long)Stopwatch.GetElapsedTime(exitStarted).TotalMilliseconds));
+                }
+
+                var selectNoneStarted = Stopwatch.GetTimestamp();
+                var selectNoneAck = await client.SendCommandAsync("Edit.SelectNone", null, stepTimeout, _cts.Token)
+                    .ConfigureAwait(false);
+
+                JsonArr.AddNode(results, AckJson(
+                    "Edit.SelectNone",
+                    null,
+                    selectNoneAck,
+                    (long)Stopwatch.GetElapsedTime(selectNoneStarted).TotalMilliseconds));
+
+                var enterStarted = Stopwatch.GetTimestamp();
+                var enterAck = await client.SendCommandAsync("NoteInput.Enter", null, stepTimeout, _cts.Token)
+                    .ConfigureAwait(false);
+
+                enteredNoteInput = true;
+                caretReset = true;
+                JsonArr.AddNode(results, AckJson(
+                    "NoteInput.Enter",
+                    null,
+                    enterAck,
+                    (long)Stopwatch.GetElapsedTime(enterStarted).TotalMilliseconds));
+            }
+            else if (!noteInputActive)
             {
                 var enterAck = await client.SendCommandAsync("NoteInput.Enter", null, stepTimeout, _cts.Token)
                     .ConfigureAwait(false);
@@ -713,16 +793,48 @@ internal sealed class HostServer(HostOptions options, HostLog log)
                 payload["staff"] = StaffJson(staff);
             }
 
+            if (fromStart)
+            {
+                payload["fromStart"] = new JsonObject
+                {
+                    ["command"] = "Edit.SelectNone",
+                    ["noteInputCycled"] = leftNoteInput,
+                    ["enteredNoteInput"] = caretReset,
+                    ["note"] = CaretResetNote,
+                };
+            }
+
+            // The proof: ask Dorico to write a copy of the document the notes went into. This happens from here,
+            // inside the same gated exchange as the notes, because File.SaveAs saves whichever document is active
+            // and a window that comes to the front in between would send the copy to somebody else's project; the
+            // guard is read again immediately before the save. The CLI decodes the copy (see NoteReadback).
+            async Task AddReadAsync()
+            {
+                if (!read)
+                {
+                    return;
+                }
+
+                await EnsureExpectedScoreAsync(client, args, statusTimeout).ConfigureAwait(false);
+
+                payload["read"] = await NoteReadback
+                    .SaveAsync(client, readPath!, statusTimeout, _cts.Token)
+                    .ConfigureAwait(false);
+            }
+
             if (stoppedAt is not null)
             {
                 payload["stoppedAt"] = stoppedAt;
                 payload["note"] = "The sequence stopped at the first command Dorico refused.";
+                await AddReadAsync().ConfigureAwait(false);
 
                 return new JsonObject { ["note"] = payload };
             }
 
             if (!verify)
             {
+                await AddReadAsync().ConfigureAwait(false);
+
                 return new JsonObject { ["note"] = payload };
             }
 
@@ -734,13 +846,78 @@ internal sealed class HostServer(HostOptions options, HostLog log)
             var after = await client.GetStatusAsync(statusTimeout, _cts.Token).ConfigureAwait(false);
             payload["status"] = SessionView.Status(after);
             payload["mode"] = modePayload(NodeRead.Str(after, "noteInputMode"));
-            payload["note"] = "kOK only acknowledges receipt; the status shows the caret is where the commands left "
-                + "it and the mode that was in force, not which notes landed. Check the score (or an undo) to be "
-                + "sure.";
+            payload["note"] = read
+                ? "kOK only acknowledges receipt; 'read' is the answer. Dorico was asked to write a copy of the "
+                    + "document it just wrote into (File.SaveAs, the same round trip as `session read`) and the CLI "
+                    + "decoded it, so read.score.notes is the position of every note that is really in the score."
+                : "kOK only acknowledges receipt; the status shows the caret is where the commands left it and the "
+                    + "mode that was in force, not which notes landed. Check the score (or an undo) to be sure.";
+
+            await AddReadAsync().ConfigureAwait(false);
 
             return new JsonObject { ["note"] = payload };
         }, budget, _cts.Token).ConfigureAwait(false);
     }
+
+    /// <summary>What <c>--from-start</c> does, in the words both the plan and the report carry.</summary>
+    private const string CaretResetNote =
+        "NoteInput.Exit (only when note input was on), Edit.SelectNone and NoteInput.Enter were sent before the "
+        + "notes. With nothing selected and note input off, NoteInput.Enter puts the caret at the start of the flow, "
+        + "which is the only way to write from a known place: Dorico has no caret query, NoteInput.EnterAtPoint does "
+        + "not address a point, and Edit.GoTo does not jump to a bar (both measured, see the README).";
+
+    /// <summary>The commands <c>--from-start</c> sends, for the dry-run plan.</summary>
+    private static List<Step> CaretResetSteps(List<Step> steps)
+    {
+        var planned = new List<Step>
+        {
+            new("NoteInput.Exit"),
+            new("Edit.SelectNone"),
+            new("NoteInput.Enter"),
+        };
+
+        planned.AddRange(steps);
+
+        return planned;
+    }
+
+    /// <summary>What the planned read would do, for the dry-run plan.</summary>
+    private static JsonObject ReadPlan(string path, ProjectFileView.Options options)
+    {
+        var measures = options.FirstMeasure is { } first && options.LastMeasure is { } last
+            ? first == last
+                ? first.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                : $"{first}-{last}"
+            : null;
+
+        return new JsonObject
+        {
+            ["path"] = path,
+            ["saveCommand"] = $"{SaveCopy.SaveAsCommand}?{SaveCopy.PathParameter}={path}",
+            ["options"] = new JsonObject
+            {
+                ["noteLimit"] = options.NoteLimit,
+                ["measures"] = measures,
+                ["player"] = options.Player,
+            },
+            ["note"] = "After the notes are entered, Dorico saves a copy to this path and the copy is decoded with "
+                + "the same reader as `file read`, so the payload's read.score.notes is what really landed. The "
+                + "path is checked for an existing file before anything is sent, and the document is rebound to the "
+                + "copy (File.SaveAs) - see read.save.document.",
+        };
+    }
+
+    /// <summary>
+    /// The read options the CLI resolved: how many notes, which measures, which player.
+    /// </summary>
+    private static ProjectFileView.Options ReadReadOptions(JsonObject? options) => new()
+    {
+        // -1 is "every note" and 0 is "the shape alone", so the clamp keeps both.
+        NoteLimit = (int)Math.Clamp(NodeRead.Long(options, "noteLimit") ?? ProjectFileView.DefaultNoteLimit, -1, 100_000),
+        FirstMeasure = NodeRead.Int(options, "firstMeasure"),
+        LastMeasure = NodeRead.Int(options, "lastMeasure"),
+        Player = NodeRead.Str(options, "player"),
+    };
 
     /// <summary>
     /// Reports the note input mode the way an agent needs it: what it asked for, what was in force before, what

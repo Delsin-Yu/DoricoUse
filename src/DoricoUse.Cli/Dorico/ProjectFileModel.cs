@@ -59,8 +59,136 @@ internal sealed record ProjectFileScore(
     IReadOnlyList<ProjectFileNote> Notes,
     IReadOnlyList<ProjectFileDynamic> Dynamics,
     IReadOnlyList<ProjectFileDynamicGroup> DynamicGroups,
+    IReadOnlyList<ProjectFileSlur> Slurs,
+    IReadOnlyList<ProjectFileSlurElement> SlurElements,
+    IReadOnlyList<ProjectFileNoteMark> NoteMarks,
+    IReadOnlyList<ProjectFileTechniqueEvent> TechniqueEvents,
+    IReadOnlyList<ProjectFileTechniqueDefinition> TechniqueDefinitions,
+    IReadOnlyList<ProjectFileTechniqueAppearance> TechniqueAppearances,
+    ProjectFileLayoutData Layout,
     ProjectFileLyrics Lyrics,
     int LastMeasure);
+
+/// <summary>
+/// Where a notated event sits, in the terms every event of a flow shares: its own position and sounding duration,
+/// the measure and beat derived from the metre, and the player, instrument, stave and voice of its stream.
+/// </summary>
+internal sealed record ProjectFileLocation(
+    long EventId,
+    int Measure,
+    string Beat,
+    string Position,
+    string Duration,
+    int? Midi,
+    string? Pitch,
+    int? Stream,
+    string? Player,
+    string? Instrument,
+    int? Stave,
+    int? Voice);
+
+/// <summary>
+/// One slur, as the file writes it: an event with a position and a length, plus the element it shares with the other
+/// slurs of the same object (a slur over a chord is one element with one event per notehead).
+/// </summary>
+internal sealed record ProjectFileSlur(
+    ProjectFileLocation Location,
+    long? Element,
+    int Noteheads,
+    string? Direction,
+    int? EndVoice,
+    IReadOnlyList<ProjectFileTreeField> Fields);
+
+/// <summary>
+/// A slur element: the shared definition the slur events point at. Its only content is the list of the events that
+/// reference it, which is the other end of the same link.
+/// </summary>
+internal sealed record ProjectFileSlurElement(long Id, IReadOnlyList<long> Events);
+
+/// <summary>
+/// One decoration the file stores as a property on a note event: an articulation, a tie, a beam break, a playing
+/// technique, or a property this reader does not model. <see cref="Name"/> is derived from the score's own
+/// playing-technique catalogue and is null when the catalogue has no entry for the value.
+/// </summary>
+internal sealed record ProjectFileNoteMark(
+    ProjectFileLocation Location,
+    string Family,
+    string Property,
+    string? Value,
+    string? Name);
+
+/// <summary>
+/// A playing technique placed in the music as its own event. The file writes the <i>appearance</i>
+/// (<c>pta.*</c>, e.g. the text "pizz"); the appearance's own definition names the technique (<c>pt.*</c>) it shows,
+/// and the score's playing-technique catalogue names that.
+/// </summary>
+internal sealed record ProjectFileTechniqueEvent(
+    ProjectFileLocation Location,
+    string? AppearanceId,
+    string? AppearanceType,
+    string? TechniqueId,
+    string? TechniqueName,
+    string? Text,
+    string? AppearanceName,
+    IReadOnlyList<ProjectFileTreeField> Fields);
+
+/// <summary>One entry of the score's own playing-technique catalogue (<c>pt.accent</c> → "Accent").</summary>
+internal sealed record ProjectFileTechniqueDefinition(
+    string EntityId,
+    string? Name,
+    string? ArticulationType,
+    string? GroupType,
+    string? AliasFor);
+
+/// <summary>One entry of the score's own playing-technique appearance catalogue (<c>pta.pizzText</c>).</summary>
+internal sealed record ProjectFileTechniqueAppearance(
+    string EntityId,
+    string? Name,
+    string? Text,
+    string? TechniqueId,
+    string? Type,
+    string? Category,
+    string? Language);
+
+/// <summary>What the file says about layout: the page boxes and their frames. Not which pages a measure lands on.</summary>
+internal sealed record ProjectFileLayoutData(
+    IReadOnlyList<ProjectFileLayoutPage> Layouts,
+    IReadOnlyList<ProjectFilePageSet> PageSets,
+    int FrameChainOverrides);
+
+/// <summary>One layout's page setup, in the file's own units (points — see the report's caveats).</summary>
+internal sealed record ProjectFileLayoutPage(
+    int LayoutId,
+    string? Name,
+    string? Type,
+    int Number,
+    string? PageSet,
+    string? PageWidth,
+    string? PageHeight,
+    string? SpaceSize,
+    IReadOnlyList<ProjectFileTreeField> Margins,
+    IReadOnlyList<ProjectFileTreeField> CastingOff,
+    int FrameChainOverrides);
+
+/// <summary>A page template from the library: which frames each page of a page pair holds.</summary>
+internal sealed record ProjectFilePageSet(
+    string? EntityId,
+    string? Name,
+    string? Type,
+    IReadOnlyList<long> MusicChains,
+    IReadOnlyList<long> TextChains,
+    IReadOnlyList<ProjectFileFrame> Frames);
+
+/// <summary>One frame of a page template, with the constraints that place it on the page.</summary>
+internal sealed record ProjectFileFrame(
+    string Kind,
+    string Side,
+    long? Chain,
+    bool? LayoutSpecific,
+    int? Index,
+    bool? ContentRelative,
+    IReadOnlyList<ProjectFileTreeField> Position,
+    IReadOnlyList<ProjectFileTreeField> Size);
 
 /// <summary>The root object's <c>info</c> block.</summary>
 internal sealed record ProjectFileScoreInfo(

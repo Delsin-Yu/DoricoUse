@@ -1,5 +1,6 @@
 using DoricoUse.Cli;
 using DoricoUse.Cli.Dorico;
+using DoricoUse.Cli.Views;
 
 // A self-check for the .dorico reader: it parses real project files off disk and asserts what a human can verify.
 //
@@ -74,6 +75,23 @@ else
         project.Metadata.Players.Count.ToString());
 
     Check("score.dtn decoded", score is not null);
+
+    // The view is a pure function of (file, options), but it shares static caveat lists between reports: a shared
+    // node that gets parented twice throws "The node already has a parent". One call per process always looked
+    // fine; this is the check that keeps it true for a long-lived one.
+    try
+    {
+        var options = new ProjectFileView.Options { NoteLimit = 1 };
+        var first = ProjectFileView.Report(project, options).ToJsonString();
+        var second = ProjectFileView.Report(project, options).ToJsonString();
+        var third = ProjectFileView.Report(project, options).ToJsonString();
+
+        Check("the report can be built three times in one process", first == second && second == third);
+    }
+    catch (Exception ex)
+    {
+        Check("the report can be built three times in one process", false, ex.Message);
+    }
 
     if (score is not null)
     {
@@ -567,6 +585,314 @@ else
         Code(() => ProjectFileTreeReader.Census([1, 2, 3], -1)) == "UnsupportedScoreData");
 }
 
+// ---------------------------------------------------------------- slurs, articulations, ties, beams, techniques
+
+Head($"marks on the corpus: {Corpus}");
+
+if (!File.Exists(Corpus))
+{
+    Skip("the mark checks (corpus file not on this machine)");
+}
+else
+{
+    var score = ProjectFileReader.Open(Corpus).Score;
+
+    // A slur is an event with a position and a length, and the file states the link to its element from both ends:
+    // the event names the element, and the element lists the events that name it.
+    Check("slur events", score.Slurs.Count == 987, score.Slurs.Count.ToString());
+    Check("slur elements", score.SlurElements.Count == 438, score.SlurElements.Count.ToString());
+
+    var elementEvents = score.Slurs
+        .Where(slur => slur.Element is not null)
+        .GroupBy(slur => slur.Element!.Value)
+        .ToDictionary(group => group.Key, group => group.Select(slur => slur.Location.EventId).Order().ToList());
+
+    Check(
+        "every slur names an element the flow defines",
+        score.Slurs.All(slur => score.SlurElements.Any(element => element.Id == slur.Element)),
+        score.Slurs.FirstOrDefault(slur => score.SlurElements.All(element => element.Id != slur.Element))?.Element.ToString());
+
+    var elementMismatch = score.SlurElements
+        .Where(element => !element.Events.Order().SequenceEqual(elementEvents.GetValueOrDefault(element.Id, [])))
+        .ToList();
+
+    Check(
+        "each element's referencingEventIDs lists exactly the events that name it",
+        elementMismatch.Count == 0,
+        elementMismatch.Count == 0
+            ? null
+            : $"first: element {elementMismatch[0].Id} says [{string.Join(',', elementMismatch[0].Events.Order())}]");
+
+    Check(
+        "the events sharing an element count is the element's own list",
+        score.Slurs.All(slur => slur.Noteheads == 0
+            || score.SlurElements.First(element => element.Id == slur.Element).Events.Count == slur.Noteheads),
+        score.Slurs.Max(slur => slur.Noteheads).ToString());
+
+    Check(
+        "every slur is placed inside the piece and has a positive length",
+        score.Slurs.All(slur => slur.Location.Measure >= 1
+            && slur.Location.Measure <= score.LastMeasure
+            && Rational.Parse(slur.Location.Duration).Numerator > 0));
+
+    // An articulation is a property of the note, in two families: a length (kArticulationDuration) and a force
+    // (kArticulationForce). The counts are what the corpus file holds.
+    var articulations = score.NoteMarks.Where(mark => mark.Family == "articulation").ToList();
+    var duration = articulations.Where(mark => mark.Property == "kArticulationDuration").ToList();
+    var force = articulations.Where(mark => mark.Property == "kArticulationForce").ToList();
+
+    Check(
+        "articulations: 3914 staccato, 349 tenuto and 3576 accents",
+        articulations.Count == 7839
+        && duration.Count(mark => ProjectFileScoreReader.VariantText(mark.Value) == "kStaccato") == 3914
+        && duration.Count() == 4263
+        && force.Count() == 3576
+        && force.All(mark => ProjectFileScoreReader.VariantText(mark.Value) == "kAccent"),
+        $"{articulations.Count} marks: {duration.Count} durations, {force.Count} forces");
+
+    // The name is the score's own: kStaccato is the value, and the file's playing-technique catalogue holds
+    // pt.staccato with the name "Staccato". Every value in this file resolves, and the articulation family matches
+    // the catalogue's own group: a length for a duration, a dynamic for a force.
+    var catalogue = score.TechniqueDefinitions.ToDictionary(definition => definition.EntityId, definition => definition);
+
+    Check(
+        "every articulation value is named by the score's own technique catalogue",
+        articulations.All(mark => mark.Name is not null)
+        && articulations.Count(mark => mark.Name == "Staccato") == 3914
+        && articulations.Count(mark => mark.Name == "Tenuto") == 349
+        && articulations.Count(mark => mark.Name == "Accent") == 3576,
+        string.Join(',', articulations.Select(mark => mark.Name).Distinct()));
+
+    Check(
+        "the catalogue spells pt.staccato as a length and pt.accent as a dynamic",
+        catalogue["pt.staccato"].GroupType == "kLengths" && catalogue["pt.accent"].GroupType == "kDynamics",
+        $"{catalogue["pt.staccato"].GroupType} / {catalogue["pt.accent"].GroupType}");
+
+    Check(
+        "kArticulationDuration resolves to a kLengths technique and kArticulationForce to a kDynamics one",
+        duration.All(mark => catalogue[TechniqueId(mark)].GroupType == "kLengths")
+        && force.All(mark => catalogue[TechniqueId(mark)].GroupType == "kDynamics"));
+
+    // Ties: nothing in the file is a tie event, so what can be reported is what the notes state about them.
+    var ties = score.NoteMarks.Where(mark => mark.Family == "tie").ToList();
+    var beams = score.NoteMarks.Where(mark => mark.Family == "beam").ToList();
+
+    Check(
+        "ties: 2 laissez-vibrer ties and 28 forced splits, and no tie event anywhere",
+        ties.Count == 30
+        && ties.Count(mark => mark.Property == "kNoteEndHasLVTie") == 2
+        && ties.Count(mark => mark.Property == "kNoteSplitDurations") == 28
+        && score.NoteMarks.All(mark => mark.Family != "tieEvent"),
+        string.Join(',', ties.Select(mark => mark.Property).Distinct()));
+
+    // A split is written as the note values of the chain, and in this file they sum to the note's own sounding
+    // duration — which is what makes the reading of it checkable rather than a guess.
+    var splits = ties.Where(mark => mark.Property == "kNoteSplitDurations").ToList();
+
+    Check(
+        "every forced split sums to the note's own duration",
+        splits.All(mark =>
+        {
+            var values = Strings(mark.Value);
+            var total = values.Aggregate(new Rational(0, 1), (sum, value) => sum + Rational.Parse(value));
+
+            return total.CompareTo(Rational.Parse(mark.Location.Duration)) == 0;
+        }),
+        splits.Count == 0 ? "no splits" : string.Join(' ', splits.Select(mark => mark.Value)));
+
+    Check(
+        "beams: 8 beam starts, 8 beam ends, and no beam event",
+        beams.Count == 16
+        && beams.Count(mark => mark.Property == "kBeamStart") == 8
+        && beams.Count(mark => mark.Property == "kBeamEnd") == 8,
+        string.Join(',', beams.Select(mark => mark.Property).Distinct()));
+
+    Check(
+        "every mark is placed inside the piece",
+        score.NoteMarks.All(mark => mark.Location.Measure >= 1 && mark.Location.Measure <= score.LastMeasure),
+        score.NoteMarks.FirstOrDefault(mark => mark.Location.Measure < 1)?.Location.Measure.ToString());
+
+    Check(
+        "a note's marks carry the note's own event id, position and stave",
+        score.NoteMarks.All(mark => mark.Location.EventId > 0 && mark.Location.Stave is > 0),
+        score.NoteMarks.FirstOrDefault(mark => mark.Location.Stave is not > 0)?.Location.EventId.ToString());
+
+    // Playing techniques reach the score two ways: as events of their own, and as a property of a note.
+    var techniques = score.TechniqueEvents;
+    var noteTechniques = score.NoteMarks.Where(mark => mark.Family == "technique").ToList();
+
+    Check("technique events", techniques.Count == 35, techniques.Count.ToString());
+    Check("techniques stored on notes", noteTechniques.Count == 45, noteTechniques.Count.ToString());
+
+    // The event names an appearance; the appearance names the technique; the catalogue names that. A percussion
+    // technique is attached to the note instead, and the same catalogue names it.
+    Check(
+        "every technique event resolves through its appearance to a named technique",
+        techniques.All(technique => technique.AppearanceId is not null
+            && technique.TechniqueId is not null
+            && catalogue.ContainsKey(technique.TechniqueId)),
+        techniques.FirstOrDefault(technique => technique.TechniqueId is null)?.AppearanceId);
+
+    Check(
+        "the appearance the file shows is the text the score prints",
+        techniques.Count(technique => technique.Text == "arco") == 13
+        && techniques.Count(technique => technique.Text == "pizz") == 10
+        && techniques.Count(technique => technique.Text == "open") == 6
+        && techniques.Count(technique => technique.Text == "straight mute") == 6,
+        string.Join(',', techniques.Select(technique => technique.Text).Distinct()));
+
+    Check(
+        "the techniques on notes resolve to Cross stick and Rim shot",
+        noteTechniques.Count(mark => mark.Name == "Cross stick") == 38
+        && noteTechniques.Count(mark => mark.Name == "Rim shot") == 7,
+        string.Join(',', noteTechniques.Select(mark => mark.Name).Distinct()));
+
+    Console.WriteLine();
+}
+
+Head($"marks against Dorico's own export: {FourthCorpus}");
+
+if (!File.Exists(FourthCorpus))
+{
+    Skip("the MusicXML cross-check of the marks (file not on this machine)");
+}
+else
+{
+    // This project has Dorico's own MusicXML export beside it. An external script counted what that export holds:
+    // 5070 <staccato/> and 1448 <accent/> inside <articulations>, 214 <slur type="start"> with 214
+    // <slur type="stop">, 17 <tied type="let-ring"/>, and 112 <tie type="start"> pairs written for 110 note events
+    // (a tie chain is one event here). The slur check went further than counts: the multiset of (start, length) of
+    // this reader's 214 slur events is exactly the multiset of the export's 214 slur pairs, with nothing left over
+    // on either side. A MusicXML parser in this check would test the export more than the decoder, so the numbers
+    // are the ones the script produced.
+    var score = ProjectFileReader.Open(FourthCorpus).Score;
+
+    var articulations = score.NoteMarks.Where(mark => mark.Family == "articulation").ToList();
+    var slurSpans = score.Slurs
+        .Select(slur => slur.Location.Position + "+" + slur.Location.Duration)
+        .ToHashSet(StringComparer.Ordinal);
+
+    Check(
+        "the articulations agree, mark for mark, with Dorico's own MusicXML export",
+        articulations.Count == 6518
+        && articulations.Count(mark => mark.Name == "Staccato") == 5070
+        && articulations.Count(mark => mark.Name == "Accent") == 1448,
+        $"{articulations.Count} marks: {articulations.Count(mark => mark.Name == "Staccato")} staccato, "
+        + $"{articulations.Count(mark => mark.Name == "Accent")} accent");
+
+    Check(
+        "the slur events are the export's slur pairs: 214 events, 43 elements",
+        score.Slurs.Count == 214 && score.SlurElements.Count == 43,
+        $"{score.Slurs.Count} events, {score.SlurElements.Count} elements");
+
+    Check(
+        "every slur starts where a note or a rest sits and lasts a written value",
+        score.Slurs.All(slur => Rational.Parse(slur.Location.Duration).Numerator > 0
+            && slur.Location.Measure is >= 1 and <= 163),
+        string.Join(' ', score.Slurs.Take(3).Select(slur => slur.Location.Position + "+" + slur.Location.Duration)));
+
+    // Two spans the export writes, one near the start and one at the end, as the script read them.
+    Check(
+        "the slur spans the export writes are the ones this reader finds",
+        slurSpans.Contains("20+2") && slurSpans.Contains("28+2") && slurSpans.Contains("614+1"),
+        string.Join(' ', slurSpans.Take(4)) + " … " + string.Join(' ', slurSpans.TakeLast(2)));
+
+    Check(
+        "the laissez-vibrer ties agree with the export: 17 of them",
+        score.NoteMarks.Count(mark => mark.Property == "kNoteEndHasLVTie" && mark.Family == "tie") == 17,
+        score.NoteMarks.Count(mark => mark.Property == "kNoteEndHasLVTie").ToString());
+
+    Check(
+        "this file states no beam override and has no technique event",
+        score.NoteMarks.All(mark => mark.Family != "beam") && score.TechniqueEvents.Count == 0);
+
+    Console.WriteLine();
+}
+
+// ---------------------------------------------------------------- the layout
+
+Head($"layout: {FourthCorpus}");
+
+if (!File.Exists(FourthCorpus))
+{
+    Skip("the layout checks (file not on this machine)");
+}
+else
+{
+    // The page box is in points. The same project's MusicXML export gives 2473.53 x 3497.06 tenths for the same
+    // page and 123.529 tenths for the same margins, with the export's scaling at 4.79778 mm per 40 tenths
+    // (0.11994450 mm per tenth, i.e. 0.3399668 pt): 2473.53 x 0.3399668 = 840.9 pt against this file's 841, and
+    // 123.529 x 0.3399668 = 42.0 pt against this file's 42. The unit is not written in the file; that is where it
+    // comes from.
+    var score = ProjectFileReader.Open(FourthCorpus).Score;
+    var full = score.Layout.Layouts.First(layout => layout.Type == "kFullScoreLayout");
+
+    Check(
+        "the full score's page box is A3 in points, with 42 pt margins",
+        full.PageWidth == "841" && full.PageHeight == "1189"
+        && full.Margins.Any(field => field.Key == "outer" && field.Value == "42")
+        && full.Margins.Any(field => field.Key == "top" && field.Value == "42"),
+        $"{full.PageWidth}x{full.PageHeight} {string.Join(' ', full.Margins.Select(field => field.Key + "=" + field.Value))}");
+
+    Check(
+        "the parts are A4 in points and name the part page template",
+        score.Layout.Layouts.Where(layout => layout.Type == "kPartLayout")
+            .All(layout => layout.PageWidth == "594" && layout.PageHeight == "841" && layout.PageSet == "pageset.part"));
+
+    Check(
+        "every layout names a page template the library defines",
+        score.Layout.Layouts.All(layout => score.Layout.PageSets.Any(pageSet => pageSet.EntityId == layout.PageSet)),
+        string.Join(',', score.Layout.Layouts.Select(layout => layout.PageSet).Distinct()));
+
+    var fullScoreSet = score.Layout.PageSets.First(pageSet => pageSet.EntityId == "pageset.fullscore");
+
+    Check(
+        "the page template chains the music on chain 0 and has a frame for it on both pages",
+        fullScoreSet.MusicChains.SequenceEqual([0L])
+        && fullScoreSet.Frames.Any(frame => frame.Chain == 0 && frame.Kind == "first")
+        && fullScoreSet.Frames.Any(frame => frame.Chain == 0 && frame.Kind == "normal"),
+        string.Join(',', fullScoreSet.MusicChains) + " / " + fullScoreSet.Frames.Count + " frames");
+
+    Check(
+        "the music frame is placed against the page margins, not at a fixed spot",
+        fullScoreSet.Frames
+            .First(frame => frame.Chain == 0)
+            .Position.Any(field => field.Key == "top" && field.Value == "60")
+        || fullScoreSet.Frames
+            .First(frame => frame.Chain is not null)
+            .Position.Count > 0);
+
+    Check(
+        "casting off is stored as options, not as an arrangement",
+        full.CastingOff.Count > 0
+        && full.CastingOff.Any(field => field.Key == "fixNumberOfSystems" && field.Value == "false"),
+        string.Join(' ', full.CastingOff.Select(field => field.Key)));
+}
+
+// ---------------------------------------------------------------- the variant values and the families
+
+Head("the value encoding");
+
+Check(
+    "a variant value carries its payload, and a list keeps its items",
+    ProjectFileScoreReader.VariantText("string: \"pt.accent\"") == "pt.accent"
+    && ProjectFileScoreReader.VariantText("int: 52") == "52"
+    && ProjectFileScoreReader.VariantText("null: ") is null
+    && ProjectFileScoreReader.VariantText("list: {string: \"1/2\"}") == "{string: \"1/2\"}",
+    ProjectFileScoreReader.VariantText("list: {string: \"1/2\"}"));
+
+Check(
+    "a property's family comes from its own name, whatever prefix the file writes",
+    ProjectFileScoreReader.MarkFamily("kArticulationDuration") == "articulation"
+    && ProjectFileScoreReader.MarkFamily("kArticulationForce") == "articulation"
+    && ProjectFileScoreReader.MarkFamily("kNoteEndHasLVTie") == "tie"
+    && ProjectFileScoreReader.MarkFamily("kNoteBeamStart") == "beam"
+    && ProjectFileScoreReader.MarkFamily("kEventPlayingTechnique") == "technique"
+    && ProjectFileScoreReader.MarkFamily("kNoteSpelling") == "other",
+    ProjectFileScoreReader.MarkFamily("kNoteBeamStart"));
+
+Console.WriteLine();
+
 // ---------------------------------------------------------------- malformed and unrelated files
 
 Head("malformed and unrelated files");
@@ -685,6 +1011,20 @@ static List<long> Ids(string? text)
         .Select(part => long.TryParse(part.Trim(), out var value) ? value : -1)
         .OrderBy(value => value)];
 
+/// <summary>The strings of a variant list, e.g. `list: {string: "3/2"}` → `3/2`.</summary>
+static List<string> Strings(string? text)
+    => [.. System.Text.RegularExpressions.Regex
+        .Matches(text ?? string.Empty, "\\{string: \"([^\"]+)\"\\}")
+        .Select(match => match.Groups[1].Value)];
+
+/// <summary>The technique id an articulation value names: kStaccato is the catalogue's pt.staccato.</summary>
+static string TechniqueId(ProjectFileNoteMark mark)
+{
+    var value = ProjectFileScoreReader.VariantText(mark.Value) ?? string.Empty;
+
+    return "pt." + char.ToLowerInvariant(value[1]) + value[2..];
+}
+
 /// <summary>An exact rational, so a triplet cannot round into a false positive.</summary>
 internal readonly struct Rational : IComparable<Rational>
 {
@@ -730,7 +1070,6 @@ internal readonly struct Rational : IComparable<Rational>
         => new(
             (long)((Int128)left.Numerator * right.Denominator + (Int128)right.Numerator * left.Denominator),
             (long)((Int128)left.Denominator * right.Denominator));
-
     private static long Gcd(long left, long right)
     {
         while (right != 0)

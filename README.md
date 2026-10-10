@@ -51,8 +51,8 @@ The source is plain `net10.0` (no Win32 dependency), so the same code can target
 | `options set --type ... --value path=value... [--layout n] [--flow n] [--no-verify]` | Set option values and read them back to prove it. |
 | `library collections` / `library entities --collection <name>` | The 50 library collections and their entities. |
 | `playback techniques` / `properties get` | Expression maps and drum kit note maps; what can be read from the selection. |
-| `note insert ...` | Enter notes, chords, tuplets and rests (see below). |
-| `file read --path <project.dorico> [--limit n\|all] [--measure a-b] [--player <glob>] [--tree <name\|*>] [--dynamics] [--lyrics]` | Read a project file from disk: notes, pitches, durations, staves, dynamics, or any subtree. No Dorico needed. |
+| `note insert ...` | Enter notes, chords, tuplets and rests; `--from-start` writes from the top, `--read` proves it (see below). |
+| `file read --path <project.dorico> [--limit n\|all] [--measure a-b] [--player <glob>] [--tree <name\|*>] [--dynamics] [--lyrics] [--slurs] [--articulations] [--ties] [--beams] [--techniques] [--layout] [--mark-limit n]` | Read a project file from disk: notes, dynamics, slurs, articulations, ties, beams, techniques, layout, or any subtree. No Dorico needed. |
 | `export musicxml [--path <watch dir>] [--wait-ms n]` | Export MusicXML. **Needs a click on 确定 inside Dorico** (see below). |
 | `export text --path <file.csv>` | Export project text/comments as CSV. Fully unattended. |
 | `raw send --json '{"message":...}' --expect <id\|any>` | Escape hatch for protocol messages this CLI does not model. |
@@ -60,6 +60,16 @@ The source is plain `net10.0` (no Win32 dependency), so the same code can target
 Shared options: `--timeout-ms` (default 15000; 120000 for `session connect`) and `--raw` (add the unmodified
 Dorico payload). `--address` and `--client-name` belong to the host, since it owns the connection; only
 `session probe` takes them directly.
+
+### Sharing one Dorico
+
+Every command acts on **whichever document Dorico has active**, and bringing any window to the front changes that —
+there is no query for it and no way to address a document. When more than one agent uses the same Dorico, that is
+how a save lands in someone else's project. So the mutating commands (`command send`, `note insert`,
+`session read`, `export musicxml`, `export text`) take `--expect-score <id>`: the host reads the status first and
+refuses with `WrongActiveScore` (`error.data {expected, actual}`) when the active document is not the one named.
+`session status` and `host status` (`activeScoreId`) report the ID. The check runs inside the same gated exchange
+as the action, so the window between them is one round trip — a stolen focus can only cause a refusal.
 
 ### Entering notes
 
@@ -89,11 +99,20 @@ dorico-use note insert --notes "C5 E5" --duration minim --dry-run         # the 
 - `--pitch`/`--octave` use Dorico's octave numbering: **C4 is middle C** (MIDI 60), C5 is MIDI 72.
 - `note insert` switches to Write mode and turns note input on only when the status says they are needed, because
   `NoteInput.Enter` is a toggle. `--stay` leaves note input on.
-- **Where the caret is decides where the music goes**, and the API cannot report it. With nothing selected,
-  `NoteInput.Enter` puts the caret at the start of the flow, which is the reliable way to write from the top: run
-  `command send --name Edit.SelectNone`, then insert. Otherwise the caret stays where the last write left it.
+- **Where the caret is decides where the music goes**, and the API cannot report it. `Edit.SelectNone` alone does
+  **not** move the caret; `--from-start` does, by cycling `NoteInput.Exit` → `Edit.SelectNone` → `NoteInput.Enter`,
+  which returns the caret to the start of the flow *and* to the instrument's top stave. That is the one way to
+  write from a known place, and it is what makes a phrase repeatable.
+  Nothing else moves the caret: `NoteInput.EnterAtPoint` ignores its X/Y (12 probes across four coordinate
+  guesses), `Edit.GoTo` either does nothing or opens a modal 前往小节 dialog, `NoteInput.SetPosition` is accepted
+  and ignored, and passing `Position`/`EventStreamID`/`InstrumentID` to `NoteInput.Pitch` is ignored too. Only the
+  mouse addresses a point.
 - **A click in the window is not a safe way to place the caret while note input is on**: Dorico treats it as
-  entering a note (this cost one verification round here). Turn note input off first, or accept the note.
+  entering a note at that point (position from x, pitch from y, tied to zoom and scroll). Turn note input off
+  first, or accept the note.
+- `--read [--read-to <path>] [--limit n|all] [--measure m|a-b] [--player <glob>]` writes and proves in one call:
+  after the notes, the host saves a copy the way `session read` does and the CLI decodes it, so the payload
+  carries the notes that are really in the score. `read.*` has exactly `session read`'s shape.
 - **Chord input is a toggle with no query** (`NoteInput.StartEndChord`; its `Set` parameter is ignored and the
   status dumps are identical with it on and off). `note insert` toggles it around each chord group, so a chord
   comes out stacked unless the user had left chord input on by hand — which the CLI cannot detect.
@@ -145,23 +164,38 @@ name table, a deduplicated value pool and a token stream (a node/leaf tree, chil
 exactly on the last byte). Notes come out as `flow → blocks → events → NoteEventDefinition{eventID, pitch,
 position, duration}`, with position and duration as exact rationals in crotchets, and the stave resolved through
 `stream → flowPlayer → voiceStreamInfos/staveStreamInfos`. Dynamics come from `DynamicGroupEventDefinition` plus
-its immediate/gradual/force marks: 754 events and 305 groups in the reference score, and every mark, position and
-measure matched Dorico's own MusicXML export of the same piece (325 markings, 0 differences) and a second piece
-exported by Sibelius. `--tree` is the escape hatch for everything else: `*` is a census of every node kind and
-leaf key, a name dumps each occurrence with its root path and fields, and a miss returns the nearest names.
+its immediate/gradual/force marks. `--tree` is the escape hatch for everything else: `*` is a census of every node
+kind and leaf key, a name dumps each occurrence with its root path and fields, and a miss returns the nearest names.
 
-Verified against an independent MusicXML export of the same arrangement, and against 20 project files from Dorico
-6.0.0 through 6.2.30. Limits, reported as `caveats`:
+The other blocks read the same way, and each states in its own `caveats` what it rests on:
+
+| Option | What it reads | Verification |
+|---|---|---|
+| `--dynamics` | 754 events, 305 groups, `cresc`/`dim`/`f`/`pp`… | every mark, position and measure matched Dorico's MusicXML export (325 markings, 0 differences) |
+| `--slurs` | 987 slur events, 438 elements, noteheads per slur | the (start, length) pairs match the export's 214 `<slur>` pairs exactly |
+| `--articulations` | 7839 marks (Staccato 3914, Accent 3576, Tenuto 349) | matches the export's `<articulations>` counts; names come from the score's own library |
+| `--ties` | what *is* stored: LV ties, tie-to-event, split values | the export's `<tied type="let-ring"/>` count matches (17) |
+| `--beams` | the 16 beam properties (Bad Apple) / 17325 (another file) | single source — no corpus file has both |
+| `--techniques` | 35 technique events + 45 note techniques, with ids, texts and names | single source — the appearance → technique → name chain is the file's own library |
+| `--layout` | page box, margins, casting off, page sets and frames | page size and margin match the export's tenths exactly |
+
+Verified against independent MusicXML exports and against 20 project files from Dorico 6.0.0 through 6.2.30.
+Limits, reported as `caveats`:
+
+- **Pitch spelling is only a letter**: the project stores a MIDI number plus a per-note spelling *letter*
+  (`kNoteSpelling`, 16024 of them in the reference score) and no accidental, so `pitch` is derived from the MIDI
+  number alone and uses sharps only (Bb5 shows as `A#5`); read `midi` when the exact pitch matters.
+- **Ties and beams are not events**: a tie chain is one note event with the sounding duration, the beaming a score
+  is printed with is computed at layout time, and no corpus file has both beam properties and an export.
+- **A click in the window is the only way to address a point**, so anything about where music sits on a page
+  (frame geometry → measure mapping) is not derivable here: casting off is a layout computation and the file's own
+  cache of it is empty.
 
 - **Lyrics are not modelled**: every file in the corpus has one empty lyric table and not a single element, so the
   shape of a lyric was never seen. `--lyrics` reports presence and size; `--tree LyricElementTableDefinition` is
   how to look at a file that has them.
-
-- **Pitch spelling is not stored**, only a MIDI number: the CLI reports `midi` plus a sharps-only derived name
-  (Bb5 shows as `A#5`); the notation's spelling comes from key signature and spelling rules at layout time.
-- A **tie chain is one event** with the sounding duration; written ties are engraving.
 - **Rests are gaps**, not events; **measures are derived** from the stored metre/bar-division events.
-- Not modelled: the library, options, layout geometry, lyrics, dynamics, slurs/beams and playback data.
+- Not modelled: the score library's engraving options, frame → measure mapping, playback/mixer data and tremolo.
 - `scorelibrary.dtn` and the other supplementary members are listed but not parsed.
 
 **`export`** asks Dorico to write a file. `export text` is unattended (`File.Export.Text?File=...&Show=false`,
@@ -241,9 +275,14 @@ Verified against Dorico Pro 6.2.30 on Windows 11:
   and the setting follows the application rather than the document),
   `NoteInput.StartEndChord` toggles chord input, `NoteInput.Enter` toggles note input,
   `NoteInput.MoveUpTop`/`MoveDownBottom` move the caret between the staves of one instrument.
-- Saving: `File.SaveAs?File=<path>` is **headless** — it writes the copy and then rebinds the open document to it.
-  `File.Save?File=<path>` ignores the path and saves in place, so it can only ever overwrite the user's own file.
-  `File.Close` and `File.CloseProject` answer `kOK` and close nothing, so a client cannot tidy up after itself.
+- Saving and closing: `File.SaveAs?File=<path>` is **headless** — it writes the copy and then rebinds the open
+  document to it. `File.Save?File=<path>` ignores the path and saves in place, so it can only ever overwrite the
+  user's own file. `File.Close?OpenScoreID=<id>` and `File.CloseProject` **do close the document** (an earlier
+  note here said otherwise because the commands had been queued behind a modal dialog and only ran minutes later).
+- **A modal dialog stalls the whole command queue, and queued commands run later, out of sight.** They still
+  answer `kOK` when they are posted, so an ack says nothing about when a command ran — while an export dialog was
+  open, a `File.Close` queued earlier closed a document minutes afterwards. Never queue something destructive, and
+  when a command seems to do nothing, check `application.log` for when it really ran.
 - There is **no query for bars, staves, the note stream or the project at large**, no absolute stave addressing,
   no caret query, and no way to create a project (`File.New` is not even in the catalogue), add a player or add an
   instrument. Selection information is limited to duration, dots, accidental and rest mode.
@@ -289,11 +328,13 @@ dotnet build tests/ProjectFileCheck/ProjectFileCheck.csproj -v q --nologo
 ./tests/ProjectFileCheck/bin/Debug/net10.0/project-file-check.exe
 ```
 
-`ProjectFileCheck` compiles the parser sources and asserts the file-format facts: the three tag markers seen in
-the corpus, a note run cross-checked against a MusicXML export, the dynamics histogram and positions matched
-against Dorico's own export of two pieces, score-order and overlap invariants, the generic tree walker compared
-with the typed reader, and every error path (`NotFound`, `NotAContainer`, `MissingScoreData`, `MalformedMember`,
-`UnsupportedScoreData`). 84 checks, `0 skipped`.
+`ProjectFileCheck` compiles the reader's sources **and the view that renders them** and asserts the file-format
+facts: the three tag markers seen in the corpus, a note run cross-checked against a MusicXML export, the dynamics
+histogram and positions matched against Dorico's own export of two pieces, slurs/articulations/ties/layout matched
+against another, score-order and overlap invariants, the generic tree walker compared with the typed reader, that
+the report can be built three times in one process (a shared node parented twice throws), and every error path
+(`NotFound`, `NotAContainer`, `MissingScoreData`, `MalformedMember`, `UnsupportedScoreData`). 119 checks,
+`0 skipped`.
 
 ## Roadmap
 
@@ -304,10 +345,11 @@ with the typed reader, and every error path (`NotFound`, `NotAContainer`, `Missi
    decoder); `export musicxml`/`export text`.
 5. **Done** — insert/overwrite control, `session read` (save a copy and read it back in one command), the tree
    escape hatch and dynamics in `file read`, and an honest export destination report.
-6. **Next** — tuplets and chords that span calls (the caret cannot be moved by the API, so multi-call phrases have
-   to start from `Edit.SelectNone`), the remaining engraving data in `file read` (layout geometry, slurs and
-   beams), a `--read` flag on `note insert` that runs `session read` for you, and staff-aware entry once Dorico
-   offers a way to address a stave.
+6. **Done** — `--expect-score` (refuse to act on the wrong document), `note insert --from-start` and `--read`
+   (write and prove in one call), and slurs/articulations/ties/beams/techniques/layout in `file read`.
+7. **Next** — the note spelling letter (`kNoteSpelling`) as its own field, a phrase that spans calls without
+   restarting at the top, positional entry if Dorico ever exposes it (today only a mouse click addresses a point,
+   and the API cannot be told which stave to use), and lyrics once a file with lyrics turns up.
 
 Deliberately **not** planned: a cached command catalogue, on disk or otherwise. Dorico answers `getcommands` in
 4 ms (98 KB, 1090 commands) and a `command list` call costs about 86 ms end to end, nearly all of it process
