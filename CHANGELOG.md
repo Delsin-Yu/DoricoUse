@@ -10,6 +10,12 @@ Control API — see `README.md`.
 ## [Unreleased]
 
 ### Changed
+- **`session read` no longer saves anything by default.** It reads the open document through a small read-only Lua
+  script Dorico runs (`Script.RunScript`), so a read has no side effect: the previous behaviour — `File.SaveAs`,
+  which rebinds the open document to the copy it writes — is now `session read --rebind`, opt-in and reported.
+  The live payload says `source: "live"` and comes with caveats naming what that route cannot see (no MIDI number,
+  accidental, dynamic value or layout; the note lines are Dorico's printer text, parsed, with unreadable lines
+  counted in `counts.unparsedLines`).
 - The enum values the CLI validates are now a **built-in table** instead of a per-user file produced by an
   extractor script: `command send`, `note insert --duration/--grid` and `options set --value` catch a typo out of
   the box, with no setup step, and only for the parameters this build knows — a value for any other parameter goes
@@ -19,6 +25,8 @@ Control API — see `README.md`.
 
 ### Added
 - Continuous integration: build, the two test projects, and a Native AOT publish on every push.
+- `error.data.stack` when `DORICO_USE_DEBUG` is set: an unexpected failure then carries its stack trace, which is
+  what a bug report needs and what the JSON message alone never has.
 
 ## [0.1.0] - 2026-10-10
 

@@ -45,21 +45,36 @@ internal static class ResponseWriter
     {
         if (error is CliException cli)
         {
-            Write(Error(command, cli.Code, cli.Message, null, cli.Details));
+            Write(Error(command, cli.Code, cli.Message, null, cli.Details, null));
             return cli.ExitCode;
         }
 
-        Write(Error(command, "RuntimeError", error.Message, null, null));
+        // A stack trace is what a bug report needs and what the message alone never has. Off by default because
+        // the output contract is one JSON object an agent reads, and a 20-line trace in it is noise.
+        var stack = Environment.GetEnvironmentVariable(DebugVariable) is { Length: > 0 }
+            ? error.ToString()
+            : null;
+
+        Write(Error(command, "RuntimeError", error.Message, null, null, stack));
         return 2;
     }
 
+    /// <summary>Set this to anything to have unexpected failures carry their stack trace in <c>error.data.stack</c>.</summary>
+    public const string DebugVariable = "DORICO_USE_DEBUG";
+
     public static int FailParse(string command, string message, string? help = null)
     {
-        Write(Error(command, "InvalidArgument", message, help, null));
+        Write(Error(command, "InvalidArgument", message, help, null, null));
         return 1;
     }
 
-    private static JsonObject Error(string command, string code, string message, string? help, JsonObject? data)
+    private static JsonObject Error(
+        string command,
+        string code,
+        string message,
+        string? help,
+        JsonObject? data,
+        string? stack)
     {
         var error = new JsonObject
         {
@@ -72,9 +87,16 @@ internal static class ResponseWriter
             error["help"] = help;
         }
 
-        if (data is not null)
+        if (data is not null || stack is not null)
         {
-            error["data"] = data.DeepClone();
+            var details = data?.DeepClone() as JsonObject ?? [];
+
+            if (stack is not null)
+            {
+                details["stack"] = stack;
+            }
+
+            error["data"] = details;
         }
 
         return new JsonObject

@@ -189,6 +189,17 @@ internal static class SaveCopy
     /// Dorico's active document is not this one, which is the only thing standing between a stale window and
     /// <c>File.SaveAs</c> writing somebody else's project. It is not a Dorico parameter - it is a host-side check.
     /// </param>
+    /// <summary>
+    /// Sends one Dorico command through the host and returns the host's receipt for it. Used by the live reader,
+    /// which needs to run a script and not a save.
+    /// </summary>
+    public static Task<JsonObject> SendCommandAsync(
+        string name,
+        IReadOnlyList<KeyValuePair<string, string>> parameters,
+        TimeSpan timeout,
+        CancellationToken cancellationToken)
+        => SendThroughHostAsync(name, parameters, timeout, cancellationToken);
+
     private static async Task<JsonObject> SendThroughHostAsync(
         string name,
         IReadOnlyList<KeyValuePair<string, string>>? parameters,

@@ -63,22 +63,40 @@ internal static class SessionCommands
         var timeout = CommandRoot.TimeoutOption();
         var expectScore = CommandRoot.ExpectScoreOption();
 
+        var rebind = new Option<bool>("--rebind")
+        {
+            Description = "Read by saving a copy (File.SaveAs) and decoding it instead of reading the running "
+                + "document. That gives exact data - MIDI numbers, accidentals, dynamics, layout - but Dorico "
+                + "rebinds the open document to the copy, so use it on a scratch project or re-open the original "
+                + "afterwards. See the report's save.document.",
+        };
+
         var command = new Command(
             "read",
-            "Save a copy of the OPEN project (File.SaveAs) and decode it: players, measures and the notes that are "
-            + "really in the score now. It saves whichever document Dorico has active, and Dorico rebinds that "
-            + "document to the copy — see the report's save.document.")
+            "What the document Dorico has open really contains, read from the running application with no save and "
+            + "no side effect. --rebind reads a saved copy instead, for the exact data and at the cost of the "
+            + "document being rebound to it.")
         {
             to,
             limit,
             measure,
             player,
+            rebind,
             timeout,
             expectScore,
         };
 
         command.SetAction(parse => CommandRoot.RunAsync("session read", async () =>
         {
+            var protocolTimeout = CommandRoot.Timeout(parse, timeout);
+
+            if (!parse.GetValue(rebind))
+            {
+                return await LiveRead
+                    .RunAsync(protocolTimeout, ProjectFileView.ParseLimit(parse.GetValue(limit)), CancellationToken.None)
+                    .ConfigureAwait(false);
+            }
+
             var destination = SaveCopy.Resolve(parse.GetValue(to), DateTimeOffset.Now);
             SaveCopy.RefuseExisting(destination);
 
@@ -92,7 +110,6 @@ internal static class SessionCommands
                 Player = parse.GetValue(player),
             };
 
-            var protocolTimeout = CommandRoot.Timeout(parse, timeout);
             var watchBudget = TimeSpan.FromMilliseconds(
                 Math.Min(SaveCopy.DefaultWait.TotalMilliseconds, protocolTimeout.TotalMilliseconds));
 
@@ -166,8 +183,7 @@ internal static class SessionCommands
         JsonObject acknowledgement,
         SaveCopy.SavedFile saved)
     {
-        var placed = new JsonObject
-        {
+        var placed = new JsonObject        {
             ["path"] = saved.Path,
             ["bytes"] = saved.Bytes,
             ["watchedMs"] = saved.WaitedMs,
@@ -208,6 +224,7 @@ internal static class SessionCommands
 
         return new JsonObject
         {
+            ["source"] = "file",
             ["save"] = save,
             ["decodedFrom"] = file.Path,
             ["options"] = new JsonObject

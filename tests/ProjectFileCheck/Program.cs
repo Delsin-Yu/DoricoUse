@@ -552,6 +552,64 @@ else
             .All(note => note.Midi is not null && note.Spelling is not null));
 }
 
+// ---------------------------------------------------------------- the live read's dump parser
+
+Head("the live read dump parser");
+
+// LiveReadDump turns the text a live read writes into JSON. It is a pure function of a list of lines, so it can be
+// checked here against a dump written by hand: the real input is Dorico's printer format, not a data format, and a
+// line it cannot read has to be counted rather than guessed at.
+var synthetic = new[]
+{
+    "dorico-use live read\t2",
+    "score\t7\t6.2.30b6245",
+    "stream\t1\t196\t4\tkNoteEvent=3 kSlurEvent=1",
+    "note\t1\t196\t147911\t17/4\t1/4\tD5\t4.25 (17/4 (4.25)) dur: 1/4 (0.25): kNoteEvent (id:147911) at 17/4 (4.25), duration 1/4 (0.25)  D5 (ends 9/2 (4.5))",
+    "note\t1\t196\t147913\t9/2\t1/4\tE5\tsome printer text this build does not read",
+    "note\t1\t196\t147914\t19/4\t1/4\tF#5\t\"\"",
+    "stream\t1\t200\t-1\tdump failed: std::exception",
+    "unparsed\t1\t200\ta line the script could not split",
+    "notes\t3",
+};
+
+var dump = LiveReadDump.Parse(synthetic, 3);
+
+Check("the dump is reported as a live read", NodeRead.Str(dump, "source") == "live");
+Check("the score id and the Dorico version come through", NodeRead.Int(NodeRead.Obj(dump, "score"), "openScoreId") == 7);
+Check("the version string comes through", NodeRead.Str(NodeRead.Obj(dump, "score"), "version") == "6.2.30b6245");
+
+var dumpCounts = NodeRead.Obj(dump, "counts")!;
+Check("both streams are counted", NodeRead.Long(dumpCounts, "streams") == 2, NodeRead.Long(dumpCounts, "streams")?.ToString());
+Check("the events are summed over the streams", NodeRead.Long(dumpCounts, "events") == 4, NodeRead.Long(dumpCounts, "events")?.ToString());
+var dumpFlows = NodeRead.Arr(dump, "flows")!;
+var dumpStreams = NodeRead.Arr(dumpFlows[0], "streams");
+Check(
+    "a stream Dorico could not dump contributes no events",
+    dumpStreams is { Count: 2 } && NodeRead.Int(dumpStreams[1], "events") == -1,
+    dumpStreams?.Count.ToString());
+Check("the notes are parsed", NodeRead.Long(dumpCounts, "notes") == 3, NodeRead.Long(dumpCounts, "notes")?.ToString());
+Check(
+    "a line the script could not split is counted, not guessed at",
+    NodeRead.Long(dumpCounts, "unparsedLines") == 1,
+    NodeRead.Long(dumpCounts, "unparsedLines")?.ToString());
+Check("the limit is reported back", NodeRead.Long(dumpCounts, "noteLimit") == 3);
+Check("the flows are grouped by flow index", NodeRead.Arr(dump, "flows")?.Count == 1, NodeRead.Arr(dump, "flows")?.Count.ToString());
+
+var dumpKinds = NodeRead.Obj(dump, "kinds")!;
+Check("the event kinds are summed across streams", NodeRead.Int(dumpKinds, "kNoteEvent") == 3 && NodeRead.Int(dumpKinds, "kSlurEvent") == 1, dumpKinds.ToJsonString());
+
+var dumpNotes = NodeRead.Arr(dump, "notes")!;
+Check("a note carries its place and its written pitch", NodeRead.Str(dumpNotes[0], "position") == "17/4" && NodeRead.Str(dumpNotes[0], "pitch") == "D5");
+Check("a note carries its event id as a number", NodeRead.Long(dumpNotes[0], "eventId") == 147911L, NodeRead.Long(dumpNotes[0], "eventId")?.ToString());
+Check("a sharp is the name the score prints", NodeRead.Str(dumpNotes[2], "pitch") == "F#5", NodeRead.Str(dumpNotes[2], "pitch"));
+Check("the caveats say where the data came from", (NodeRead.Arr(dump, "caveats") ?? []).Count >= 4);
+
+var noHeader = LiveReadDump.Parse(["stream\t1\t196\t1\tkNoteEvent=1"], 0);
+Check("a dump without its header yields nothing rather than half-read data", NodeRead.Arr(noHeader, "flows")?.Count == 0 && NodeRead.Arr(noHeader, "notes")?.Count == 0);
+
+var empty = LiveReadDump.Parse(["dorico-use live read\t2", "score\t0\t6.2.30b6245", "notes\t0"], 0);
+Check("an empty dump says so in its caveats", (NodeRead.Arr(empty, "caveats") ?? []).Any(item => (NodeRead.Text(item) ?? string.Empty).Contains("No flow at all")));
+
 Head($"dynamics against a second file: {FourthCorpus}");
 
 if (!File.Exists(FourthCorpus))

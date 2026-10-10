@@ -76,7 +76,7 @@ The tool version is SemVer and says nothing about Dorico; what it was tested aga
 | `session status [--raw]` | Score loaded, selection, note input, mode, playback. This is your feedback. |
 | `session info [--raw]` | Which Dorico (Pro 6.2.30) and how the host reaches it. |
 | `session connect [--reset]` | Open the session and store its token; `--reset` forces the Allow dialog again. |
-| `session read [--to <file>] [--measure a-b] [--limit n] [--player <glob>]` | Make Dorico save a copy and read it back: what the open score really contains. |
+| `session read [--limit n] [--rebind] [--to <file>] [--measure a-b] [--player <glob>]` | What the open score really contains: read from the **running** document by default, with no save and no side effect. `--rebind` reads a saved copy instead (exact data, but Dorico rebinds the document to it). |
 | `session events [--limit 20] [--payload]` | What Dorico pushed unprompted while nobody was asking. |
 | `session probe [--rounds 3] [--observe-ms 1500]` | Diagnostics for the connection itself; talks to Dorico directly, not through the host. |
 | `host start [--address] [--client-name]` / `host status` / `host stop` / `host restart` | The long-lived process that owns the connection. |
@@ -170,26 +170,38 @@ dorico-use note insert --notes "C5 E5" --duration minim --dry-run         # the 
 
 Three independent routes, because Dorico cannot be queried for notes:
 
-**`session read`** closes the loop inside one command: Dorico writes a copy of the open project (`File.SaveAs`,
-headless, ~1 s) and the copy is decoded with the same reader as `file read`, so an edit can be checked in one
-step. It reports `save`, the side effect, and then the whole `file read` payload:
+**`session read`** reads the document Dorico has **open**, right now. By default it does that by handing Dorico a
+small read-only Lua script (`Script.RunScript`) that walks the score and writes what it finds to a file — nothing
+is saved, nothing is rebound, and the document is untouched. In one invocation, in half a second:
+
+```json
+{"ok":true,"command":"session read","source":"live",
+ "score":{"openScoreId":1,"version":"6.2.30b6245"},
+ "counts":{"flows":8,"streams":824,"events":37827,"notes":4,"unparsedLines":0,"noteLimit":4},
+ "kinds":{"kNoteEvent":30811,"kSlurEvent":1674,"kTextEvent":20,"kTrillEvent":45,...},
+ "notes":[{"flow":1,"stream":196,"eventId":239342,"position":"0,","duration":"2","pitch":"C4"}]}
+```
+
+`source` says which route produced the payload, and `caveats` says what that route cannot see: the numbers come
+from Dorico's own printer (`dump()`), parsed with regular expressions, so **no MIDI number, accidental, dynamic
+value or layout** comes out of it, and a line this build cannot read is counted in `counts.unparsedLines` rather
+than guessed at. `pitch` here is the name the score prints, so it is the spelled name (a B flat is `Bb`, not
+`A#`). A live read also cannot filter by measure or player — those options belong to `--rebind`.
 
 ```bash
 dorico-use command send --name Edit.SelectNone          # caret back to the top
 dorico-use note insert --notes "B4" --duration quaver --mode insert
-dorico-use session read --measure 1 --limit all
-#  notes: 6  ['B4@0', 'C5@1/2', 'G4@1', 'G4@3/2', 'G5@2', 'A4@5/2']   <- the line was pushed right
-dorico-use note insert --notes "D5" --duration quaver --mode overwrite
-dorico-use session read --measure 1 --limit all
-#  notes: 6  ['D5@0', 'C5@1/2', 'G4@1', 'G4@3/2', 'G5@2', 'A4@5/2']   <- B4 was replaced, not pushed
+dorico-use session read --limit all                     # live: writes and proves, no save
+#  ...and to see the exact data instead:
+dorico-use session read --rebind --measure 1 --limit all
 ```
 
-Exact positions, so this settles questions a screenshot cannot. Two things to know: **`File.SaveAs` rebinds the
-open document** to the copy (autosave, backups and later `File.Save` follow it — reported in
-`save.document`/`sideEffects`), and it saves whichever document is active, so bring the window you mean to the
-front first. `--to` defaults to a timestamped file under the system temporary directory and never overwrites an
-existing file
-(`WouldOverwrite`, exit 1).
+**`session read --rebind`** saves a copy and decodes it with the same reader `file read` uses, which is what gives
+the exact data (positions, MIDI numbers, accidentals, dynamics, layout). The price is real and opt-in: **Dorico
+rebinds the open document to that copy** — autosave, backups and later `File.Save` follow it — reported in
+`save.document` and `sideEffects`. It saves whichever document is active, so bring the window you mean to the front
+first. `--to` defaults to a timestamped file under the system temporary directory and never overwrites an existing
+file (`WouldOverwrite`, exit 1).
 
 **`file read`** decodes the project file itself — no Dorico, no host, ~0.3 s:
 
@@ -457,7 +469,7 @@ parameter this build does not know is never refused.
 | A command seems to do nothing | Something is modal in Dorico. While a dialog is open Dorico **queues** commands instead of running them, and each one still answered `kOK` when it was posted — so they run minutes later, out of sight. Look in `%APPDATA%\Steinberg\Dorico 6\application.log` for when a command really ran, and close the dialog. |
 | `WrongActiveScore {expected, actual}` | `--expect-score` refused: the document Dorico has active is not the one you named. Bring the right window to the front, or drop the flag. |
 | `kOK` but nothing happened | `kOK` is a receipt, not proof — a bad `File.Open` path answers it too. Every command that changes the score reads the status back; for note entry the honest proof is `session read`. |
-| `session read` changed which file my document points at | It must: it uses `File.SaveAs`, which rebinds the open document to the copy. Run it against a scratch project, or re-open the original afterwards. The copy goes to your system temporary directory. |
+| `session read` changed which file my document points at | Only `session read --rebind` does that: `File.SaveAs` rebinds the open document to the copy it writes. The default read does not save anything and has no side effect. If you did use `--rebind`, re-open the original file afterwards; the copy is under your system temporary directory. |
 | Dorico crashed while running a script | The scripting layer (`Script.RunScript` via `command send`) is undocumented and not defensive; building its C++ argument objects blind has crashed Dorico here. See `docs/scripting.md` §8 before using it. |
 | `file read` reports `NotAContainer` / `UnsupportedScoreData` | The file is not a Dorico project, or is a newer format than this build knows. The reader refuses rather than guessing. |
 
