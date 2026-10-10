@@ -30,6 +30,13 @@
     <Compile Include="../../src/DoricoUse.Cli/Dorico/DoricoProtocol.cs" />
     <Compile Include="../../src/DoricoUse.Cli/Dorico/UnsafeSurface.cs" />
     <Compile Include="../../src/DoricoUse.Cli/Json/JsonArr.cs" />
+    <!--
+      The dialog model is pure data and pure rules: no Win32, no UI Automation, nothing Windows-shaped, which is
+      exactly why it can be asserted here on net10.0 without a dialog. The Windows side of the feature lives under
+      Ui/ as well, in files only the CLI project compiles.
+    -->
+    <Compile Include="../../src/DoricoUse.Cli/Ui/DialogModel.cs" />
+    <Compile Include="../../src/DoricoUse.Cli/Ui/DialogCatalogue.cs" />
   </ItemGroup>
 
   <!--

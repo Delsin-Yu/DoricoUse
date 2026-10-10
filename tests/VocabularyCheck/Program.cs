@@ -1,5 +1,7 @@
+using System.Text.Json.Nodes;
 using DoricoUse.Cli;
 using DoricoUse.Cli.Dorico;
+using DoricoUse.Cli.Ui;
 
 // A self-check for the built-in enum table: no Dorico, no host, no extracted file, nothing to generate first.
 //
@@ -114,6 +116,21 @@ Check("a refused typo throws", refused);
 // call over a collection that already has one; this keeps the "nothing to suggest reads as null" behaviour.
 static string? FirstOrNull(IReadOnlyList<string> values) => values.Count > 0 ? values[0] : null;
 
+// The CLI error a call threw, or null when it threw nothing: every refusal in this section is asserted by its
+// code and its exit code, not by the sentence it carries.
+static CliException? Refusal(Action action)
+{
+    try
+    {
+        action();
+        return null;
+    }
+    catch (CliException ex)
+    {
+        return ex;
+    }
+}
+
 static bool Throws(Action action)
 {
     try
@@ -200,6 +217,371 @@ Check("and the refusal keeps the name exactly as it was typed", NodeRead.Str(upp
 Check("a name outside the family is never refused", !Throws(() => UnsafeSurface.RefuseCommand("NoteInput.Enter")));
 Check("so is any other catalogue command, Script. is the whole of it", !Throws(() => UnsafeSurface.RefuseCommand("File.Open")));
 #endif
+
+
+Console.WriteLine();
+Console.WriteLine("== a dialog the catalogue knows: the ids come from the automation id's tail");
+
+// A stand-in for what was measured on the MusicXML export dialog, one fact per line: two buttons share the label
+// 选择全部, one button's label is a private-use glyph, and every button carries a QML automation id whose last
+// segment is the meaningful part. This is the input the whole id scheme exists for.
+DialogInput Export() => new(
+    Title: "导出MusicXML",
+    WindowClass: "Qt6101QWindow",
+    Owner: "0x006C1132",
+    TextSource: "uia",
+    TextLines: ["导出到哪里", "格式"],
+    Buttons:
+    [
+        new("选择全部", "DoricoQApplication.root.QMLTYPE_1.Button_QMLTYPE_53.flowsSelectAllButton", true, 100, 200),
+        new("全部不选", "DoricoQApplication.root.QMLTYPE_1.Button_QMLTYPE_54.flowsSelectNoneButton", true, 180, 200),
+        new("选择全部", "DoricoQApplication.root.QMLTYPE_1.Button_QMLTYPE_55.layoutsSelectAllButton", true, 100, 240),
+        new("全部不选", "DoricoQApplication.root.QMLTYPE_1.Button_QMLTYPE_56.layoutsSelectNoneButton", true, 180, 240),
+        new("\ue0c8", "DoricoQApplication.root.QMLTYPE_1.Button_QMLTYPE_57.chooseFolderPathPushButton", true, 100, 280),
+        new("确定", "DoricoQApplication.root.buttonBoxFrame.buttonBox.QPushButton", true, 300, 320),
+        new("取消", "DoricoQApplication.root.buttonBoxFrame.buttonBox.QPushButton", true, 380, 320),
+    ]);
+
+// Two buttons with unique labels and no automation id at all: the plain case a dialog usually is.
+DialogInput Stranger() => new(
+    Title: "Something Else",
+    WindowClass: "Qt6101QWindow",
+    Owner: null,
+    TextSource: "none",
+    TextLines: [],
+    Buttons: [new("Yes", null, true, 10, 10), new("No", null, true, 90, 10)]);
+
+// The native folder picker, measured: class #32770, accept is the classic control id 1, cancel is 2.
+DialogInput Native() => new(
+    Title: "选择文件夹",
+    WindowClass: "#32770",
+    Owner: "0x006C1132",
+    TextSource: "uia",
+    TextLines: ["地址: C:\\scores"],
+    Buttons: [new("选择", "1", true, 400, 500), new("取消", "2", true, 480, 500)]);
+
+var export = DialogModel.Describe(Export());
+
+Check("the dialog is the catalogued one", export.Id == "dorico.export-musicxml", export.Id);
+Check("and it is reported as known", export.Kind == DialogModel.KindKnown, export.Kind);
+Check("its shape is the Qt one", export.Shape == DialogModel.ShapeQt, export.Shape);
+Check("its class and owner are reported verbatim", export.WindowClass == "Qt6101QWindow" && export.Owner == "0x006C1132");
+Check("a Qt dialog window is a blocking class", export.BlocksQueue);
+Check("the body text is the dialog's own, joined with newlines", export.Description == "导出到哪里\n格式", export.Description);
+Check("and the source of that text is named", export.TextSource == "uia", export.TextSource);
+Check("every button is reported", export.Buttons.Count == 7, export.Buttons.Count.ToString());
+Check(
+    "the two buttons that share a label are told apart by their automation id",
+    export.Buttons[0].Id == "flowsSelectAllButton" && export.Buttons[2].Id == "layoutsSelectAllButton",
+    $"{export.Buttons[0].Id} / {export.Buttons[2].Id}");
+Check(
+    "the button with no label is still addressable",
+    export.Buttons[4].Id == "folder-picker" && export.Buttons[4].Name == "\ue0c8",
+    $"{export.Buttons[4].Id} / {export.Buttons[4].Name}");
+Check("the catalogue names the accept button", export.Buttons[5].Id == "accept" && export.Buttons[5].Role == DialogModel.RoleDefault);
+Check("the catalogue names the cancel button", export.Buttons[6].Id == "cancel" && export.Buttons[6].Role == DialogModel.RoleDismiss);
+Check(
+    "an alias exists only where the catalogue maps one",
+    export.Buttons[0].Alias is null && export.Buttons[5].Alias == "yes" && export.Buttons[6].Alias == "no");
+Check("an uncatalogued button of a known dialog is not safe", !export.Buttons[0].Safe && !export.Buttons[4].Safe);
+Check("the reported index is the order the reader found them in", export.Buttons.Select(button => button.Index).SequenceEqual(Enumerable.Range(0, 7)));
+Check(
+    "pressWith points at the safest button, and is a line an agent can paste",
+    export.PressWith == "dorico-use ui press --dialog dorico.export-musicxml --button cancel",
+    export.PressWith);
+
+Console.WriteLine();
+Console.WriteLine("== ids are derived, and they are stable");
+
+Check(
+    "the same dialog describes identically three times",
+    DialogModel.Describe(Export()).Id == export.Id && DialogModel.Describe(Export()).Id == export.Id);
+Check(
+    "and so does every one of its button ids",
+    DialogModel.Describe(Export()).Buttons.Select(button => button.Id).SequenceEqual(export.Buttons.Select(button => button.Id)));
+
+var stranger = DialogModel.Describe(Stranger());
+
+Check("an unknown dialog gets a derived id", stranger.Id.StartsWith("unknown.", StringComparison.Ordinal), stranger.Id);
+Check("twelve hex digits of the hash, and nothing else", stranger.Id.Length == 20 && stranger.Id[8..].All(Uri.IsHexDigit), stranger.Id);
+Check("the same unknown dialog keeps its id", stranger.Id == DialogModel.Describe(Stranger()).Id, stranger.Id);
+Check("an unknown dialog is reported as unknown", stranger.Kind == DialogModel.KindUnknown);
+Check("every button of an unknown dialog is unsafe", stranger.Buttons.All(button => !button.Safe));
+Check("and has no role and no alias", stranger.Buttons.All(button => button.Role == DialogModel.RoleUnknown && button.Alias is null));
+Check("so there is no pressWith to paste", stranger.PressWith is null, stranger.PressWith);
+Check("a different caption gets a different id", DialogModel.Describe(Stranger() with { Title = "Another One" }).Id != stranger.Id);
+Check(
+    "and so does the same caption with different buttons",
+    DialogModel.Describe(Stranger() with
+    {
+        Buttons = [new("Yes", null, true, 10, 10), new("No", null, true, 90, 10), new("Maybe", null, true, 170, 10)],
+    }).Id != stranger.Id);
+
+Console.WriteLine();
+Console.WriteLine("== the id rules, one at a time");
+
+var native = DialogModel.Describe(Native());
+
+Check("a #32770 window is the native shape", native.Shape == DialogModel.ShapeNative, native.Shape);
+Check("and a native dialog is a blocking class", native.BlocksQueue);
+Check("the classic control ids name the buttons", native.Buttons[0].Id == "accept" && native.Buttons[1].Id == "cancel");
+Check("with the aliases the catalogue maps", native.Buttons[0].Alias == "yes" && native.Buttons[1].Alias == "no");
+Check("and the labels are reported as the dialog shows them", native.Buttons[0].Name == "选择");
+
+var unmeasuredNative = DialogModel.Describe(Native() with
+{
+    Title = "Open",
+    Buttons = [new("Open", "1", true, 400, 500), new("Cancel", "2", true, 480, 500)],
+});
+
+Check("an unmeasured native dialog is still recognized by its class", unmeasuredNative.Shape == DialogModel.ShapeNative);
+Check("but its buttons claim nothing", unmeasuredNative.Buttons.All(button => !button.Safe && button.Alias is null));
+
+var stray = DialogModel.Describe(Native() with
+{
+    Title = "Unmeasured",
+    Buttons = [new("Help", "9", true, 10, 10), new("Options", "1001", true, 90, 10)],
+});
+
+Check("a classic id this build does not know is still stable", stray.Buttons[0].Id == "win-9", stray.Buttons[0].Id);
+Check("and so is a bigger one", stray.Buttons[1].Id == "win-1001", stray.Buttons[1].Id);
+
+var byLabel = DialogModel.Describe(Stranger() with
+{
+    Title = "Unmeasured label case",
+    Buttons = [new("Apply", null, true, 10, 10), new("Reset", null, true, 90, 10)],
+});
+
+Check("a unique label becomes the id when there is no automation id", byLabel.Buttons[0].Id == "apply" && byLabel.Buttons[1].Id == "reset", string.Join(',', byLabel.Buttons.Select(button => button.Id)));
+
+var byPosition = DialogModel.Describe(Stranger() with
+{
+    Title = "Unmeasured position case",
+    Buttons = [new("OK", null, true, 40, 100), new("OK", null, true, 300, 100), new("OK", null, true, 40, 200)],
+});
+
+Check(
+    "a label used three times falls through to the position, left to right and then top to bottom",
+    byPosition.Buttons[0].Id == "position-1" && byPosition.Buttons[1].Id == "position-2" && byPosition.Buttons[2].Id == "position-3",
+    string.Join(',', byPosition.Buttons.Select(button => button.Id)));
+
+var byGlyph = DialogModel.Describe(Stranger() with
+{
+    Title = "Unmeasured glyph case",
+    Buttons = [new("\ue0c8", null, true, 10, 10), new("\ue0c9", null, true, 90, 10)],
+});
+
+Check(
+    "a label that is a private-use glyph is never an id",
+    byGlyph.Buttons.All(button => button.Id.StartsWith("position-", StringComparison.Ordinal)),
+    string.Join(',', byGlyph.Buttons.Select(button => button.Id)));
+
+Check("a modeless window class is not called blocking", !DialogModel.Describe(Stranger() with { WindowClass = "Qt6101QWindowIcon" }).BlocksQueue);
+Check("and it carries no queue sentence", NodeRead.Str(DialogModel.Payload(DialogModel.Describe(Stranger() with { WindowClass = "Qt6101QWindowIcon" }), new DialogProbeInfo("win32+uia", 3)), "note") is null);
+
+Console.WriteLine();
+Console.WriteLine("== the policy: what may be pressed, and what it says when it may not");
+
+Check("a catalogued, safe button may be pressed", DialogModel.Authorize(export, "cancel", allowUnknownDialog: false, allowDestructive: false).Id == "cancel");
+
+var unknownDialog = Refusal(() => DialogModel.Authorize(stranger, "yes", allowUnknownDialog: false, allowDestructive: false));
+
+Check("an unknown dialog is refused", unknownDialog?.Code == "UnknownDialog", unknownDialog?.Code ?? "nothing was thrown");
+Check("and the refusal is the caller's fault, so exit 1", unknownDialog?.ExitCode == DialogModel.RefusalExitCode, unknownDialog?.ExitCode.ToString());
+Check("and error.data names the dialog it refused", NodeRead.Str(unknownDialog?.Details, "dialog") == stranger.Id);
+Check("and lists the ids it did have", (NodeRead.Arr(unknownDialog?.Details, "ids") ?? []).Count == 2);
+
+var stillDestructive = Refusal(() => DialogModel.Authorize(stranger, "yes", allowUnknownDialog: true, allowDestructive: false));
+
+Check(
+    "allowing an unknown dialog is not enough on its own: no button of it is safe",
+    stillDestructive?.Code == "DestructiveRefused",
+    stillDestructive?.Code ?? "nothing was thrown");
+Check(
+    "and its message says which two flags are needed",
+    stillDestructive?.Message.Contains("--allow-unknown-dialog") == true
+        && stillDestructive?.Message.Contains("--allow-destructive") == true);
+
+Check("both flags together let it through", DialogModel.Authorize(stranger, "yes", allowUnknownDialog: true, allowDestructive: true).Id == "yes");
+
+var notThere = Refusal(() => DialogModel.Authorize(export, "no-such-button", allowUnknownDialog: true, allowDestructive: true));
+
+Check("an id that is not in the dialog is refused", notThere?.Code == "ButtonNotFound", notThere?.Code ?? "nothing was thrown");
+Check("and error.data lists the ids that are there", (NodeRead.Arr(notThere?.Details, "ids") ?? []).Any(id => NodeRead.Text(id) == "cancel"));
+
+var destructive = Refusal(() => DialogModel.Authorize(export, "folder-picker", allowUnknownDialog: true, allowDestructive: false));
+
+Check("a button the catalogue does not call safe is refused", destructive?.Code == "DestructiveRefused", destructive?.Code ?? "nothing was thrown");
+Check("and error.data carries the role it was refused for", NodeRead.Str(destructive?.Details, "role") == DialogModel.RoleUnknown);
+
+var withoutPattern = DialogModel.Describe(Export() with
+{
+    Buttons =
+    [
+        new("确定", "DoricoQApplication.root.buttonBoxFrame.buttonBox.QPushButton", true),
+        new("取消", "DoricoQApplication.root.buttonBoxFrame.buttonBox.QPushButton2", false),
+    ],
+});
+
+var dead = Refusal(() => DialogModel.Authorize(withoutPattern, "cancel", allowUnknownDialog: false, allowDestructive: false));
+
+Check("a button with no pressable pattern is refused", dead?.Code == "ButtonNotInvokable", dead?.Code ?? "nothing was thrown");
+Check("and error.data names the button", NodeRead.Str(dead?.Details, "button") == "cancel");
+
+Console.WriteLine();
+Console.WriteLine("== the refusal codes and the exit codes they promise");
+
+foreach (var code in new[]
+{
+    "DialogNotFound", "WrongDialog", "ButtonNotFound", "ButtonNotInvokable", "UnknownDialog", "DestructiveRefused", "PickerNotSettable",
+})
+{
+    Check($"{code} is a refusal this build defines", DialogModel.RefusalCodes.Contains(code));
+}
+
+Check("and there are no others", DialogModel.RefusalCodes.Count == 7, string.Join(',', DialogModel.RefusalCodes));
+Check("a refusal exits 1, because it is the caller's fault", DialogModel.RefusalExitCode == 1);
+Check("a probe failure exits 2, because it is not", DialogModel.ProbeFailureExitCode == 2);
+
+Console.WriteLine();
+Console.WriteLine("== the catalogue: one entry, one measurement, one policy");
+
+foreach (var entry in DialogCatalogue.Entries)
+{
+    Check($"{entry.Id} has a matcher", entry.TitleGlobs.Count > 0 || entry.RequiredButtonLabels.Count > 0);
+    Check($"{entry.Id} says what was measured", entry.Note.Length > 40);
+    Check($"{entry.Id} is a measured entry", entry.Measured);
+    Check($"{entry.Id} has buttons", entry.Buttons.Count > 0);
+    Check(
+        $"{entry.Id}'s required labels are all labels of its own buttons",
+        entry.RequiredButtonLabels.All(label => entry.Buttons.Any(button => button.MatchLabels.Contains(label, StringComparer.Ordinal))));
+
+    foreach (var button in entry.Buttons)
+    {
+        Check(
+            $"{entry.Id}/{button.Id} has a role this build knows",
+            button.Role is DialogModel.RoleDefault or DialogModel.RoleDismiss or DialogModel.RoleDestructive or DialogModel.RoleUnknown);
+        Check($"{entry.Id}/{button.Id} has an alias from the list, or none", button.Alias is null or "yes" or "no" or "ok" or "cancel" or "discard");
+        Check(
+            $"{entry.Id}/{button.Id} has something that identifies it",
+            button.MatchLabels.Count > 0 || button.MatchAutomationIdTails.Count > 0 || button.MatchClassicIds.Count > 0);
+
+        if (button.Role == DialogModel.RoleDestructive)
+        {
+            Check($"{entry.Id}/{button.Id} is destructive and therefore not safe", !button.Safe);
+        }
+    }
+
+    // A dialog built out of the entry itself must be recognised as that entry, which is what "the table and the
+    // matcher agree" means: the labels the entry requires are the labels its buttons carry.
+    var buttons = entry.Buttons
+        .Select(button => new DialogButtonInput(
+            button.MatchLabels.Count > 0 ? button.MatchLabels[0] : "unlabelled",
+            button.MatchClassicIds.Count > 0
+                ? button.MatchClassicIds[0]
+                : button.MatchAutomationIdTails.Count > 0
+                    ? "DoricoQApplication.root.QMLTYPE_1.Button_QMLTYPE_53." + button.MatchAutomationIdTails[0]
+                    : null,
+            true))
+        .ToList();
+
+    var matched = DialogModel.Describe(new DialogInput(
+        Title: entry.TitleGlobs.Count > 0 ? entry.TitleGlobs[0].Replace("*", "x", StringComparison.Ordinal) : "a caption this entry does not constrain",
+        WindowClass: entry.Id == "dorico.folder-picker" ? "#32770" : "Qt6101QWindow",
+        Owner: null,
+        TextSource: "none",
+        TextLines: [],
+        Buttons: buttons));
+
+    Check($"{entry.Id} recognises the dialog it describes", matched.Id == entry.Id && matched.Kind == DialogModel.KindKnown, matched.Id);
+    Check(
+        $"{entry.Id} reports every button it knows",
+        entry.Buttons.All(button => matched.Buttons.Any(reported => reported.Id == button.Id)),
+        string.Join(',', matched.Buttons.Select(reported => reported.Id)));
+
+    var safe = matched.Buttons.FirstOrDefault(button => button.Safe);
+
+    if (safe is not null)
+    {
+        Check($"{entry.Id} can be pressed without a flag", DialogModel.Authorize(matched, safe.Id, false, false).Id == safe.Id);
+        Check(
+            $"{entry.Id} offers a pressWith an agent can paste",
+            matched.PressWith is not null && matched.PressWith.StartsWith("dorico-use ui press --dialog " + entry.Id, StringComparison.Ordinal),
+            matched.PressWith);
+    }
+}
+
+Check(
+    "no entry was written for a dialog nobody has read",
+    DialogCatalogue.Reserved.All(id => DialogCatalogue.Entries.All(entry => entry.Id != id)),
+    string.Join(',', DialogCatalogue.Entries.Select(entry => entry.Id)));
+Check(
+    "every catalogued id is distinct",
+    DialogCatalogue.Entries.Select(entry => entry.Id).Distinct(StringComparer.Ordinal).Count() == DialogCatalogue.Entries.Count);
+
+Console.WriteLine();
+Console.WriteLine("== a caption is matched exactly unless it is written with a wildcard");
+
+Check("the measured caption matches itself", DialogCatalogue.Glob("导出MusicXML", "导出MusicXML"));
+Check("the case does not matter", DialogCatalogue.Glob("export musicxml", "Export MusicXML"));
+Check(
+    "a caption that merely contains the measured one does NOT match, which is the safety property",
+    !DialogCatalogue.Glob("导出MusicXML 选项", "导出MusicXML"));
+Check("a wildcard still works", DialogCatalogue.Glob("导出MusicXML 选项", "*MusicXML*"));
+Check("a leading wildcard anchors at the end", !DialogCatalogue.Glob("导出MusicXML 选项", "*MusicXML"));
+Check("a trailing wildcard anchors at the start", DialogCatalogue.Glob("导出MusicXML 选项", "导出MusicXML*"));
+
+Console.WriteLine();
+Console.WriteLine("== the payload an agent reads");
+
+var exportPayload = DialogModel.Payload(export, new DialogProbeInfo("win32+uia", 12, Nodes: 41));
+
+Check(
+    "id, kind, shape, class, owner and title are there",
+    NodeRead.Str(exportPayload, "id") == "dorico.export-musicxml"
+        && NodeRead.Str(exportPayload, "kind") == "known"
+        && NodeRead.Str(exportPayload, "shape") == "qt"
+        && NodeRead.Str(exportPayload, "class") == "Qt6101QWindow"
+        && NodeRead.Str(exportPayload, "owner") == "0x006C1132"
+        && NodeRead.Str(exportPayload, "title") == "导出MusicXML");
+Check("blocksQueue is a boolean hint", NodeRead.Bool(exportPayload, "blocksQueue") == true);
+Check("the body text and its source are there", NodeRead.Str(exportPayload, "description") == "导出到哪里\n格式" && NodeRead.Str(exportPayload, "textSource") == "uia");
+Check("pressWith is the ready-to-paste line", NodeRead.Str(exportPayload, "pressWith") == export.PressWith);
+
+var reportedButtons = NodeRead.Arr(exportPayload, "buttons");
+
+Check("every button is an object", reportedButtons?.Count == 7, reportedButtons?.Count.ToString());
+Check(
+    "a button carries its id, name, automation id, index, role, safe and invokable",
+    NodeRead.Str(reportedButtons?[6], "id") == "cancel"
+        && NodeRead.Str(reportedButtons?[6], "name") == "取消"
+        && NodeRead.Int(reportedButtons?[6], "index") == 6
+        && NodeRead.Str(reportedButtons?[6], "role") == "dismiss"
+        && NodeRead.Bool(reportedButtons?[6], "safe") == true
+        && NodeRead.Bool(reportedButtons?[6], "invokable") == true
+        && NodeRead.Str(reportedButtons?[6], "automationId") == "DoricoQApplication.root.buttonBoxFrame.buttonBox.QPushButton");
+Check("and an alias only where the catalogue maps one", NodeRead.Str(reportedButtons?[6], "alias") == "no" && NodeRead.Str(reportedButtons?[0], "alias") is null);
+Check(
+    "a label-less button keeps its glyph label and its own id",
+    NodeRead.Str(reportedButtons?[4], "name") == "\ue0c8" && NodeRead.Str(reportedButtons?[4], "id") == "folder-picker");
+
+var probe = NodeRead.Obj(exportPayload, "probe");
+
+Check(
+    "the probe says how, how long and how many elements",
+    NodeRead.Str(probe, "how") == "win32+uia" && NodeRead.Int(probe, "ms") == 12 && NodeRead.Int(probe, "nodes") == 41);
+Check("and that it was neither degraded nor truncated", NodeRead.Bool(probe, "degraded") == false && NodeRead.Bool(probe, "truncated") == false);
+Check("a blocking dialog comes with the sentence about the queue", NodeRead.Str(exportPayload, "note")?.Contains("queued, not lost") == true, NodeRead.Str(exportPayload, "note"));
+
+var degraded = DialogModel.Payload(export, new DialogProbeInfo("win32", 9, Degraded: true, Error: "UI Automation refused"));
+
+Check("a degraded probe carries its error", NodeRead.Str(NodeRead.Obj(degraded, "probe"), "error") == "UI Automation refused");
+Check("and says it was degraded", NodeRead.Bool(NodeRead.Obj(degraded, "probe"), "degraded") == true);
+
+var warned = DialogModel.Payload(stranger, new DialogProbeInfo("win32+uia", 4), "warning text");
+
+Check("an allowed-unknown press carries its warning", NodeRead.Str(warned, "warning") == "warning text");
+Check("a dialog with no text reports no description", NodeRead.Str(DialogModel.Payload(stranger, new DialogProbeInfo("win32+uia", 4)), "description") is null);
 
 Console.WriteLine();
 Console.WriteLine($"{failures} failed, 0 skipped");
