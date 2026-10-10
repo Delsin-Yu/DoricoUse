@@ -153,12 +153,14 @@ closed the export dialog. That blind spot is why every payload carries two more 
               {"id":"cancel","alias":"no","name":"取消","automationId":"…buttonBox.QPushButton","index":6,"role":"dismiss","safe":true,"invokable":true},
               {"id":"folder-picker","name":"\ue0c8","automationId":"…chooseFolderPathPushButton","index":4,"role":"unknown","safe":false,"invokable":true}],
    "pressWith":"dorico-use ui press --dialog dorico.export-musicxml --button cancel",
-   "probe":{"how":"win32+uia","ms":12,"degraded":false,"nodes":41,"truncated":false}}}
+   "probe":{"how":"win32+uia","ms":12,"degraded":false,"nodes":41,"truncated":false,"doricoWindows":1,"documentEnabled":false}}}
 ```
 
 - **`dialog` is `null` when nothing is modal**, and that is a measurement rather than silence: the probe ran and
-  found nothing. It is cheap Win32 that runs on every invocation (8 ms measured against a Dorico sitting at the
-  Hub).
+  found nothing. `probe.doricoWindows` says how many visible windows Dorico had (0 would mean it is not running,
+  which is a different answer) and `probe.documentEnabled` says whether its document window was enabled, which is
+  the fact the modality rule turns on. It is cheap Win32 that runs on every invocation — 8 ms measured against a
+  Dorico sitting at the Hub, which reported `doricoWindows: 1, documentEnabled: true`.
 - **`execution` is the queue fact**: `ran`, `queued`, `refused` or `unknown`, present on a command that posted
   something to Dorico. It is read out of Dorico's own `application.log`, which echoes
   `Posting command (requested): <name>` and `Executing command: <name>`. A command that was posted with no
@@ -626,7 +628,7 @@ reported there as a single `skip`.
 
 ```bash
 dotnet build tests/VocabularyCheck/VocabularyCheck.csproj -v q --nologo
-./tests/VocabularyCheck/bin/Debug/net10.0/vocabulary-check.exe    # 214 checks, no setup at all
+./tests/VocabularyCheck/bin/Debug/net10.0/vocabulary-check.exe    # 217 checks, no setup at all
 ```
 
 The `VocabularyCheck` program needs nothing but the framework: no Dorico, no host, no extraction step. It checks

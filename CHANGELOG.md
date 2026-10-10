@@ -24,7 +24,7 @@ Control API — see `README.md`.
   `dorico.unsaved-changes`. Anything else is reported in full and refused (`UnknownDialog`), and every button of an
   unknown dialog is unsafe, so pressing one needs both `--allow-unknown-dialog` and `--allow-destructive`.
 - `export musicxml` and the live read now report the dialog they saw while waiting (`dialogWhileWaiting`).
-- 137 checks in `VocabularyCheck` over the two pure model files, which need no Dorico, no dialog and no Windows:
+- 140 checks in `VocabularyCheck` over the two pure model files, which need no Dorico, no dialog and no Windows:
   id stability, the unknown-dialog hash, the button ordering rules, every catalogue entry's policy, every refusal
   code with its exit code, and the payload shape.
 

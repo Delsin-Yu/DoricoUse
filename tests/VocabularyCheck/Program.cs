@@ -583,6 +583,20 @@ var warned = DialogModel.Payload(stranger, new DialogProbeInfo("win32+uia", 4), 
 Check("an allowed-unknown press carries its warning", NodeRead.Str(warned, "warning") == "warning text");
 Check("a dialog with no text reports no description", NodeRead.Str(DialogModel.Payload(stranger, new DialogProbeInfo("win32+uia", 4)), "description") is null);
 
+// A null `dialog` has to be a measurement. Without these two numbers a payload cannot tell "nothing is modal" from
+// "Dorico was not found", which is the one way the field could lie.
+var presence = DialogModel.ProbePayload(new DialogProbeInfo("win32", 9, Windows: 1, DocumentEnabled: true));
+
+Check(
+    "a probe that measured Dorico's windows says how many there were",
+    NodeRead.Int(presence, "doricoWindows") == 1 && NodeRead.Bool(presence, "documentEnabled") == true);
+Check(
+    "and a probe that did not measure them leaves the fields out rather than printing a zero",
+    NodeRead.Int(DialogModel.ProbePayload(new DialogProbeInfo("win32", 9)), "doricoWindows") is null);
+Check(
+    "a document window that could not be found is reported as unknown, not as enabled",
+    NodeRead.Bool(DialogModel.ProbePayload(new DialogProbeInfo("win32", 9, Windows: 2)), "documentEnabled") is null);
+
 Console.WriteLine();
 Console.WriteLine($"{failures} failed, 0 skipped");
 return failures == 0 ? 0 : 1;

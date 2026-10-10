@@ -42,13 +42,27 @@ internal sealed record DialogInput(
     IReadOnlyList<DialogButtonInput> Buttons);
 
 /// <summary>What the read of a dialog cost and whether it was complete. No Windows types here either.</summary>
+/// <param name="How">The mechanism: <c>win32</c>, or <c>win32+uia</c> when UI Automation was read as well.</param>
+/// <param name="Milliseconds">What it cost.</param>
+/// <param name="Degraded">True when the probe or the read failed, in which case the window facts stand alone.</param>
+/// <param name="Error">Why it failed, when it did.</param>
+/// <param name="Nodes">How many elements the read walked. Zero when it never got that far.</param>
+/// <param name="Truncated">True when a limit stopped the read before the tree ended.</param>
+/// <param name="Windows">
+/// How many visible top-level windows Dorico had, when the caller measured it. Reported so that a null
+/// <c>dialog</c> is a measurement and not an absence of one: zero windows means Dorico is not running, which is a
+/// different answer from "nothing is modal".
+/// </param>
+/// <param name="DocumentEnabled">Whether Dorico's document window was enabled, when one was found.</param>
 internal sealed record DialogProbeInfo(
     string How,
     long Milliseconds,
     bool Degraded = false,
     string? Error = null,
     int Nodes = 0,
-    bool Truncated = false);
+    bool Truncated = false,
+    int? Windows = null,
+    bool? DocumentEnabled = null);
 
 /// <summary>One reported button, with the id an agent passes back to <c>ui press</c>.</summary>
 internal sealed record DialogButtonDescription(
@@ -287,6 +301,12 @@ internal static class DialogModel
             ["nodes"] = probe.Nodes,
             ["truncated"] = probe.Truncated,
         };
+
+        if (probe.Windows is not null)
+        {
+            payload["doricoWindows"] = probe.Windows.Value;
+            payload["documentEnabled"] = probe.DocumentEnabled;
+        }
 
         if (probe.Error is not null)
         {

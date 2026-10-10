@@ -19,10 +19,26 @@ internal sealed record WindowFacts(
     string Title);
 
 /// <summary>What the presence probe found, including how it failed when it did.</summary>
+/// <param name="Dialog">The modal window, or null when nothing of Dorico's is modal.</param>
+/// <param name="How">The mechanism, for <c>probe.how</c>.</param>
+/// <param name="Milliseconds">What the probe cost.</param>
+/// <param name="Windows">
+/// How many visible top-level windows Dorico had when the probe ran. Zero means Dorico is not running or has
+/// nothing on screen, which is a different answer from "no dialog is up" — and without this number the two look
+/// exactly alike in a payload, which is the one way a null `dialog` could be lying.
+/// </param>
+/// <param name="DocumentEnabled">
+/// Whether Dorico's document window was enabled, or null when no document window was found. This is the fact the
+/// modality rule turns on, so it is reported rather than inferred from an absent dialog.
+/// </param>
+/// <param name="Degraded">True when the probe itself failed.</param>
+/// <param name="Error">Why it failed, when it did.</param>
 internal sealed record DialogPresence(
     WindowFacts? Dialog,
     string How,
     long Milliseconds,
+    int Windows = 0,
+    bool? DocumentEnabled = null,
     bool Degraded = false,
     string? Error = null);
 
@@ -64,6 +80,7 @@ internal static class DialogProbe
         {
             var windows = Enumerate();
             var dorico = DoricoProcessIds(windows);
+            var mine = windows.Where(window => dorico.Contains(window.ProcessId)).ToList();
 
             if (dorico.Count == 0)
             {
@@ -71,11 +88,12 @@ internal static class DialogProbe
             }
 
             var document = DocumentWindow(windows, dorico);
+            var enabled = document is null ? (bool?)null : IsWindowEnabled(document.Handle);
 
-            if (document is null || IsWindowEnabled(document.Handle))
+            if (document is null || enabled == true)
             {
                 // No document window, or nothing has disabled it: whatever else is on screen is not modal.
-                return new DialogPresence(null, How, Elapsed(started));
+                return new DialogPresence(null, How, Elapsed(started), mine.Count, enabled);
             }
 
             var candidates = windows
@@ -84,7 +102,7 @@ internal static class DialogProbe
 
             if (candidates.Count == 0)
             {
-                return new DialogPresence(null, How, Elapsed(started));
+                return new DialogPresence(null, How, Elapsed(started), mine.Count, enabled);
             }
 
             var chosen = candidates
@@ -92,7 +110,7 @@ internal static class DialogProbe
                 .ThenByDescending(window => window.Owner == document.Handle)
                 .First();
 
-            return new DialogPresence(chosen, How, Elapsed(started));
+            return new DialogPresence(chosen, How, Elapsed(started), mine.Count, enabled);
         }
         catch (Exception ex)
         {

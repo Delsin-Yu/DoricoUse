@@ -116,7 +116,9 @@ internal static class DialogSurface
             How: dialog is null ? presence.How : presence.How + "+uia",
             Milliseconds: presence.Milliseconds,
             Degraded: presence.Degraded,
-            Error: presence.Error));
+            Error: presence.Error,
+            Windows: presence.Windows,
+            DocumentEnabled: presence.DocumentEnabled));
 
         return dialog;
     }
@@ -150,7 +152,13 @@ internal static class DialogSurface
                 {
                     ["requestedDialog"] = dialogId,
                     ["requestedButton"] = buttonId,
-                    ["probe"] = DialogModel.ProbePayload(new DialogProbeInfo(presence.How, presence.Milliseconds, presence.Degraded, presence.Error)),
+                    ["probe"] = DialogModel.ProbePayload(new DialogProbeInfo(
+                        presence.How,
+                        presence.Milliseconds,
+                        presence.Degraded,
+                        presence.Error,
+                        Windows: presence.Windows,
+                        DocumentEnabled: presence.DocumentEnabled)),
                 },
             };
 
@@ -161,6 +169,24 @@ internal static class DialogSurface
         try
         {
             read = DialogReader.Read(window.Handle, window.Title, window.WindowClass, owner, raw: false);
+        }
+        catch (CliException ex) when (NodeRead.Str(ex.Details, "hresult") == GoneHresult)
+        {
+            // The dialog went away between the probe and the read. That is not a broken tool and not a pressable
+            // dialog either: there is nothing to press in any more, which is what DialogNotFound says.
+            throw new CliException(
+                "DialogNotFound",
+                $"The dialog '{window.Title}' was there a moment ago and is gone now, so there is nothing to press "
+                + "in. Nothing was pressed.",
+                DialogModel.RefusalExitCode)
+            {
+                Details = new JsonObject
+                {
+                    ["requestedDialog"] = dialogId,
+                    ["requestedButton"] = buttonId,
+                    ["title"] = window.Title,
+                },
+            };
         }
         catch (Exception ex)
         {
@@ -247,8 +273,10 @@ internal static class DialogSurface
         }
     }
 
-    private static int IndexOf(DialogDescription description, string buttonId)
-    {
+    /// <summary><c>UIA_E_ELEMENTNOTAVAILABLE</c> as a string, because the caller switches on it, not on English.</summary>
+    private static string GoneHresult => $"0x{UiaCom.ElementNotAvailable:X8}";
+
+    private static int IndexOf(DialogDescription description, string buttonId)    {
         for (var index = 0; index < description.Buttons.Count; index++)
         {
             if (string.Equals(description.Buttons[index].Id, buttonId, StringComparison.Ordinal))
@@ -311,7 +339,9 @@ internal static class DialogSurface
                     Degraded: false,
                     Error: null,
                     Nodes: read.Nodes,
-                    Truncated: read.Truncated);
+                    Truncated: read.Truncated,
+                    Windows: presence.Windows,
+                    DocumentEnabled: presence.DocumentEnabled);
 
                 var payload = DialogModel.Payload(description, probe);
 
@@ -336,7 +366,9 @@ internal static class DialogSurface
                 How: presence.How,
                 Milliseconds: presence.Milliseconds + (long)Stopwatch.GetElapsedTime(started).TotalMilliseconds,
                 Degraded: true,
-                Error: ex.Message);
+                Error: ex.Message,
+                Windows: presence.Windows,
+                DocumentEnabled: presence.DocumentEnabled);
 
             return DialogModel.Payload(description, probe);
         }
