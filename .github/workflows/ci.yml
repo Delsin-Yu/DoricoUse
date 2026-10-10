@@ -24,12 +24,9 @@ jobs:
           dotnet-version: '10.0.x'
 
       - name: build
-        run: dotnet build src/DoricoUse.Cli/DoricoUse.Cli.csproj -c Release --nologo
-
-      - name: build the checks
-        run: |
-          dotnet build tests/ProjectFileCheck/ProjectFileCheck.csproj -c Release --nologo
-          dotnet build tests/VocabularyCheck/VocabularyCheck.csproj -c Release --nologo
+        # The solution names all three projects, so one build covers the CLI and both checks. The check
+        # executables below are still invoked by path: what is run is what was just built.
+        run: dotnet build DoricoUse.slnx -c Release --nologo
 
       - name: run the checks
         # Both checks exit non-zero on a failure. The fixture committed at tests/corpus/fixture.dorico always

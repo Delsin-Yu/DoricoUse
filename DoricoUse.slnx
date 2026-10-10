@@ -2,4 +2,8 @@
   <Folder Name="/src/">
     <Project Path="src/DoricoUse.Cli/DoricoUse.Cli.csproj" />
   </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/ProjectFileCheck/ProjectFileCheck.csproj" />
+    <Project Path="tests/VocabularyCheck/VocabularyCheck.csproj" />
+  </Folder>
 </Solution>
