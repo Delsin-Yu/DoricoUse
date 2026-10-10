@@ -110,7 +110,8 @@ internal static class ProjectFileReader
             container,
             members,
             metadata,
-            ProjectFileScoreReader.Read(scoreData));
+            ProjectFileScoreReader.Read(scoreData),
+            scoreData);
     }
 
     private static ZipArchive OpenArchive(string path)

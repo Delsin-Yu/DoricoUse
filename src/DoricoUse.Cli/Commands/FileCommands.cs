@@ -38,7 +38,7 @@ internal static class FileCommands
 
         var measure = new Option<string?>("--measure")
         {
-            Description = "Only notes in one measure (12) or a range (12-16).",
+            Description = "Only notes in one measure (12) or a range (12-16). Dynamics are filtered the same way.",
         };
 
         var player = new Option<string?>("--player")
@@ -46,12 +46,58 @@ internal static class FileCommands
             Description = "Only notes of players, instruments or staves matching this glob, e.g. *Flute* or Violin.",
         };
 
-        var command = new Command("read", "Report what a .dorico project file contains: players, layouts, notes.")
+        var dynamics = new Option<bool>("--dynamics")
+        {
+            Description = "Include the dynamic markings: which group each one is, what it is (f, pp, cresc, fz), and "
+                + "where it sits.",
+        };
+
+        var dynamicsLimit = new Option<string?>("--dynamics-limit")
+        {
+            Description = "How many dynamics to list: a count, 'all', or -1. Separate from --limit, which stays the "
+                + "note count. Default 100.",
+        };
+
+        var lyrics = new Option<bool>("--lyrics")
+        {
+            Description = "Include what the lyric element tables hold: how many there are, how many elements, and the "
+                + "field names of an element. Lyrics are table elements, not events, and this reader does not read "
+                + "their contents.",
+        };
+
+        var tree = new Option<string?>("--tree")
+        {
+            Description = "Dump the decoded record tree: a node name (e.g. DynamicGroupElementDefinition) shows every "
+                + "node with that name, bounded by --depth and --tree-limit; '*' lists every name the file uses with "
+                + "how often. Nothing about the file is assumed — this is how to explore a shape this CLI has no code "
+                + "for.",
+        };
+
+        var depth = new Option<string?>("--depth")
+        {
+            Description = "How many levels of child nodes --tree shows below a matched node (0-8). Default 2.",
+        };
+
+        var treeLimit = new Option<string?>("--tree-limit")
+        {
+            Description = "How many occurrences, fields and children --tree lists per node: a count, or 'all'/'-1'. "
+                + "Default 8, or 200 names for '--tree *'.",
+        };
+
+        var command = new Command(
+            "read",
+            "Report what a .dorico project file contains: players, layouts, notes, dynamics, lyrics.")
         {
             path,
             limit,
             measure,
             player,
+            dynamics,
+            dynamicsLimit,
+            lyrics,
+            tree,
+            depth,
+            treeLimit,
         };
 
         command.SetAction(parse => CommandRoot.RunAsync("file read", () =>
@@ -59,11 +105,19 @@ internal static class FileCommands
             var file = ProjectFileReader.Open(parse.GetValue(path)!);
             var limits = ProjectFileView.ParseMeasures(parse.GetValue(measure));
 
-            var options = new ProjectFileView.Options(
-                ProjectFileView.ParseLimit(parse.GetValue(limit)),
-                limits?.First,
-                limits?.Last,
-                parse.GetValue(player));
+            var options = new ProjectFileView.Options
+            {
+                NoteLimit = ProjectFileView.ParseLimit(parse.GetValue(limit)),
+                FirstMeasure = limits?.First,
+                LastMeasure = limits?.Last,
+                Player = parse.GetValue(player),
+                Dynamics = parse.GetValue(dynamics),
+                DynamicLimit = ProjectFileView.ParseOptionalLimit(parse.GetValue(dynamicsLimit), "--dynamics-limit"),
+                Lyrics = parse.GetValue(lyrics),
+                Tree = parse.GetValue(tree),
+                Depth = ProjectFileView.ParseDepth(parse.GetValue(depth)),
+                TreeLimit = ProjectFileView.ParseOptionalLimit(parse.GetValue(treeLimit), "--tree-limit"),
+            };
 
             return Task.FromResult(ProjectFileView.Report(file, options));
         }));

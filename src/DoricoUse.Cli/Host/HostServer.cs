@@ -360,6 +360,19 @@ internal sealed class HostServer(HostOptions options, HostLog log)
         var waitMs = Math.Clamp(NodeRead.Long(args, "waitMs") ?? 0, 0, 120_000);
         var verify = NodeRead.Bool(args, "verify") ?? true;
         var dryRun = NodeRead.Bool(args, "dryRun") ?? false;
+        var mode = NodeRead.Str(args, "mode");
+        string? requestedMode = null;
+
+        if (!string.IsNullOrWhiteSpace(mode))
+        {
+            if (!NoteMode.TryResolve(mode, out requestedMode))
+            {
+                throw new CliException(
+                    "InvalidArgument",
+                    $"'{mode}' is not a note input mode. Use {NoteMode.Names()}.",
+                    1);
+            }
+        }
 
         // `notes` is the flat list (the original contract); `chords` is the same thing grouped, one entry per
         // rhythmic position. A version of the CLI that predates chords sends only `notes`, so it still works.
@@ -505,6 +518,18 @@ internal sealed class HostServer(HostOptions options, HostLog log)
                 ["enterDecision"] = "Note input needs Write mode, and NoteInput.Enter is a toggle, so both are "
                     + "sent only when the status says they are needed. Run without --dry-run to see which ones "
                     + "were.",
+                ["mode"] = new JsonObject
+                {
+                    ["requested"] = requestedMode is null ? null : NoteMode.ShortName(requestedMode),
+                    ["plannedCommand"] = requestedMode is null
+                        ? null
+                        : $"{NoteMode.Command}?{NoteMode.Parameter}={requestedMode}",
+                    ["note"] = requestedMode is null
+                        ? "No --mode was given, so the note input mode is read from the status and reported, and "
+                            + "nothing changes it."
+                        : $"The current mode is read from the status at run time, and {NoteMode.Command} is sent "
+                            + "only when it differs, so --dry-run cannot say whether it will be needed.",
+                },
             };
 
             if (chordCount > 0)
@@ -522,7 +547,9 @@ internal sealed class HostServer(HostOptions options, HostLog log)
 
         var stepTimeout = timeout < TimeSpan.FromSeconds(5) ? timeout : TimeSpan.FromSeconds(5);
         var statusTimeout = timeout;
-        var budget = (stepTimeout * (steps.Count + 2)) + statusTimeout + TimeSpan.FromMilliseconds(waitMs);
+
+        // +3 covers the two conditional preamble commands (write mode, note input) and the note input mode.
+        var budget = (stepTimeout * (steps.Count + 3)) + statusTimeout + TimeSpan.FromMilliseconds(waitMs);
 
         return await _keeper.ExecuteAsync("note insert", async client =>
         {
@@ -561,9 +588,24 @@ internal sealed class HostServer(HostOptions options, HostLog log)
                 JsonArr.AddNode(results, AckJson("NoteInput.Enter", null, enterAck, 0));
             }
 
+            // The note input mode is a state rather than a step of the sequence, and the status is the only way
+            // to know it: it is read above, so the command is sent only when the mode is not already what was
+            // asked for, and the payload reports what was in force either way.
+            var modeBefore = NodeRead.Str(status, "noteInputMode");
+            var modeChanged = false;
+            var pending = new List<Step>();
+
+            if (requestedMode is not null && !string.Equals(modeBefore, requestedMode, StringComparison.Ordinal))
+            {
+                pending.Add(new Step(NoteMode.Command, [new(NoteMode.Parameter, requestedMode)]));
+                modeChanged = true;
+            }
+
+            pending.AddRange(steps);
+
             string? stoppedAt = null;
 
-            foreach (var step in steps)
+            foreach (var step in pending)
             {
                 var stepStarted = Stopwatch.GetTimestamp();
                 var ack = await client.SendCommandAsync(step.Name, step.Parameters, stepTimeout, _cts.Token)
@@ -595,6 +637,16 @@ internal sealed class HostServer(HostOptions options, HostLog log)
                 ["roundTripMs"] = (long)Stopwatch.GetElapsedTime(started).TotalMilliseconds,
             };
 
+            // What the mode is now: the value the sequence left behind, unless a later status can say for sure.
+            string? modeEffective = modeChanged ? requestedMode : modeBefore;
+            JsonObject modePayload(string? effective) => ModeJson(
+                requestedMode,
+                modeBefore,
+                effective ?? modeEffective,
+                modeChanged);
+
+            payload["mode"] = modePayload(modeEffective);
+
             if (chordCount > 0)
             {
                 payload["chords"] = ChordsJson(events);
@@ -625,11 +677,46 @@ internal sealed class HostServer(HostOptions options, HostLog log)
 
             var after = await client.GetStatusAsync(statusTimeout, _cts.Token).ConfigureAwait(false);
             payload["status"] = SessionView.Status(after);
+            payload["mode"] = modePayload(NodeRead.Str(after, "noteInputMode"));
             payload["note"] = "kOK only acknowledges receipt; the status shows the caret is where the commands left "
-                + "it, not which notes landed. Check the score (or an undo) to be sure.";
+                + "it and the mode that was in force, not which notes landed. Check the score (or an undo) to be "
+                + "sure.";
 
             return new JsonObject { ["note"] = payload };
         }, budget, _cts.Token).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Reports the note input mode the way an agent needs it: what it asked for, what was in force before, what
+    /// is in force afterwards, and whether the CLI had to change anything.
+    /// </summary>
+    private static JsonObject ModeJson(string? requested, string? before, string? effective, bool changed)
+    {
+        var json = new JsonObject
+        {
+            ["requested"] = requested is null ? null : NoteMode.ShortName(requested),
+            ["before"] = before,
+            ["effective"] = effective,
+            ["changed"] = changed,
+        };
+
+        if (NoteMode.Meaning(effective) is { } meaning)
+        {
+            json["meaning"] = meaning;
+        }
+
+        if (requested is null)
+        {
+            json["note"] = "No --mode was given, so the mode was left alone; 'effective' is what the status "
+                + "reported at the end of the run.";
+        }
+        else if (!changed)
+        {
+            json["note"] = $"Dorico was already in {NoteMode.ShortName(requested)} mode, so {NoteMode.Command} was "
+                + "not sent.";
+        }
+
+        return json;
     }
 
     private static JsonObject AckJson(

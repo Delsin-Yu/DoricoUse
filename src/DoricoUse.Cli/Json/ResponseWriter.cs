@@ -45,21 +45,21 @@ internal static class ResponseWriter
     {
         if (error is CliException cli)
         {
-            Write(Error(command, cli.Code, cli.Message, null));
+            Write(Error(command, cli.Code, cli.Message, null, cli.Details));
             return cli.ExitCode;
         }
 
-        Write(Error(command, "RuntimeError", error.Message, null));
+        Write(Error(command, "RuntimeError", error.Message, null, null));
         return 2;
     }
 
     public static int FailParse(string command, string message, string? help = null)
     {
-        Write(Error(command, "InvalidArgument", message, help));
+        Write(Error(command, "InvalidArgument", message, help, null));
         return 1;
     }
 
-    private static JsonObject Error(string command, string code, string message, string? help)
+    private static JsonObject Error(string command, string code, string message, string? help, JsonObject? data)
     {
         var error = new JsonObject
         {
@@ -70,6 +70,11 @@ internal static class ResponseWriter
         if (help is not null)
         {
             error["help"] = help;
+        }
+
+        if (data is not null)
+        {
+            error["data"] = data.DeepClone();
         }
 
         return new JsonObject

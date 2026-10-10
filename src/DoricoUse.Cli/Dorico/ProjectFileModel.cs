@@ -31,13 +31,18 @@ internal sealed record ProjectFileMetadata(
     IReadOnlyList<string> FlowDurations);
 
 /// <summary>A .dorico file on disk: its package, its descriptive XML, and — when it could be decoded — its score.</summary>
+/// <remarks>
+/// <see cref="ScoreData"/> keeps the <c>score.dtn</c> member's bytes, so <c>file read --tree</c> can walk the very
+/// same records generically after the typed reader has had its pass. A project file is a couple of megabytes.
+/// </remarks>
 internal sealed record ProjectFile(
     string Path,
     long Bytes,
     ProjectFileContainer Container,
     IReadOnlyList<ProjectFileMember> Members,
     ProjectFileMetadata Metadata,
-    ProjectFileScore Score);
+    ProjectFileScore Score,
+    byte[] ScoreData);
 
 /// <summary>What <c>score.dtn</c> holds, decoded.</summary>
 internal sealed record ProjectFileScore(
@@ -52,6 +57,9 @@ internal sealed record ProjectFileScore(
     IReadOnlyList<ProjectFileStave> Staves,
     IReadOnlyList<ProjectFileMeter> Meters,
     IReadOnlyList<ProjectFileNote> Notes,
+    IReadOnlyList<ProjectFileDynamic> Dynamics,
+    IReadOnlyList<ProjectFileDynamicGroup> DynamicGroups,
+    ProjectFileLyrics Lyrics,
     int LastMeasure);
 
 /// <summary>The root object's <c>info</c> block.</summary>
@@ -136,3 +144,61 @@ internal sealed record ProjectFileNote(
     string? Instrument,
     int? Stave,
     int? Voice);
+
+/// <summary>
+/// One dynamic marking placed in the music: the events carry <i>where</i> (and which group), the group definition
+/// carries <i>what</i>. <see cref="Position"/> is an exact rational in crotchets, like a note's.
+/// </summary>
+internal sealed record ProjectFileDynamic(
+    long EventId,
+    int Measure,
+    string Beat,
+    string Position,
+    string Duration,
+    long Group,
+    int? Stream,
+    string? Player,
+    string? Instrument,
+    int? Stave,
+    int? Voice,
+    IReadOnlyList<ProjectFileDynamicMark> Marks);
+
+/// <summary>
+/// One part of a dynamic group: an immediate change of intensity (<c>p</c>, <c>ff</c>, …), a gradual one (a hairpin),
+/// a force (<c>fz</c>) or a combination. <see cref="Kind"/> is the file's own node name; <see cref="Mark"/> is the
+/// notation this reader derives from it, and is null when the shape is not one this reader has seen. Every value is
+/// reported as the file writes it — see <see cref="Mark"/> for the derived half.
+/// </summary>
+/// <remarks>
+/// <see cref="Position"/> is the offset inside the dynamic group, which is how the file writes it. <see cref="At"/>,
+/// <see cref="Measure"/> and <see cref="Beat"/> are that offset resolved against the event that placed the group —
+/// where the mark actually sits in the score. They are all null for a group reported on its own.
+/// </remarks>
+internal sealed record ProjectFileDynamicMark(
+    string Kind,
+    string? Mark,
+    string? Position,
+    string? At,
+    int? Measure,
+    string? Beat,
+    string? Duration,
+    string? Intensity,
+    int? IntensityLevel,
+    string? Direction,
+    string? Subito,
+    IReadOnlyList<ProjectFileTreeField> Fields);
+
+/// <summary>A dynamic group as the file defines it, before the events that place it are resolved.</summary>
+internal sealed record ProjectFileDynamicGroup(
+    long Id,
+    string? Events,
+    IReadOnlyList<ProjectFileDynamicMark> Marks);
+
+/// <summary>
+/// The lyric element tables of a flow. Lyrics are elements in a table rather than events on notes, and a table with
+/// nothing in it is a leaf, so presence and size are both readable even when the shape of one lyric is not.
+/// </summary>
+internal sealed record ProjectFileLyrics(
+    int Tables,
+    int Elements,
+    IReadOnlyList<IReadOnlyList<string>> Shapes);

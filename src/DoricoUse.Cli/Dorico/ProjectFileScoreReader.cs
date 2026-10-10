@@ -38,6 +38,11 @@ namespace DoricoUse.Cli.Dorico;
 /// </description></item>
 /// </list>
 /// <para>
+/// The search for the stream — header, name table, value pool, and which byte the token stream starts at — is shared
+/// with <see cref="ProjectFileTreeReader"/>, which walks the very same records without knowing anything about music;
+/// it lives in <see cref="ProjectFileBinary"/>.
+/// </para>
+/// <para>
 /// <b>What a note looks like.</b> Notes are children of a <c>NoteEventDefinition</c> node on the path
 /// <c>flow → blocks → block → events</c>. The block's <c>blockInstance</c> names the stream it sounds in, and the
 /// stream's <c>flowPlayer → flowPlayerInstrument → voiceStreamInfos / staveStreamInfos</c> chain names the player,
@@ -57,27 +62,9 @@ namespace DoricoUse.Cli.Dorico;
 /// </remarks>
 internal static class ProjectFileScoreReader
 {
-    private const int HeaderBytes = 12;
-
-    /// <summary>
-    /// A record starts with one byte whose <b>bit 1</b> says what it is: 0 = a leaf (<c>key value</c>, where key is a
-    /// name-table index and value a 1-based value-pool index), 1 = a node (<c>key aux count ids[count]</c>, then that
-    /// many children). Bit 0 is a variant: every project seen so far uses two kinds of leaf and two kinds of node,
-    /// for four tag bytes per file. The remaining bits are a marker that stays the same for the whole file —
-    /// <c>0x90</c> in <i>Bad Apple!!</i>, <c>0x10</c> in <i>《小城日常》</i>, <c>0x08</c> in
-    /// <i>畜生界传说</i> — and requiring that constancy is one more thing a wrong start position cannot satisfy.
-    /// </summary>
-    private const byte MarkerMask = 0xFC;
-
-    private const byte KindBit = 0x02;
+    private const int HeaderBytes = ProjectFileBinary.HeaderBytes;
 
     private const string RootKind = "kScore";
-
-    /// <summary>How many start positions are tried before the member is declared unreadable.</summary>
-    private const int MaxCandidates = 64;
-
-    /// <summary>How deep the record tree may nest. A real project stays around twelve levels.</summary>
-    private const int MaxDepth = 256;
 
     private static readonly string[] ExpectedRootChildren =
     [
@@ -96,28 +83,28 @@ internal static class ProjectFileScoreReader
             throw Unsupported("the member is shorter than its header");
         }
 
-        var formatVersion = ReadUInt32(data, 0);
-        var names = ReadNames(data, HeaderBytes, out var afterNames);
+        var formatVersion = ProjectFileBinary.FormatVersion(data);
+        var names = ProjectFileBinary.ReadNames(data, HeaderBytes, out var afterNames);
 
         if (names.Count == 0)
         {
             throw Unsupported("the name table is empty");
         }
 
-        var poolStart = SkipNulls(data, afterNames);
+        var poolStart = ProjectFileBinary.SkipNulls(data, afterNames);
 
         var tried = 0;
 
-        foreach (var candidate in Candidates(data, poolStart))
+        foreach (var candidate in ProjectFileBinary.Candidates(data, poolStart))
         {
             // A real score begins at the first position that parses to the end; trying a bounded number of
             // candidates keeps a file that is not a score from costing a quadratic scan.
-            if (++tried > MaxCandidates)
+            if (++tried > ProjectFileBinary.MaxCandidates)
             {
                 break;
             }
 
-            var poolCount = CountTokens(data, poolStart, candidate);
+            var poolCount = ProjectFileBinary.CountTokens(data, poolStart, candidate);
             var decoder = new Decoder(data, names, poolStart, poolCount);
 
             if (decoder.TryRead(candidate))
@@ -127,7 +114,7 @@ internal static class ProjectFileScoreReader
         }
 
         throw Unsupported(
-            $"{names.Count} names and {CountTokens(data, poolStart, data.Length)} value-pool entries were read, but "
+            $"{names.Count} names and {ProjectFileBinary.CountTokens(data, poolStart, data.Length)} value-pool entries were read, but "
             + "no position yields a token stream that parses to the last byte with a kScore root");
     }
 
@@ -138,87 +125,6 @@ internal static class ProjectFileScoreReader
             2);
 
     // ---------------------------------------------------------------- the tables in front of the stream
-
-    private static uint ReadUInt32(byte[] data, int offset)
-        => (uint)(data[offset] | (data[offset + 1] << 8) | (data[offset + 2] << 16) | (data[offset + 3] << 24));
-
-    /// <summary>The name table: null-terminated UTF-8 identifiers up to the first empty one.</summary>
-    private static List<string> ReadNames(byte[] data, int start, out int end)
-    {
-        var names = new List<string>(4096);
-        var position = start;
-
-        while (position < data.Length && names.Count < 1_000_000)
-        {
-            var terminator = Array.IndexOf(data, (byte)0, position);
-
-            if (terminator < 0)
-            {
-                break;
-            }
-
-            if (terminator == position)
-            {
-                end = position + 1;
-
-                return names;
-            }
-
-            names.Add(Encoding.UTF8.GetString(data, position, terminator - position));
-            position = terminator + 1;
-        }
-
-        end = position;
-
-        return names;
-    }
-
-    private static int SkipNulls(byte[] data, int position)
-    {
-        while (position < data.Length && data[position] == 0)
-        {
-            position++;
-        }
-
-        return position;
-    }
-
-    /// <summary>How many null-terminated entries the value pool holds in <c>[start, end)</c>.</summary>
-    private static int CountTokens(byte[] data, int start, int end)
-    {
-        var count = 0;
-        var position = start;
-
-        while (position < end)
-        {
-            var terminator = Array.IndexOf(data, (byte)0, position, end - position);
-
-            if (terminator < 0)
-            {
-                break;
-            }
-
-            count++;
-            position = terminator + 1;
-        }
-
-        return count;
-    }
-
-    /// <summary>
-    /// Every position where the token stream could start: a node record whose key is <c>kScore</c> — name index 0,
-    /// the first entry of the name table, which is what the file's first byte says — and whose <c>aux</c> is 0.
-    /// </summary>
-    private static IEnumerable<int> Candidates(byte[] data, int poolStart)
-    {
-        for (var position = poolStart; position + 2 < data.Length; position++)
-        {
-            if ((data[position] & KindBit) != 0 && data[position + 1] == 0 && data[position + 2] == 0)
-            {
-                yield return position;
-            }
-        }
-    }
 
     // ---------------------------------------------------------------- the decoder
 
@@ -235,6 +141,7 @@ internal static class ProjectFileScoreReader
         private readonly List<LayoutDraft> _layouts = [];
         private readonly List<FlowDraft> _flows = [];
         private readonly List<NoteDraft> _notes = [];
+        private readonly List<DynamicDraft> _dynamicEvents = [];
         private readonly List<MeterEventDraft> _barEvents = [];
         private readonly Dictionary<long, ElementDraft> _barElements = [];
         private readonly Dictionary<long, StaveDraft> _streamStaves = [];
@@ -273,7 +180,7 @@ internal static class ProjectFileScoreReader
                 return false;
             }
 
-            _marker = (byte)(_data[_pos] & MarkerMask);
+            _marker = (byte)(_data[_pos] & ProjectFileBinary.MarkerMask);
 
             if (!IsNodeTag(_data[_pos]))
             {
@@ -353,12 +260,12 @@ internal static class ProjectFileScoreReader
                 ? parsed
                 : -1;
 
-        private bool IsLeafTag(byte tag) => (tag & KindBit) == 0;
+        private bool IsLeafTag(byte tag) => ProjectFileBinary.IsLeafTag(tag);
 
-        private bool IsNodeTag(byte tag) => (tag & KindBit) != 0;
+        private bool IsNodeTag(byte tag) => ProjectFileBinary.IsNodeTag(tag);
 
         /// <summary>A record's tag: one of the file's four tags.</summary>
-        private bool IsRecordTag(byte tag) => (tag & MarkerMask) == _marker;
+        private bool IsRecordTag(byte tag) => (tag & ProjectFileBinary.MarkerMask) == _marker;
 
         private bool TryVarint(out long value)
         {
@@ -445,7 +352,7 @@ internal static class ProjectFileScoreReader
         /// </summary>
         private bool WalkChildren(long count, Func<long, long, bool>? onLeaf, Func<long, long, int, bool> onNode)
         {
-            if (++_depth > MaxDepth)
+            if (++_depth > ProjectFileBinary.MaxDepth)
             {
                 _depth--;
 
@@ -733,7 +640,7 @@ internal static class ProjectFileScoreReader
                         case "flowPlayers": return WalkFlowPlayers(childCount);
                         case "blockInstances": return WalkBlockInstances(childCount);
                         case "eventStreams": return WalkEventStreams(childCount, flow);
-                        case "elementTables": return WalkElementTables(childCount);
+                        case "elementTables": return WalkElementTables(childCount, flow);
 
                         // Blocks hold the notes and the bar-division events, and they need the stream map the other
                         // children build. Remember where they start and come back to them below.
@@ -964,31 +871,221 @@ internal static class ProjectFileScoreReader
                 return ok;
             });
 
-        // ------------------------------------------------------------ metre
+        // ------------------------------------------------------------ element tables
 
-        /// <summary>The bar-division element table: the time signatures. Their positions come later, with the blocks.</summary>
-        private bool WalkElementTables(long count)
-            => WalkItems(count, (kind, children) => NameAt(kind) != "BarDivisionElementTableDefinition"
-                ? SkipChildren(children)
-                : WalkItems(children, (_, element) =>
+        /// <summary>
+        /// A flow's element tables. Three of them are read: the bar divisions (the metre), the dynamic groups (what a
+        /// dynamic marking looks like) and the lyrics. Their items live in an <c>array</c> child, and an <b>empty</b>
+        /// table writes that <c>array</c> as a leaf instead of a node — which is why a table is read through
+        /// <see cref="WalkElementItems"/> and not through <see cref="WalkItems"/>.
+        /// </summary>
+        private bool WalkElementTables(long count, FlowDraft flow)
+            => WalkItems(count, (kind, children) =>
+            {
+                switch (NameAt(kind))
                 {
-                    long elementId = -1;
+                    case "BarDivisionElementTableDefinition":
+                        return WalkElementItems(children, WalkBarDivisionElement, out _);
 
-                    return WalkChildren(
-                        element,
-                        (key, value) =>
+                    case "DynamicGroupElementTableDefinition":
+                        return WalkElementItems(children, element => WalkDynamicGroupElement(element, flow), out _);
+
+                    case "LyricElementTableDefinition":
+                        var ok = WalkElementItems(children, element => WalkLyricElement(element, flow), out var elements);
+                        flow.LyricTables++;
+                        flow.LyricElements += elements;
+
+                        return ok;
+
+                    default:
+                        return SkipChildren(children);
+                }
+            });
+
+        /// <summary>
+        /// The items of one element table, with how many there were. Dorico writes the collection as <c>array</c>: a
+        /// node holding the items, or — when the table has nothing in it — a leaf, which is exactly what every corpus
+        /// file's lyric table is.
+        /// </summary>
+        private bool WalkElementItems(long count, Func<long, bool> onItem, out int items)
+        {
+            items = 0;
+
+            if (count == 1 && _pos < _data.Length && IsLeafTag(_data[_pos]))
+            {
+                var save = _pos;
+
+                if (!ReadLeaf(out var key, out _) || NameAt(key) != "array")
+                {
+                    _pos = save;
+                }
+                else
+                {
+                    return true;
+                }
+            }
+
+            var seen = 0;
+
+            var ok = WalkItems(count, (_, children) =>
+            {
+                seen++;
+
+                return onItem(children);
+            });
+
+            items = seen;
+
+            return ok;
+        }
+
+        private bool WalkBarDivisionElement(long count)
+        {
+            long elementId = -1;
+
+            return WalkChildren(
+                count,
+                (key, value) =>
+                {
+                    if (NameAt(key) == "elementID")
+                    {
+                        elementId = Number(value);
+                    }
+
+                    return true;
+                },
+                (key, childCount, _) => NameAt(key) == "barDivisionData"
+                    ? WalkBarDivisionData(childCount, elementId)
+                    : SkipChildren(childCount));
+        }
+
+        /// <summary>
+        /// One dynamic group definition: the markings that make it up. The group itself has no position — the events
+        /// that name it carry that.
+        /// </summary>
+        private bool WalkDynamicGroupElement(long count, FlowDraft flow)
+        {
+            var group = new DynamicGroupDraft();
+
+            var ok = WalkChildren(
+                count,
+                (key, value) =>
+                {
+                    switch (NameAt(key))
+                    {
+                        case "elementID": group.Id = Number(value); break;
+                        case "referencingEventIDs": group.Events = Value(value); break;
+                    }
+
+                    return true;
+                },
+                (key, childCount, _) => NameAt(key) == "subElements"
+                    ? WalkDynamicSubElements(childCount, group)
+                    : SkipChildren(childCount));
+
+            if (ok && group.Id >= 0)
+            {
+                flow.Groups[group.Id] = group;
+            }
+
+            return ok;
+        }
+
+        private bool WalkDynamicSubElements(long count, DynamicGroupDraft group)
+            => WalkItems(count, (kind, children) =>
+            {
+                var mark = new DynamicMarkDraft(NameAt(kind) ?? "unknown");
+
+                var ok = WalkChildren(
+                    children,
+                    (key, value) =>
+                    {
+                        switch (NameAt(key))
                         {
-                            if (NameAt(key) == "elementID")
-                            {
-                                elementId = Number(value);
-                            }
+                            case "position": mark.Position = Value(value); break;
+                            case "duration": mark.Duration = Value(value); break;
+                            case "intensity": mark.Intensity = Value(value); break;
+                            case "intensityLevel": mark.IntensityLevel = (int)Number(value); break;
 
-                            return true;
-                        },
-                        (key, childCount, _) => NameAt(key) == "barDivisionData"
-                            ? WalkBarDivisionData(childCount, elementId)
-                            : SkipChildren(childCount));
-                }));
+                            // Only a gradual change has a hairpin direction; another kind that carries a field of the
+                            // same name means something else by it, so it stays raw.
+                            case "direction" when mark.Kind == "GradualChangeDynamicDefinition":
+                                mark.Direction = Value(value);
+                                break;
+
+                            // A field this reader has not seen (another kind of dynamic, a version that adds
+                            // fields): keep it rather than drop it, so the report can still show what the file says.
+                            default: mark.Keep(NameAt(key), Value(value)); break;
+                        }
+
+                        return true;
+                    },
+                    (key, childCount, _) => NameAt(key) == "commonDef"
+                        ? WalkDynamicCommonDef(childCount, mark)
+                        : SkipChildren(childCount));
+
+                group.Marks.Add(mark);
+
+                return ok;
+            });
+
+        private bool WalkDynamicCommonDef(long count, DynamicMarkDraft mark)
+            => WalkChildren(
+                count,
+                (key, value) =>
+                {
+                    if (NameAt(key) == "subito")
+                    {
+                        mark.Subito = Value(value);
+                    }
+                    else
+                    {
+                        mark.Keep(NameAt(key), Value(value));
+                    }
+
+                    return true;
+                },
+                (_, childCount, _) => SkipChildren(childCount));
+
+        /// <summary>One lyric of a lyric element table. The shape is not known — no file in the corpus has one.</summary>
+        private bool WalkLyricElement(long count, FlowDraft flow)
+        {
+            var fields = new List<string>();
+
+            var ok = WalkChildren(
+                count,
+                (key, _) =>
+                {
+                    Note(fields, NameAt(key));
+
+                    return true;
+                },
+                (key, children, _) =>
+                {
+                    Note(fields, NameAt(key));
+
+                    return SkipChildren(children);
+                });
+
+            if (ok)
+            {
+                flow.LyricShapes.Add(fields);
+            }
+
+            return ok;
+        }
+
+        /// <summary>
+        /// The field names of a lyric, and nothing else: what a lyric holds is not modelled here (no file in the
+        /// corpus has one), so the honest report is the shape and not a reading of it.
+        /// </summary>
+        private static void Note(List<string> fields, string? name)
+        {
+            if (name is not null && !fields.Contains(name))
+            {
+                fields.Add(name);
+            }
+        }
 
         private bool WalkBarDivisionData(long count, long elementId)
         {
@@ -1130,8 +1227,42 @@ internal static class ProjectFileScoreReader
                 {
                     "NoteEventDefinition" => WalkNote(childCount, stream, flow),
                     "BarDivisionEventDefinition" => WalkBarDivisionEvent(childCount),
+                    "DynamicGroupEventDefinition" => WalkDynamicEvent(childCount, stream, flow),
                     _ => SkipChildren(childCount),
                 });
+
+        /// <summary>
+        /// A dynamic marking placed in the music. The event says where it goes and which group it is; the group
+        /// definition in the flow's element tables says what it looks like.
+        /// </summary>
+        private bool WalkDynamicEvent(long count, long stream, FlowDraft flow)
+        {
+            var mark = new DynamicDraft { Stream = stream, Flow = flow };
+
+            var ok = WalkChildren(
+                count,
+                (key, value) =>
+                {
+                    switch (NameAt(key))
+                    {
+                        case "eventID": mark.EventId = Number(value); break;
+                        case "position": mark.Position = ScoreRational.Parse(Value(value)); break;
+                        case "duration": mark.Duration = Value(value) ?? string.Empty; break;
+                        case "dynamicGroupID": mark.Group = Number(value); break;
+                    }
+
+                    return true;
+                },
+                (_, childCount, _) => SkipChildren(childCount));
+
+            if (ok && mark.Group >= 0)
+            {
+                flow.Dynamics++;
+                _dynamicEvents.Add(mark);
+            }
+
+            return ok;
+        }
 
         private bool WalkNote(long count, long stream, FlowDraft flow)
         {
@@ -1282,6 +1413,54 @@ internal static class ProjectFileScoreReader
                     counts.GetValueOrDefault(stave.Stream)))
                 .ToList();
 
+            // Dynamics come off the same streams as notes, so the player/stave map is the one already built.
+            var dynamics = _dynamicEvents
+                .OrderBy(mark => mark.Position)
+                .ThenBy(mark => mark.Stream)
+                .ThenBy(mark => mark.EventId)
+                .Select(item =>
+                {
+                    var (measure, beat) = Locate(spans, item.Position);
+                    _streamStaves.TryGetValue(item.Stream, out var stave);
+
+                    var group = item.Flow is { } flow
+                        && item.Group >= 0
+                        && flow.Groups.TryGetValue(item.Group, out var found)
+                            ? found
+                            : null;
+
+                    return new ProjectFileDynamic(
+                        item.EventId,
+                        (int)measure,
+                        beat.ToText(),
+                        item.Position.ToText(),
+                        item.Duration,
+                        item.Group,
+                        item.Stream < 0 ? null : (int)item.Stream,
+                        stave is null || stave.PlayerId is null ? null : names.GetValueOrDefault(stave.PlayerId.Value),
+                        stave is null || stave.PlayerId is null || stave.InstrumentId is null
+                            ? null
+                            : instruments.GetValueOrDefault((stave.PlayerId.Value, stave.InstrumentId.Value)),
+                        stave?.Stave,
+                        stave?.Voice,
+                        [.. (group?.Marks ?? []).Select(mark => AsMark(mark, item.Position, spans))]);
+                })
+                .ToList();
+
+            var groups = _flows
+                .SelectMany(flow => flow.Groups.Values)
+                .OrderBy(group => group.Id)
+                .Select(group => new ProjectFileDynamicGroup(
+                    group.Id,
+                    group.Events,
+                    [.. group.Marks.Select(mark => AsMark(mark))]))
+                .ToList();
+
+            var lyrics = new ProjectFileLyrics(
+                _flows.Sum(flow => flow.LyricTables),
+                _flows.Sum(flow => flow.LyricElements),
+                _flows.SelectMany(flow => flow.LyricShapes).ToList());
+
             return new ProjectFileScore(
                 _fileVersion,
                 _names.Count,
@@ -1308,7 +1487,158 @@ internal static class ProjectFileScoreReader
                 staves,
                 MeterRows(spans),
                 notes,
+                dynamics,
+                groups,
+                lyrics,
                 lastMeasure);
+        }
+
+        private static ProjectFileDynamicMark AsMark(
+            DynamicMarkDraft mark,
+            ScoreRational? origin = null,
+            List<MeterSpan>? spans = null)
+        {
+            // Where the mark sits: the event's position plus the mark's offset inside its group. A group reported on
+            // its own has no origin, and a shape whose offset is not a rational is left unresolved rather than
+            // guessed at.
+            ScoreRational? at = null;
+            int? measure = null;
+            string? beat = null;
+
+            if (origin is { } start && ScoreRational.TryParse(mark.Position, out var offset))
+            {
+                var absolute = start + offset;
+                at = absolute;
+
+                if (spans is not null)
+                {
+                    var (located, atBeat) = Locate(spans, absolute);
+                    measure = (int)located;
+                    beat = atBeat.ToText();
+                }
+            }
+
+            return new ProjectFileDynamicMark(
+                mark.Kind,
+                DynamicMarkName(mark.Kind, mark.Intensity, mark.IntensityLevel, mark.Direction),
+                mark.Position,
+                at?.ToText(),
+                measure,
+                beat,
+                mark.Duration,
+                mark.Intensity,
+                mark.IntensityLevel,
+                mark.Direction,
+                mark.Subito,
+                mark.Fields);
+        }
+
+        /// <summary>
+        /// The notation a part of a dynamic group stands for, as far as this reader can prove it.
+        /// </summary>
+        /// <remarks>
+        /// An immediate change carries its intensity as a small variant list — family, an empty slot, mezzo, level —
+        /// so <c>{int: 0}, {}, {bool: false}, {int: 2}</c> is a forte family, not mezzo, level 2, i.e. <c>ff</c>. That
+        /// reading was checked against the MusicXML export of two corpus projects: 257 markings of one and 35 of the
+        /// other, family for family (<c>f/ff/fff</c> and <c>p/pp</c>), <c>mf</c>/<c>mp</c>, and the 12 hairpins of the
+        /// first against 12 <c>&lt;wedge&gt;</c> elements. A shape that was not in a checked export — another level, a
+        /// family this reader has not seen, a force other than level 1 — returns null rather than a guess; the raw
+        /// fields are reported either way.
+        /// </remarks>
+        internal static string? DynamicMarkName(string kind, string? intensity, int? level, string? direction)
+            => kind switch
+            {
+                "ImmediateChangeDynamicDefinition" => IntensityName(intensity),
+                "ForceDynamicDefinition" => level == 1 ? "fz" : null,
+                "GradualChangeDynamicDefinition" => direction switch
+                {
+                    "kGradualDynamicUp" => "cresc",
+                    "kGradualDynamicDown" => "dim",
+                    _ => null,
+                },
+                _ => null,
+            };
+
+        /// <summary>The p/f family of an immediate change: family, _, mezzo, level.</summary>
+        private static string? IntensityName(string? intensity)
+        {
+            var items = Variants(intensity);
+
+            if (items.Count < 4 || items[0].Kind != "int" || items[2].Kind != "bool")
+            {
+                return null;
+            }
+
+            var family = items[0].Value;
+
+            if (!int.TryParse(family, NumberStyles.Integer, CultureInfo.InvariantCulture, out var side)
+                || side is < 0 or > 1)
+            {
+                return null;
+            }
+
+            var letter = side == 0 ? 'f' : 'p';
+
+            if (items[2].Value == "true")
+            {
+                // mezzo: `mf` or `mp`, and every file seen writes no level for one.
+                return items[3].Kind == "int" ? null : "m" + letter;
+            }
+
+            return int.TryParse(items[3].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var count)
+                && count is >= 1 and <= 6
+                    ? new string(letter, count)
+                    : null;
+        }
+
+        /// <summary>
+        /// The items of a variant list: <c>steamVariantList:list: {int: 0}, {}, {bool: true}, {}</c> becomes
+        /// <c>(int, 0) (empty, "") (bool, true) (empty, "")</c>. Nesting is tracked so a value with braces in it
+        /// cannot be split in the wrong place.
+        /// </summary>
+        private static List<(string Kind, string Value)> Variants(string? text)
+        {
+            var items = new List<(string Kind, string Value)>();
+
+            if (text is null)
+            {
+                return items;
+            }
+
+            var depth = 0;
+            var start = -1;
+
+            for (var index = 0; index < text.Length; index++)
+            {
+                switch (text[index])
+                {
+                    case '{':
+                        if (depth == 0)
+                        {
+                            start = index + 1;
+                        }
+
+                        depth++;
+                        break;
+
+                    case '}':
+                        depth--;
+
+                        if (depth == 0 && start >= 0)
+                        {
+                            var item = text[start..index];
+                            var colon = item.IndexOf(':');
+
+                            items.Add(colon < 0
+                                ? (string.Empty, string.Empty)
+                                : (item[..colon].Trim(), item[(colon + 1)..].Trim()));
+                        }
+
+                        break;
+                }
+            }
+
+            return items;
         }
 
         /// <summary>The bar divisions in force, in order: what turns a position into a measure number.</summary>
@@ -1464,6 +1794,53 @@ internal static class ProjectFileScoreReader
         public int Streams;
         public int Blocks;
         public int Notes;
+        public int Dynamics;
+        public int LyricTables;
+        public int LyricElements;
+        public List<List<string>> LyricShapes { get; } = [];
+        public Dictionary<long, DynamicGroupDraft> Groups { get; } = [];
+    }
+
+    /// <summary>A dynamic group as the flow defines it: an id, the events that name it, and its parts.</summary>
+    private sealed class DynamicGroupDraft
+    {
+        public long Id = -1;
+        public string? Events;
+        public List<DynamicMarkDraft> Marks { get; } = [];
+    }
+
+    /// <summary>One part of a dynamic group, as the file writes it.</summary>
+    private sealed class DynamicMarkDraft(string kind)
+    {
+        public string Kind { get; } = kind;
+
+        public string? Position;
+        public string? Duration;
+        public string? Intensity;
+        public int? IntensityLevel;
+        public string? Direction;
+        public string? Subito;
+        public List<ProjectFileTreeField> Fields { get; } = [];
+
+        /// <summary>Keeps a field this reader does not model, up to a bound, instead of dropping it.</summary>
+        public void Keep(string? key, string? value)
+        {
+            if (Fields.Count < 16)
+            {
+                Fields.Add(new ProjectFileTreeField(key ?? "?", value));
+            }
+        }
+    }
+
+    /// <summary>A dynamic marking event, before its bar, its stave and its group are resolved.</summary>
+    private sealed class DynamicDraft
+    {
+        public long EventId;
+        public ScoreRational Position;
+        public string Duration = string.Empty;
+        public long Group = -1;
+        public long Stream = -1;
+        public FlowDraft? Flow;
     }
 
     /// <summary>A note as it comes off the stream, before its bar and its stave are known.</summary>
@@ -1545,10 +1922,16 @@ internal static class ProjectFileScoreReader
         }
 
         public static ScoreRational Parse(string? text)
+            => TryParse(text, out var value) ? value : Zero;
+
+        /// <summary>Whether the text really is a position or a duration, rather than something that only looks like one.</summary>
+        public static bool TryParse(string? text, out ScoreRational value)
         {
+            value = Zero;
+
             if (string.IsNullOrWhiteSpace(text))
             {
-                return Zero;
+                return false;
             }
 
             var trimmed = text.Trim();
@@ -1556,18 +1939,25 @@ internal static class ProjectFileScoreReader
 
             if (slash < 0)
             {
-                return long.TryParse(trimmed, NumberStyles.Integer, CultureInfo.InvariantCulture, out var whole)
-                    ? new ScoreRational(whole, 1)
-                    : Zero;
+                if (!long.TryParse(trimmed, NumberStyles.Integer, CultureInfo.InvariantCulture, out var whole))
+                {
+                    return false;
+                }
+
+                value = new ScoreRational(whole, 1);
+
+                return true;
             }
 
             if (!long.TryParse(trimmed[..slash], NumberStyles.Integer, CultureInfo.InvariantCulture, out var numerator)
                 || !long.TryParse(trimmed[(slash + 1)..], NumberStyles.Integer, CultureInfo.InvariantCulture, out var denominator))
             {
-                return Zero;
+                return false;
             }
 
-            return FromFraction(numerator, denominator);
+            value = FromFraction(numerator, denominator);
+
+            return true;
         }
 
         public double ToDouble() => (double)Numerator / Denominator;

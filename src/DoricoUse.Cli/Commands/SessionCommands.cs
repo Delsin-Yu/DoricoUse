@@ -1,5 +1,6 @@
 using System.CommandLine;
 using System.Diagnostics;
+using System.Globalization;
 using System.Text.Json.Nodes;
 using DoricoUse.Cli.Dorico;
 using DoricoUse.Cli.Ipc;
@@ -22,7 +23,198 @@ internal static class SessionCommands
         session.Subcommands.Add(BuildConnect());
         session.Subcommands.Add(BuildEvents());
         session.Subcommands.Add(BuildProbe());
+        session.Subcommands.Add(BuildRead());
         return session;
+    }
+
+    /// <summary>
+    /// `session read`: make Dorico save a copy of the project it has OPEN, then decode that file.
+    /// </summary>
+    /// <remarks>
+    /// This is the missing half of the loop. Dorico has no query for the note stream, so "did my edit land?" could
+    /// only be answered by a human taking a screenshot; from here an agent edits, runs one command, and reads the
+    /// notes out of the file Dorico itself just wrote. The route and its side effect are documented on
+    /// <see cref="SaveCopy"/>.
+    /// </remarks>
+    private static Command BuildRead()
+    {
+        var to = new Option<string?>("--to")
+        {
+            Description = "The file to write the copy to. Default: .spinney/read/<timestamp>.dorico in the current "
+                + "folder. An existing file is never overwritten.",
+        };
+
+        var limit = new Option<string>("--limit")
+        {
+            Description = "How many notes to return: a count, 'all' for every note, or 0 for the shape alone.",
+            DefaultValueFactory = _ => ProjectFileView.DefaultNoteLimit.ToString(CultureInfo.InvariantCulture),
+        };
+
+        var measure = new Option<string?>("--measure")
+        {
+            Description = "Only notes in one measure (12) or a range (12-16).",
+        };
+
+        var player = new Option<string?>("--player")
+        {
+            Description = "Only notes of players, instruments or staves matching this glob, e.g. *Flute* or Violin.",
+        };
+
+        var timeout = CommandRoot.TimeoutOption();
+
+        var command = new Command(
+            "read",
+            "Save a copy of the OPEN project (File.SaveAs) and decode it: players, measures and the notes that are "
+            + "really in the score now. It saves whichever document Dorico has active, and Dorico rebinds that "
+            + "document to the copy — see the report's save.document.")
+        {
+            to,
+            limit,
+            measure,
+            player,
+            timeout,
+        };
+
+        command.SetAction(parse => CommandRoot.RunAsync("session read", async () =>
+        {
+            var destination = SaveCopy.Resolve(parse.GetValue(to), DateTimeOffset.Now);
+            SaveCopy.RefuseExisting(destination);
+
+            var limits = ProjectFileView.ParseMeasures(parse.GetValue(measure));
+
+            var options = new ProjectFileView.Options
+            {
+                NoteLimit = ProjectFileView.ParseLimit(parse.GetValue(limit)),
+                FirstMeasure = limits?.First,
+                LastMeasure = limits?.Last,
+                Player = parse.GetValue(player),
+            };
+
+            var protocolTimeout = CommandRoot.Timeout(parse, timeout);
+            var watchBudget = TimeSpan.FromMilliseconds(
+                Math.Min(SaveCopy.DefaultWait.TotalMilliseconds, protocolTimeout.TotalMilliseconds));
+
+            var acknowledgement = await SaveCopy
+                .SaveAsync(destination, protocolTimeout, CancellationToken.None)
+                .ConfigureAwait(false);
+
+            ProjectFile? file = null;
+            SaveCopy.SavedFile saved = new(destination, 0, 0, Stable: false);
+            CliException? unfinished = null;
+
+            // Dorico answers kOK before it has written the last byte, so the file is watched until it stops growing.
+            // A ZIP that is still being written reads as NotAContainer, which is the one failure worth retrying.
+            for (var attempt = 1; attempt <= 2 && file is null; attempt++)
+            {
+                saved = await SaveCopy
+                    .WaitForFileAsync(destination, watchBudget, CancellationToken.None)
+                    .ConfigureAwait(false);
+
+                if (saved.Bytes == 0)
+                {
+                    unfinished = new CliException(
+                        "SaveWroteNothing",
+                        $"File.SaveAs answered but no file appeared at '{destination}' within "
+                        + $"{watchBudget.TotalSeconds:0.#} s. Check {SaveCopy.SaveAsCommand} in "
+                        + "%APPDATA%\\Steinberg\\Dorico 6\\application.log: a command that waits on a dialog "
+                        + "writes nothing.",
+                        2);
+
+                    break;
+                }
+
+                try
+                {
+                    file = ProjectFileReader.Open(destination);
+                }
+                catch (CliException ex) when (ex.Code is "NotAContainer" or "MalformedMember")
+                {
+                    unfinished = ex;
+                }
+            }
+
+            if (file is null)
+            {
+                throw unfinished
+                    ?? new CliException("SaveWroteNothing", $"'{destination}' could not be read back.", 2);
+            }
+
+            var payload = BuildReadPayload(file, options, acknowledgement, saved);
+
+            var sideEffects = new JsonArray();
+            JsonArr.AddText(sideEffects, SaveCopy.SaveDocumentNote);
+            payload["sideEffects"] = sideEffects;
+
+            // `session read` reports exactly what `file read` reports, so both can be read the same way.
+            foreach (var (key, value) in ProjectFileView.Report(file, options))
+            {
+                payload[key] = value?.DeepClone();
+            }
+
+            return payload;
+        }));
+
+        return command;
+    }
+
+    /// <summary>What the save itself was: the command, its receipt, and the file it left on disk.</summary>
+    private static JsonObject BuildReadPayload(
+        ProjectFile file,
+        ProjectFileView.Options options,
+        JsonObject acknowledgement,
+        SaveCopy.SavedFile saved)
+    {
+        var placed = new JsonObject
+        {
+            ["path"] = saved.Path,
+            ["bytes"] = saved.Bytes,
+            ["watchedMs"] = saved.WaitedMs,
+            ["stoppedGrowing"] = saved.Stable,
+        };
+
+        var document = new JsonObject
+        {
+            ["repointed"] = true,
+            ["now"] = saved.Path,
+            ["evidence"] = "Dorico logs 'Saving document: <id> to <path>', the document window's title follows the "
+                + "new file name, and the document's autosave and backup move with it.",
+            ["note"] = SaveCopy.SaveDocumentNote,
+        };
+
+        var save = new JsonObject
+        {
+            ["command"] = SaveCopy.SaveAsCommand,
+            ["ack"] = NodeRead.Str(acknowledgement, "ack"),
+            ["file"] = placed,
+            ["document"] = document,
+            ["note"] = "kOK is a receipt; the note list below is decoded from the file that is really on disk.",
+        };
+
+        if (NodeRead.Obj(acknowledgement, "parameters") is { } parameters)
+        {
+            save["parameters"] = parameters.DeepClone();
+        }
+
+        if (NodeRead.Long(acknowledgement, "roundTripMs") is { } roundTripMs)
+        {
+            save["roundTripMs"] = roundTripMs;
+        }
+
+        var measures = options.FirstMeasure is { } first && options.LastMeasure is { } last
+            ? first == last ? first.ToString(CultureInfo.InvariantCulture) : $"{first}-{last}"
+            : null;
+
+        return new JsonObject
+        {
+            ["save"] = save,
+            ["decodedFrom"] = file.Path,
+            ["options"] = new JsonObject
+            {
+                ["noteLimit"] = options.NoteLimit,
+                ["measures"] = measures,
+                ["player"] = options.Player,
+            },
+        };
     }
 
     private static Command BuildStatus()

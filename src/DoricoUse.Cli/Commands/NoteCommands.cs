@@ -73,6 +73,14 @@ internal static class NoteCommands
             Description = "Rhythm grid the caret snaps to, e.g. kSemiquaver. This is not the note value.",
         };
 
+        var mode = new Option<string?>("--mode")
+        {
+            Description = "What to do with the notes already at the caret: overwrite replaces them, which is what a "
+                + "fresh project does anyway, and insert pushes them to the right. Changes Dorico's note input mode "
+                + "(NoteInput.Mode) before the notes are written, and the payload reports the mode that was in "
+                + "force. Leave the option out and the mode is not touched; the payload still reports it.",
+        };
+
         var stay = new Option<bool>("--stay")
         {
             Description = "Leave note input on when finished, instead of returning to the state you started in.",
@@ -102,6 +110,7 @@ internal static class NoteCommands
             rest,
             duration,
             grid,
+            mode,
             stay,
             dryRun,
             waitMs,
@@ -199,6 +208,22 @@ internal static class NoteCommands
                 args["grid"] = gridValue;
             }
 
+            var modeValue = parse.GetValue(mode);
+
+            if (!string.IsNullOrWhiteSpace(modeValue))
+            {
+                // Resolved here so a typo is a usage error with exit code 1, not a protocol round trip.
+                if (!NoteMode.TryResolve(modeValue, out var resolvedMode))
+                {
+                    throw new CliException(
+                        "InvalidArgument",
+                        $"'{modeValue}' is not a note input mode. Use {NoteMode.Names()}.",
+                        1);
+                }
+
+                args["mode"] = NoteMode.ShortName(resolvedMode);
+            }
+
             var tupletValue = parse.GetValue(tuplet);
 
             if (!string.IsNullOrWhiteSpace(tupletValue))
@@ -222,7 +247,7 @@ internal static class NoteCommands
 
             // Every step is a command of its own, so the host needs room for the whole sequence.
             var budget = (timeoutValue * 2)
-                + TimeSpan.FromMilliseconds((list.Count * 3 + staffValue.Length + 4) * 5000d)
+                + TimeSpan.FromMilliseconds((list.Count * 3 + staffValue.Length + 5) * 5000d)
                 + TimeSpan.FromMilliseconds(waitMsValue);
 
             return await HostClient.CallAsync(HostProtocol.OpNoteInsert, args, budget, CancellationToken.None);
