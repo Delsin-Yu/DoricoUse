@@ -478,10 +478,10 @@ have. An agent then never has to parse the sentence:
 The exit codes are `0` for success, `1` for an argument or usage error, `2` for a protocol, connection or Dorico
 failure, and `3` when a host was already running and `host serve` was asked to start.
 
-Two fields sit beside `ok`/`command` on every payload, success and failure alike: `dialog`, which is the modal
-dialog Dorico has up or `null`, and `execution`, which says whether the command this invocation posted actually
-ran. Both come from the same funnel every command goes through, so no command can omit them. See
-[Modal dialogs](#modal-dialogs).
+Two more fields can sit beside `ok`/`command`, success and failure alike: `dialog` is on every payload — the modal
+dialog Dorico has up, or `null` — and `execution` is on the payloads that posted a command to Dorico, because what
+it says is whether that command actually ran. Both come from the same funnel every command goes through, so no
+command can omit them. See [Modal dialogs](#modal-dialogs).
 
 ## What is true about Dorico's API
 
@@ -686,8 +686,8 @@ code lives under `Ui/` in files this project does not compile.
    restarting at the top, positional entry if Dorico ever exposes it, and `session read` gaining the same block
    options as the `file read` command.
 
-9. **Done**: the modal-dialog surface — the `dialog` and `execution` fields on every payload, `ui dialog`, and
-   `ui press` with a measured whitelist, two safety flags and stable derived button ids.
+9. **Done**: the modal-dialog surface — the `dialog` field on every payload, the `execution` verdict beside it,
+   `ui dialog`, and `ui press` with a measured whitelist, two safety flags and stable derived button ids.
 10. **Next**: the rest of the dialog catalogue. Three dialogs are in it because their captions and labels were
    actually read; five more are named in the code as reserved (`dorico.allow-remote-client`, `dorico.import-musicxml`,
    `dorico.open-picker`, `dorico.save-picker`, `dorico.overwrite-file`) and have **no** entry, because an entry
