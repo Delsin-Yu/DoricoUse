@@ -30,3 +30,11 @@ dotnet_style_require_accessibility_modifiers = for_non_interface_members:silent
 dotnet_sort_system_directives_first = true
 dotnet_diagnostic.CA1051.severity = none
 dotnet_diagnostic.CA1303.severity = none
+
+# CA1001: these two own a CancellationTokenSource and a SemaphoreSlim that live until the process ends, so nothing
+# would ever call a Dispose - and a Dispose here would only race the connection handlers still finishing a request.
+[src/DoricoUse.Cli/Host/HostServer.cs]
+dotnet_diagnostic.CA1001.severity = none
+
+[src/DoricoUse.Cli/Host/SessionKeeper.cs]
+dotnet_diagnostic.CA1001.severity = none

@@ -94,12 +94,11 @@ internal static class CommandCommands
 
             // Before anything else touches the host: an unknown enum value would be accepted with kOK and
             // silently turned into another value inside Dorico, which is the failure this exists to prevent.
-            var vocabulary = EnumVocabulary.Shared;
-            var lookedAt = CheckValues(vocabulary, values, parse.GetValue(allowUnknownEnum));
+            var lookedAt = CheckValues(values, parse.GetValue(allowUnknownEnum));
 
             if (parse.GetValue(dryRun))
             {
-                return DryRun(commandName, values, vocabulary, lookedAt);
+                return DryRun(commandName, values, lookedAt);
             }
 
             var args = new JsonObject
@@ -125,7 +124,7 @@ internal static class CommandCommands
 
             if (lookedAt.Count > 0)
             {
-                payload["vocabulary"] = vocabulary.Describe(lookedAt);
+                payload["vocabulary"] = EnumVocabulary.Describe(lookedAt);
             }
 
             return payload;
@@ -140,7 +139,6 @@ internal static class CommandCommands
     /// because no vocabulary was extracted on this machine — is returned with its verdict for the payload.
     /// </summary>
     private static List<(string Key, string Value, VocabularyVerdict Verdict)> CheckValues(
-        EnumVocabulary vocabulary,
         JsonObject values,
         bool allowUnknown)
     {
@@ -154,8 +152,8 @@ internal static class CommandCommands
                 continue;
             }
 
-            vocabulary.Refuse("--param", key, value, allowUnknown);
-            lookedAt.Add((key, value, vocabulary.Check(value)));
+            EnumVocabulary.Refuse("--param", key, value, allowUnknown);
+            lookedAt.Add((key, value, EnumVocabulary.Check(value)));
         }
 
         return lookedAt;
@@ -169,7 +167,6 @@ internal static class CommandCommands
     private static JsonObject DryRun(
         string commandName,
         JsonObject values,
-        EnumVocabulary vocabulary,
         List<(string Key, string Value, VocabularyVerdict Verdict)> lookedAt)
     {
         var pairs = new List<string>();
@@ -185,7 +182,7 @@ internal static class CommandCommands
             ["name"] = commandName,
             ["parameters"] = values.DeepClone(),
             ["command"] = pairs.Count == 0 ? commandName : $"{commandName}?{string.Join(",", pairs)}",
-            ["vocabulary"] = vocabulary.Describe(lookedAt),
+            ["vocabulary"] = EnumVocabulary.Describe(lookedAt),
             ["note"] = "Nothing was sent: no host was started and Dorico was not contacted. Drop --dry-run to "
                 + "send it, and read `status` afterwards — Dorico answers kOK even to a command that then fails.",
         };

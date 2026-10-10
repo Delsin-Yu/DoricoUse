@@ -23,8 +23,12 @@ namespace DoricoUse.Cli.Dorico;
 /// heard of is far more likely to be something a newer Dorico accepts than a typo. Refusing those would be worse
 /// than not checking them — it would break working commands.
 /// </para>
+/// <para>
+/// Nothing here is per-process state, so the class is static: the table became a constant of the build when it
+/// stopped being extracted from the binary, and the one instance that used to wrap it held nothing.
+/// </para>
 /// </remarks>
-internal sealed class EnumVocabulary
+internal static class EnumVocabulary
 {
     /// <summary>The values each parameter is known to take, and the whole point of this class.</summary>
     private static readonly Dictionary<string, string[]> ParameterValues = new(StringComparer.Ordinal)
@@ -63,20 +67,11 @@ internal sealed class EnumVocabulary
 
     private static readonly HashSet<string> All = [.. ParameterValues.Values.SelectMany(values => values)];
 
-    private static readonly Lazy<EnumVocabulary> Cached = new(() => new EnumVocabulary());
-
-    private EnumVocabulary()
-    {
-    }
-
-    /// <summary>The one instance for this process; the table is static, so there is nothing to read.</summary>
-    public static EnumVocabulary Shared => Cached.Value;
-
     /// <summary>How many distinct values the table holds.</summary>
-    public int Spellings => All.Count;
+    public static int Spellings => All.Count;
 
     /// <summary>How many parameters are checked at all.</summary>
-    public int Parameters => ParameterValues.Count;
+    public static int Parameters => ParameterValues.Count;
 
     /// <summary>
     /// Whether a value has the shape of a Dorico enum spelling: <c>k</c>, an uppercase letter, then letters,
@@ -104,13 +99,13 @@ internal sealed class EnumVocabulary
     }
 
     /// <summary>What the table says about one value.</summary>
-    public VocabularyVerdict Check(string value)
+    public static VocabularyVerdict Check(string value)
         => !IsSpelling(value) ? VocabularyVerdict.NotASpelling
             : All.Contains(value) ? VocabularyVerdict.Known
             : VocabularyVerdict.Unknown;
 
     /// <summary>The values this build knows for one parameter, or empty when it checks nothing for it.</summary>
-    public IReadOnlyList<string> ValuesForKey(string? key)
+    public static IReadOnlyList<string> ValuesForKey(string? key)
         => key is not null && ParameterValues.TryGetValue(key, out var values) ? values : [];
 
     /// <summary>
@@ -123,7 +118,7 @@ internal sealed class EnumVocabulary
     /// <c>k</c> words: the distance has to be within half the value's length (at least two characters of slack),
     /// and the comparison of the shared beginning skips the leading <c>k</c>, which every spelling has.
     /// </remarks>
-    public IReadOnlyList<string> Suggest(string value, string? key = null, int limit = 8)
+    public static IReadOnlyList<string> Suggest(string value, string? key = null, int limit = 8)
     {
         var suggestions = new List<string>();
         var seen = new HashSet<string>(StringComparer.Ordinal);
@@ -164,7 +159,7 @@ internal sealed class EnumVocabulary
     /// A parameter this build does not know is never refused: the check only speaks about the parameters in the
     /// table, because for anything else "not in the table" means "not looked at", not "wrong".
     /// </remarks>
-    public void Refuse(string what, string? key, string value, bool allowUnknown = false)
+    public static void Refuse(string what, string? key, string value, bool allowUnknown = false)
     {
         if (allowUnknown || key is null || !ParameterValues.TryGetValue(key, out var allowed))
         {
@@ -208,7 +203,7 @@ internal sealed class EnumVocabulary
     /// at any more, and no reason for a machine to be in a different state from another.
     /// </summary>
     /// <param name="lookedAt">The values this invocation put through the table, and what it said.</param>
-    public JsonObject Describe(IEnumerable<(string Key, string Value, VocabularyVerdict Verdict)>? lookedAt = null)
+    public static JsonObject Describe(IEnumerable<(string Key, string Value, VocabularyVerdict Verdict)>? lookedAt = null)
     {
         var report = new JsonObject
         {

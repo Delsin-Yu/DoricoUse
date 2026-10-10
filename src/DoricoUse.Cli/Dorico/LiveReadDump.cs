@@ -250,10 +250,10 @@ internal static class LiveReadDump
     /// serialization metadata — and this project builds with <c>PublishAot</c>, where that is switched off, so the
     /// assignment throws at run time instead of writing a number.
     /// </summary>
-    private static JsonNode? Number(int? value) => value is null ? null : JsonValue.Create(value.Value);
+    private static JsonValue? Number(int? value) => value is null ? null : JsonValue.Create(value.Value);
 
     /// <inheritdoc cref="Number(int?)"/>
-    private static JsonNode? Long(string text)
+    private static JsonValue? Long(string text)
         => long.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture, out var value)
             ? JsonValue.Create(value)
             : null;

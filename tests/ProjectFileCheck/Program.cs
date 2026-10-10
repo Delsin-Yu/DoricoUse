@@ -823,10 +823,12 @@ else
         "the two walkers agree on how many note events there are",
         notes.Matched == 16002 && notes.Returned == 16002 && !notes.Truncated,
         $"{notes.Matched} matched, {notes.Returned} returned");
+    // Held once rather than rebuilt inside the call (CA1861): the array is a constant of the check.
+    var noteFields = new[] { "position", "duration", "pitch" };
     Check(
         "a matched node reports its own fields, in the file's order",
         notes.Occurrences[0].Fields[0].Key == "eventID"
-        && new[] { "position", "duration", "pitch" }.All(wanted =>
+        && noteFields.All(wanted =>
             notes.Occurrences[0].Fields.Any(field => field.Key == wanted))
         && notes.Occurrences[0].Fields.Any(field => field.Key == "eventID" && field.Value is not null),
         string.Join(',', notes.Occurrences[0].Fields.Select(field => field.Key)));
@@ -973,8 +975,8 @@ else
         "articulations: 3914 staccato, 349 tenuto and 3576 accents",
         articulations.Count == 7839
         && duration.Count(mark => ProjectFileScoreReader.VariantText(mark.Value) == "kStaccato") == 3914
-        && duration.Count() == 4263
-        && force.Count() == 3576
+        && duration.Count == 4263
+        && force.Count == 3576
         && force.All(mark => ProjectFileScoreReader.VariantText(mark.Value) == "kAccent"),
         $"{articulations.Count} marks: {duration.Count} durations, {force.Count} forces");
 

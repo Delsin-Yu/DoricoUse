@@ -24,20 +24,18 @@ void Check(string name, bool ok, string? detail = null)
     Console.WriteLine($"  FAIL {name}{(detail is null ? string.Empty : ": " + detail)}");
 }
 
-var vocabulary = EnumVocabulary.Shared;
-
 Console.WriteLine("== the table itself");
-Check("there is always a vocabulary, with nothing to install", vocabulary.Parameters > 0, vocabulary.Parameters.ToString());
-Check("and it holds a usable number of values", vocabulary.Spellings >= 30, vocabulary.Spellings.ToString());
+Check("there is always a vocabulary, with nothing to install", EnumVocabulary.Parameters > 0, EnumVocabulary.Parameters.ToString());
+Check("and it holds a usable number of values", EnumVocabulary.Spellings >= 30, EnumVocabulary.Spellings.ToString());
 
 foreach (var (key, values) in new[]
 {
-    ("LogDuration", vocabulary.ValuesForKey("LogDuration")),
-    ("NoteInputMode", vocabulary.ValuesForKey("NoteInputMode")),
-    ("WindowMode", vocabulary.ValuesForKey("WindowMode")),
-    ("RhythmicGridResolutionValue", vocabulary.ValuesForKey("RhythmicGridResolutionValue")),
-    ("Type", vocabulary.ValuesForKey("Type")),
-    ("OptionsType", vocabulary.ValuesForKey("OptionsType")),
+    ("LogDuration", EnumVocabulary.ValuesForKey("LogDuration")),
+    ("NoteInputMode", EnumVocabulary.ValuesForKey("NoteInputMode")),
+    ("WindowMode", EnumVocabulary.ValuesForKey("WindowMode")),
+    ("RhythmicGridResolutionValue", EnumVocabulary.ValuesForKey("RhythmicGridResolutionValue")),
+    ("Type", EnumVocabulary.ValuesForKey("Type")),
+    ("OptionsType", EnumVocabulary.ValuesForKey("OptionsType")),
 })
 {
     Check($"{key} is a parameter this build checks", values.Count > 0);
@@ -49,15 +47,15 @@ Console.WriteLine();
 Console.WriteLine("== the table and the code agree (this is what catches drift)");
 Check(
     "the note values this CLI resolves are exactly the ones it validates",
-    NoteValue.AllSpellings.All(spelling => vocabulary.Check(spelling) == VocabularyVerdict.Known),
-    string.Join(',', NoteValue.AllSpellings.Where(s => vocabulary.Check(s) != VocabularyVerdict.Known)));
+    NoteValue.AllSpellings.All(spelling => EnumVocabulary.Check(spelling) == VocabularyVerdict.Known),
+    string.Join(',', NoteValue.AllSpellings.Where(s => EnumVocabulary.Check(s) != VocabularyVerdict.Known)));
 Check(
     "the ten spellings the binary's own LogDuration template lists are all known",
-    NoteValue.Spellings.All(spelling => vocabulary.Check(spelling) == VocabularyVerdict.Known));
+    NoteValue.Spellings.All(spelling => EnumVocabulary.Check(spelling) == VocabularyVerdict.Known));
 
 foreach (var mode in new[] { "kInsert", "kOverwrite", "kChordMerge" })
 {
-    Check($"{mode} is a note input mode this build knows", vocabulary.Check(mode) == VocabularyVerdict.Known);
+    Check($"{mode} is a note input mode this build knows", EnumVocabulary.Check(mode) == VocabularyVerdict.Known);
 }
 
 foreach (var optionsType in new[]
@@ -65,21 +63,21 @@ foreach (var optionsType in new[]
     DoricoProtocol.OptionsEngraving, DoricoProtocol.OptionsLayout, DoricoProtocol.OptionsNotation,
 })
 {
-    Check($"{optionsType} is an option type this build knows", vocabulary.ValuesForKey("OptionsType").Contains(optionsType));
+    Check($"{optionsType} is an option type this build knows", EnumVocabulary.ValuesForKey("OptionsType").Contains(optionsType));
 }
 
 foreach (var accidental in new[] { "kNatural", "kSharp", "kFlat", "kDoubleSharp", "kDoubleFlat" })
 {
-    Check($"{accidental} is an accidental this build derives and knows", vocabulary.Check(accidental) == VocabularyVerdict.Known);
+    Check($"{accidental} is an accidental this build derives and knows", EnumVocabulary.Check(accidental) == VocabularyVerdict.Known);
 }
 
 Console.WriteLine();
 Console.WriteLine("== what a value's shape means");
-Check("a known spelling is known", vocabulary.Check("kQuaver") == VocabularyVerdict.Known);
-Check("a misspelling is unknown", vocabulary.Check("kQuavor") == VocabularyVerdict.Unknown);
-Check("a written-out note value is not a spelling", vocabulary.Check("crotchet") == VocabularyVerdict.NotASpelling);
-Check("a fraction is not a spelling", vocabulary.Check("1/4") == VocabularyVerdict.NotASpelling);
-Check("a file path is not a spelling", vocabulary.Check(@"C:\scores\a.dorico") == VocabularyVerdict.NotASpelling);
+Check("a known spelling is known", EnumVocabulary.Check("kQuaver") == VocabularyVerdict.Known);
+Check("a misspelling is unknown", EnumVocabulary.Check("kQuavor") == VocabularyVerdict.Unknown);
+Check("a written-out note value is not a spelling", EnumVocabulary.Check("crotchet") == VocabularyVerdict.NotASpelling);
+Check("a fraction is not a spelling", EnumVocabulary.Check("1/4") == VocabularyVerdict.NotASpelling);
+Check("a file path is not a spelling", EnumVocabulary.Check(@"C:\scores\a.dorico") == VocabularyVerdict.NotASpelling);
 Check("lower case after k is not a spelling", !EnumVocabulary.IsSpelling("kquaver"));
 Check("a bare k is not a spelling", !EnumVocabulary.IsSpelling("k"));
 Check("kWriteMode is a spelling", EnumVocabulary.IsSpelling("kWriteMode"));
@@ -92,7 +90,7 @@ var refused = false;
 
 try
 {
-    vocabulary.Refuse("--duration", "LogDuration", "kQuavor");
+    EnumVocabulary.Refuse("--duration", "LogDuration", "kQuavor");
 }
 catch (CliException ex)
 {
@@ -112,6 +110,10 @@ catch (CliException ex)
 
 Check("a refused typo throws", refused);
 
+// `Suggest` answers with an indexable list, so its first item is read through the indexer rather than with a LINQ
+// call over a collection that already has one; this keeps the "nothing to suggest reads as null" behaviour.
+static string? FirstOrNull(IReadOnlyList<string> values) => values.Count > 0 ? values[0] : null;
+
 static bool Throws(Action action)
 {
     try
@@ -125,24 +127,24 @@ static bool Throws(Action action)
     }
 }
 
-Check("the value the parameter really takes is not refused", !Throws(() => vocabulary.Refuse("--duration", "LogDuration", "kCrotchet")));
-Check("a number is not refused", !Throws(() => vocabulary.Refuse("--param", "LogDuration", "4")));
-Check("an unknown parameter is never refused", !Throws(() => vocabulary.Refuse("--param", "SomeParameterFromANewerDorico", "kSomethingNew")));
-Check("no parameter at all is never refused", !Throws(() => vocabulary.Refuse("--value", null, "kSomethingNew")));
-Check("--allow-unknown-enum overrides the refusal", !Throws(() => vocabulary.Refuse("--duration", "LogDuration", "kQuavor", allowUnknown: true)));
+Check("the value the parameter really takes is not refused", !Throws(() => EnumVocabulary.Refuse("--duration", "LogDuration", "kCrotchet")));
+Check("a number is not refused", !Throws(() => EnumVocabulary.Refuse("--param", "LogDuration", "4")));
+Check("an unknown parameter is never refused", !Throws(() => EnumVocabulary.Refuse("--param", "SomeParameterFromANewerDorico", "kSomethingNew")));
+Check("no parameter at all is never refused", !Throws(() => EnumVocabulary.Refuse("--value", null, "kSomethingNew")));
+Check("--allow-unknown-enum overrides the refusal", !Throws(() => EnumVocabulary.Refuse("--duration", "LogDuration", "kQuavor", allowUnknown: true)));
 
 Console.WriteLine();
 Console.WriteLine("== suggestions");
-Check("a typo points at the value it meant", vocabulary.Suggest("kQuavor", "LogDuration").FirstOrDefault() == "kQuaver", string.Join(',', vocabulary.Suggest("kQuavor", "LogDuration")));
-Check("a typo in another parameter's value still finds it", vocabulary.Suggest("kSemibrefe").Contains("kSemibreve"), string.Join(',', vocabulary.Suggest("kSemibrefe")));
-Check("the parameter's own values come first", vocabulary.Suggest("kWriteMod", "WindowMode").FirstOrDefault() == "kWriteMode", string.Join(',', vocabulary.Suggest("kWriteMod", "WindowMode")));
-Check("a value with nothing near it suggests nothing", vocabulary.Suggest("kZzzzzzzz").Count == 0, string.Join(',', vocabulary.Suggest("kZzzzzzzz")));
+Check("a typo points at the value it meant", FirstOrNull(EnumVocabulary.Suggest("kQuavor", "LogDuration")) == "kQuaver", string.Join(',', EnumVocabulary.Suggest("kQuavor", "LogDuration")));
+Check("a typo in another parameter's value still finds it", EnumVocabulary.Suggest("kSemibrefe").Contains("kSemibreve"), string.Join(',', EnumVocabulary.Suggest("kSemibrefe")));
+Check("the parameter's own values come first", FirstOrNull(EnumVocabulary.Suggest("kWriteMod", "WindowMode")) == "kWriteMode", string.Join(',', EnumVocabulary.Suggest("kWriteMod", "WindowMode")));
+Check("a value with nothing near it suggests nothing", EnumVocabulary.Suggest("kZzzzzzzz").Count == 0, string.Join(',', EnumVocabulary.Suggest("kZzzzzzzz")));
 
 Console.WriteLine();
 Console.WriteLine("== what a payload reports");
-var described = vocabulary.Describe([("LogDuration", "kCrotchet", vocabulary.Check("kCrotchet"))]);
+var described = EnumVocabulary.Describe([("LogDuration", "kCrotchet", EnumVocabulary.Check("kCrotchet"))]);
 Check("the report says the table is built in", NodeRead.Str(described, "source") == "built in");
-Check("it counts its parameters and values", NodeRead.Int(described, "parameters") == vocabulary.Parameters && NodeRead.Int(described, "values") == vocabulary.Spellings);
+Check("it counts its parameters and values", NodeRead.Int(described, "parameters") == EnumVocabulary.Parameters && NodeRead.Int(described, "values") == EnumVocabulary.Spellings);
 Check("it says what is checked and what is not", (NodeRead.Str(described, "note") ?? string.Empty).Contains("sent unchecked"));
 Check("and a looked-at value carries its verdict", NodeRead.Str(NodeRead.Arr(described, "lookedAt")?[0], "verdict") == "known");
 

@@ -134,7 +134,6 @@ internal static class OptionsCommands
 
             // An option value is often an enum spelling (kSomething) and a wrong one is accepted in silence, the
             // same way an unknown LogDuration is: Dorico answers kOK and keeps what it had.
-            var vocabulary = EnumVocabulary.Shared;
             var lookedAt = new List<(string Key, string Value, VocabularyVerdict Verdict)>();
 
             foreach (var (path, node) in pairs)
@@ -145,8 +144,8 @@ internal static class OptionsCommands
                     continue;
                 }
 
-                vocabulary.Refuse("--value", path, value, parse.GetValue(allowUnknownEnum));
-                lookedAt.Add((path, value, vocabulary.Check(value)));
+                EnumVocabulary.Refuse("--value", path, value, parse.GetValue(allowUnknownEnum));
+                lookedAt.Add((path, value, EnumVocabulary.Check(value)));
             }
 
             var args = new JsonObject
@@ -169,7 +168,7 @@ internal static class OptionsCommands
 
             if (lookedAt.Count > 0)
             {
-                payload["vocabulary"] = vocabulary.Describe(lookedAt);
+                payload["vocabulary"] = EnumVocabulary.Describe(lookedAt);
             }
 
             return payload;

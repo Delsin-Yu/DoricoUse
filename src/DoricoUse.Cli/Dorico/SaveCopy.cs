@@ -182,9 +182,9 @@ internal static class SaveCopy
     public static Task<JsonObject> SaveAsync(
         string path,
         TimeSpan timeout,
-        CancellationToken cancellationToken,
         int? expectScore,
-        CommandSender sender)
+        CommandSender sender,
+        CancellationToken cancellationToken)
     {
         _ = expectScore;
 

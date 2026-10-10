@@ -208,7 +208,7 @@ internal sealed partial class HostServer
         _ => DoricoProtocol.OptionsEngraving,
     };
 
-    private static void GuardOptionsTarget(string optionsType, IReadOnlyList<int> targets)
+    private static void GuardOptionsTarget(string optionsType, List<int> targets)
     {
         if (optionsType == DoricoProtocol.OptionsEngraving)
         {

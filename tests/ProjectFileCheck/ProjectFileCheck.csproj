@@ -8,6 +8,13 @@
     <AssemblyName>project-file-check</AssemblyName>
     <RootNamespace>DoricoUse.ProjectFileCheck</RootNamespace>
     <InvariantGlobalization>true</InvariantGlobalization>
+    <!--
+      B2: same bar as the CLI - the house style and the analyzers are enforced here too, and a warning fails the
+      build, because a check that is allowed to warn stops being read.
+    -->
+    <AnalysisLevel>latest-recommended</AnalysisLevel>
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
   </PropertyGroup>
 
   <!--

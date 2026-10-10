@@ -15,6 +15,14 @@
     <PublishAot>true</PublishAot>
     <OptimizationPreference>Size</OptimizationPreference>
     <StackTraceSupport>false</StackTraceSupport>
+    <!--
+      B2: the house style in .editorconfig is part of the build, not a suggestion. The analyzer set is
+      latest-recommended rather than latest-all because the "all" set fires on rules the SDK itself considers
+      unproven; a warning here fails the build, which keeps the 0-warning bar from regressing.
+    -->
+    <AnalysisLevel>latest-recommended</AnalysisLevel>
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
   </PropertyGroup>
 
   <!--

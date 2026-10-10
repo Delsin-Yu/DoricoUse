@@ -365,9 +365,9 @@ internal static partial class ProjectFileScoreReader
                 ? parsed
                 : -1;
 
-        private bool IsLeafTag(byte tag) => ProjectFileBinary.IsLeafTag(tag);
+        private static bool IsLeafTag(byte tag) => ProjectFileBinary.IsLeafTag(tag);
 
-        private bool IsNodeTag(byte tag) => ProjectFileBinary.IsNodeTag(tag);
+        private static bool IsNodeTag(byte tag) => ProjectFileBinary.IsNodeTag(tag);
 
         /// <summary>A record's tag: one of the file's four tags.</summary>
         private bool IsRecordTag(byte tag) => (tag & ProjectFileBinary.MarkerMask) == _marker;

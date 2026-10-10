@@ -362,22 +362,21 @@ internal static class NoteCommands
             // The two enum-valued arguments are checked here, before the host is asked to do anything: Dorico
             // accepts an unknown grid resolution and silently keeps the old one, and `--duration` reaches the
             // host's own note-value table, so a typo there should not need a round trip to be refused.
-            var vocabulary = EnumVocabulary.Shared;
             var lookedAt = new List<(string Key, string Value, VocabularyVerdict Verdict)>();
 
             if (!string.IsNullOrWhiteSpace(durationValue))
             {
                 // The parameter the value ends up in; the binary spells it out as
                 // NoteInput.NoteValue?LogDuration=kCrotchet.
-                vocabulary.Refuse("--duration", "LogDuration", durationValue, allowUnknown);
-                lookedAt.Add(("LogDuration", durationValue, vocabulary.Check(durationValue)));
+                EnumVocabulary.Refuse("--duration", "LogDuration", durationValue, allowUnknown);
+                lookedAt.Add(("LogDuration", durationValue, EnumVocabulary.Check(durationValue)));
                 args["duration"] = durationValue;
             }
 
             if (!string.IsNullOrWhiteSpace(gridValue))
             {
-                vocabulary.Refuse("--grid", "RhythmicGridResolutionValue", gridValue, allowUnknown);
-                lookedAt.Add(("RhythmicGridResolutionValue", gridValue, vocabulary.Check(gridValue)));
+                EnumVocabulary.Refuse("--grid", "RhythmicGridResolutionValue", gridValue, allowUnknown);
+                lookedAt.Add(("RhythmicGridResolutionValue", gridValue, EnumVocabulary.Check(gridValue)));
                 args["grid"] = gridValue;
             }
 
@@ -441,7 +440,7 @@ internal static class NoteCommands
 
             if (lookedAt.Count > 0)
             {
-                payload["vocabulary"] = vocabulary.Describe(lookedAt);
+                payload["vocabulary"] = EnumVocabulary.Describe(lookedAt);
             }
 
             // A dry run sends and writes nothing, so there is no file to wait for: skip the read half instead of

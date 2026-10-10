@@ -38,7 +38,7 @@ internal static class NoteReadback
         CancellationToken cancellationToken)
     {
         var acknowledgement = await SaveCopy
-            .SaveAsync(path, timeout, cancellationToken, null, client.SendCommandAsync)
+            .SaveAsync(path, timeout, null, client.SendCommandAsync, cancellationToken)
             .ConfigureAwait(false);
 
         var save = new JsonObject
