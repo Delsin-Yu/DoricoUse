@@ -47,6 +47,14 @@ internal sealed partial class HostServer(HostOptions options, HostLog log)
         log.Write($"listening on \\\\.\\pipe\\{HostProtocol.PipeName} as pid {Environment.ProcessId}; "
             + $"Dorico at {options.Address} as '{options.ClientName}'");
 
+        if (!SessionStore.PersistsToken)
+        {
+            // The one thing that explains a dialog this user will see again: the file cannot authorize anything, so
+            // the token lives and dies with this process. Measured from the build's own constant, not from a guess.
+            log.Write("this build does not persist the session token; only this process holds it, so Dorico asks the "
+                + "user to allow this client again after the host restarts");
+        }
+
         try
         {
             while (!_cts.IsCancellationRequested)

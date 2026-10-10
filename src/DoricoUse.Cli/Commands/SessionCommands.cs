@@ -407,6 +407,7 @@ internal static class SessionCommands
                 ["address"] = store.Address,
                 ["clientName"] = store.ClientName,
                 ["tokenStored"] = store.HasToken,
+                ["note"] = ProbeNote(),
             };
 
             var findings = new JsonArray();
@@ -528,6 +529,20 @@ internal static class SessionCommands
 
         return command;
     }
+
+    /// <summary>
+    /// Why `session probe` can behave differently from every other command: it is the only caller that opens its
+    /// own connection to Dorico instead of asking the host, and the two builds keep the token in different places.
+    /// </summary>
+    /// <remarks>
+    /// One line, and no repetition of what `session connect` says about storing the token: a reader of `probe` is
+    /// reading timings and round trips, and this is the one thing in them that the build, not Dorico, decides.
+    /// </remarks>
+    private static string ProbeNote() => SessionStore.PersistsToken
+        ? "Probe connects directly rather than through the host and reuses the stored session token, so the "
+            + "authorization dialog appears only before one is stored."
+        : "Probe connects directly rather than through the host and this build stores no session token, so it shows "
+            + "the authorization dialog on every run.";
 
     private static JsonObject BuildStatusReport(JsonObject status, bool includeRaw)
     {

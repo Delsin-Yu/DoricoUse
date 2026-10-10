@@ -17,6 +17,17 @@
     <StackTraceSupport>false</StackTraceSupport>
   </PropertyGroup>
 
+  <!--
+    B3: the session token is written to disk by default, because that is what makes the second run cost a
+    millisecond instead of a dialog. -p:NeverPersistSession=true builds one that keeps it in the host's memory
+    instead; `version.build.neverPersistSession` reports which one this is, from the constant rather than a
+    hand-kept copy of it.
+  -->
+  <PropertyGroup>
+    <NeverPersistSession Condition="'$(NeverPersistSession)' == 'true'">true</NeverPersistSession>
+    <DefineConstants Condition="'$(NeverPersistSession)' == 'true'">$(DefineConstants);NEVER_PERSIST_SESSION</DefineConstants>
+  </PropertyGroup>
+
   <ItemGroup>
     <PackageReference Include="System.CommandLine" Version="2.0.11" />
   </ItemGroup>

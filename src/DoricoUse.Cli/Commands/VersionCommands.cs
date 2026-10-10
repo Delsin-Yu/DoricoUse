@@ -144,6 +144,35 @@ internal static class VersionCommands
             ["note"] = "The session token itself is never printed.",
         };
 
+        // One sentence, with the path, because where the token lives is the fact a user needs to audit or revoke
+        // this client. Whether it is stored at all is a compile-time decision (SessionStore.PersistsToken), so the
+        // sentence is built from that property and the two builds cannot describe themselves alike.
+        var tokenNote = SessionStore.PersistsToken
+            ? $"The session token Dorico granted is stored in plain text at {sessionPath}, which is what makes "
+                + "a later run cost a millisecond instead of an authorization dialog; `host stop` does not "
+                + "remove it and deleting that folder does."
+            : $"This build does not store the session token: {sessionPath} holds no token, and the one in the "
+                + "host's memory goes with the host, so every `host start` (and the first use after Dorico "
+                + "restarts) asks Dorico's user to allow this client again.";
+
+        var token = new JsonObject
+        {
+            ["stored"] = SessionStore.PersistsToken,
+            ["path"] = sessionPath,
+        };
+
+        if (store.StoredTokenIgnored)
+        {
+            // Only a build that does not persist ever reaches this: the file it refuses to use is named, so the
+            // user is not left wondering why Dorico asks again.
+            token["ignoredStoredToken"] = true;
+            tokenNote += $" A token from an earlier build is on disk at {sessionPath}; this build does not use it, "
+                + "and the folder may be deleted.";
+        }
+
+        token["note"] = tokenNote;
+        session["token"] = token;
+
         var host = new JsonObject
         {
             ["path"] = hostPath,
