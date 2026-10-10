@@ -187,7 +187,8 @@ dorico-use session read --measure 1 --limit all
 Exact positions, so this settles questions a screenshot cannot. Two things to know: **`File.SaveAs` rebinds the
 open document** to the copy (autosave, backups and later `File.Save` follow it — reported in
 `save.document`/`sideEffects`), and it saves whichever document is active, so bring the window you mean to the
-front first. `--to` defaults to `.spinney/read/<timestamp>.dorico` and never overwrites an existing file
+front first. `--to` defaults to a timestamped file under the system temporary directory and never overwrites an
+existing file
 (`WouldOverwrite`, exit 1).
 
 **`file read`** decodes the project file itself — no Dorico, no host, ~0.3 s:
@@ -264,7 +265,7 @@ Limits, reported as `caveats`:
 `MusicXMLExportFilter` — answers `kOK`, opens a **modal dialog** and writes nothing until 确定 is pressed:
 
 ```bash
-dorico-use export musicxml --path .spinney/export --wait-ms 120000   # waits, watching --path
+dorico-use export musicxml --path .\export --wait-ms 120000   # waits, watching --path
 # meanwhile, drive Dorico's dialog: it has a path label (not editable) and a "..." folder picker, and it ignores
 # any File= parameter, so set the destination through that picker, then invoke 确定.
 ```

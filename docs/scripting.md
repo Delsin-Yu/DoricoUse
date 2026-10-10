@@ -1,5 +1,9 @@
 # Dorico scripting — what the Lua layer really is
 
+> Paths and transcripts below that begin with `.spinney/` are the maintainer's scratch folder on the machine the
+> measurements were taken on (it is gitignored, so it is not in this repository). Everything else — the Lua, the
+> console output, the log lines — is quoted verbatim, because that is the evidence.
+
 Measured on **Dorico Pro 6.2.30 b6245** (Windows 11, Chinese UI) on 2026-10-10, against the running
 application, plus a read-only excavation of `Dorico6.exe` (154 MB, v6.2.30, build dated 2025-05-29).
 

@@ -1,5 +1,9 @@
 # Commands that exist in the application but are not in the published catalogue
 
+> Paths beginning with `.spinney/` are the maintainer's scratch folder on the machine the measurements were taken
+> on (it is gitignored and not part of this repository); the helper scripts quoted there are not shipped either.
+> The findings, the method and the evidence are all in this document.
+
 Offline, read-only analysis of `C:\Program Files\Steinberg\Dorico6\Dorico6.exe`
 (154,771,992 bytes, Dorico Pro 6.2.30.1012, build date 2025-05-29) against the **live**
 catalogue the API published on this machine (`getcommands`, 1090 names, snapshot in
