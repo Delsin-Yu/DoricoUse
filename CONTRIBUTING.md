@@ -21,6 +21,13 @@ build fails with `MSB3027 ... being used by another process`. This bites everyon
 The style is in `.editorconfig`; the code is `net10.0`, no Windows-only API, and XML comments explain *why* rather
 than *what* — a reader should be able to tell a measured fact from an inference.
 
+The three files that used to be too long to read are now sets of `partial` class parts, split by concern rather
+than by size: `HostServer` keeps the server and the dispatch, `HostServer.Notes.cs` the note entry,
+`HostServer.Score.cs` the score reads; `ProjectFileScoreReader` keeps the decoder's core and
+`ProjectFileScoreReader.Walks.cs` the tree walking; `ProjectFileView` keeps the report and its helpers and
+`ProjectFileView.Marks.cs` the dynamics, slurs, articulations, ties, beams, techniques and layout. Adding a part
+means adding the file **and** the compiler item in the test project that compiles those sources by hand.
+
 ## The test corpus
 
 `ProjectFileCheck` runs against two kinds of `.dorico` file. `tests/corpus/fixture.dorico` **is** in the
@@ -66,8 +73,9 @@ Contributions welcome, in rough order of value:
    the `host start` launch path (`UseShellExecute`) and paths all need a pass, and Dorico users are heavily Mac.
 3. **Dorico SE / Elements behaviour.** Only Pro 6.2.30 was tested; the editions differ in which commands and
    options they accept. The catalogue-based features should degrade, but nobody has checked.
-4. **Splitting the three biggest files** (`ProjectFileScoreReader`, `ProjectFileView`, `HostServer`) into
-   coherent parts. They are correct but long, and that is the main obstacle to reading the code.
+4. **The scripting channel as a shipped command.** `session read` uses it internally (see `LiveRead`), and
+   `docs/scripting.md` §8 shows what else a script can reach, but there is no supported command that runs a user's
+   own Lua. That is deliberate for now: probing that layer blind has crashed Dorico here.
 
 ## Releasing
 

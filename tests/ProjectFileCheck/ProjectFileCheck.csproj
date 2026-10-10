@@ -23,6 +23,7 @@
     <Compile Include="../../src/DoricoUse.Cli/Json/JsonArr.cs" />
     <Compile Include="../../src/DoricoUse.Cli/Views/Pattern.cs" />
     <Compile Include="../../src/DoricoUse.Cli/Views/ProjectFileView.cs" />
+    <Compile Include="../../src/DoricoUse.Cli/Views/ProjectFileView.Marks.cs" />
   </ItemGroup>
 
 </Project>
