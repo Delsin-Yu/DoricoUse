@@ -331,8 +331,64 @@ internal sealed record ProjectFileDynamicGroup(
 /// <summary>
 /// The lyric element tables of a flow. Lyrics are elements in a table rather than events on notes, and a table with
 /// nothing in it is a leaf, so presence and size are both readable even when the shape of one lyric is not.
+/// <para>
+/// <see cref="Read"/> and <see cref="Events"/> are the attempt to read one, anchored on the field names the
+/// application itself uses for lyrics (see <c>--lyrics</c> caveats): every corpus file has an empty lyric table, so
+/// nothing here has ever been seen in data. <see cref="Shapes"/> stays exactly what it was — the ordered leaf names
+/// of each element — so a file that <i>does</i> have lyrics is readable even where the interpretation below is a
+/// guess. <see cref="EventTotal"/> is the number of lyric events found, which
+/// <see cref="Events"/> may cap.
+/// </para>
 /// </summary>
 internal sealed record ProjectFileLyrics(
     int Tables,
     int Elements,
-    IReadOnlyList<IReadOnlyList<string>> Shapes);
+    IReadOnlyList<IReadOnlyList<string>> Shapes,
+    IReadOnlyList<ProjectFileLyricElement> Read,
+    IReadOnlyList<ProjectFileLyricEvent> Events,
+    int EventTotal);
+
+/// <summary>
+/// One leaf of a lyric element, as the file writes it. <c>Value</c> is the raw text and is null for a leaf with no
+/// value (the shape a collection has when it is empty).
+/// </summary>
+internal sealed record ProjectFileLyricField(string Key, string? Value);
+
+/// <summary>
+/// One lyric element, read as far as its own field names allow. Which key held the id and which the text is
+/// reported (<see cref="IdKey"/>, <see cref="TextKey"/>) because the exact field a Dorico lyric writes its text in
+/// was never seen: the names came from the application, not from data.
+/// </summary>
+internal sealed record ProjectFileLyricElement(
+    long? Id,
+    string? IdKey,
+    string? Text,
+    string? TextKey,
+    string? SyllableType,
+    string? LineNumber,
+    string? LineLocation,
+    string? LineType,
+    IReadOnlyList<ProjectFileLyricField> Fields,
+    IReadOnlyList<string> ChildKinds,
+    IReadOnlyList<ProjectFileLyricField> Properties);
+
+/// <summary>
+/// One lyric placed in the music, resolved the way a dynamic is: exact position in crotchets, the measure and beat
+/// that position falls on, and the player/stave the stream belongs to. <see cref="Element"/> is the
+/// <c>lyricElementID</c> the event points at, -1 when the event carries none. <see cref="Fields"/> keeps every other
+/// leaf the event wrote, because which side of the element/event pair holds the sung text is one of the things no
+/// file here can settle.
+/// </summary>
+internal sealed record ProjectFileLyricEvent(
+    long EventId,
+    int Measure,
+    string Beat,
+    string Position,
+    string Duration,
+    long Element,
+    int? Stream,
+    string? Player,
+    string? Instrument,
+    int? Stave,
+    int? Voice,
+    IReadOnlyList<ProjectFileLyricField> Fields);

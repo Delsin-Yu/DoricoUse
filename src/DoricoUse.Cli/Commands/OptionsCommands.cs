@@ -84,7 +84,10 @@ internal static class OptionsCommands
 
         var values = new Option<string[]>("--value")
         {
-            Description = "An option as path=value, e.g. --value rhythmDotPositionOptions.noteDotGap=1/2. Repeatable.",
+            Description = "An option as path=value, e.g. --value rhythmDotPositionOptions.noteDotGap=1/2. "
+                + "Repeatable. A value that looks like a Dorico enum spelling (kSomething) is checked against "
+                + "the vocabulary extracted from Dorico's binary and refused when it is not in it, because "
+                + "Dorico accepts an unknown one in silence.",
             Required = true,
         };
 
@@ -103,6 +106,12 @@ internal static class OptionsCommands
             Description = "Do not read the values back afterwards.",
         };
 
+        var allowUnknownEnum = new Option<bool>("--allow-unknown-enum")
+        {
+            Description = "Set an enum-looking value the vocabulary does not hold instead of refusing it. The "
+                + "vocabulary is a string scan of one build, so it can miss a spelling that is real.",
+        };
+
         var timeout = CommandRoot.TimeoutOption();
         var expectScore = CommandRoot.ExpectScoreOption();
 
@@ -113,6 +122,7 @@ internal static class OptionsCommands
             layout,
             flow,
             noVerify,
+            allowUnknownEnum,
             timeout,
             expectScore,
         };
@@ -120,21 +130,49 @@ internal static class OptionsCommands
         command.SetAction(parse => CommandRoot.RunAsync("options set", async () =>
         {
             var optionsType = ParseType(parse.GetValue(type));
+            var pairs = ParsePairs(parse.GetValue(values));
+
+            // An option value is often an enum spelling (kSomething) and a wrong one is accepted in silence, the
+            // same way an unknown LogDuration is: Dorico answers kOK and keeps what it had.
+            var vocabulary = EnumVocabulary.Shared;
+            var lookedAt = new List<(string Key, string Value, VocabularyVerdict Verdict)>();
+
+            foreach (var (path, node) in pairs)
+            {
+                if (node is not JsonValue json || !json.TryGetValue<string>(out var value)
+                    || !EnumVocabulary.IsSpelling(value))
+                {
+                    continue;
+                }
+
+                vocabulary.Refuse("--value", path, value, parse.GetValue(allowUnknownEnum));
+                lookedAt.Add((path, value, vocabulary.Check(value)));
+            }
+
             var args = new JsonObject
             {
                 ["optionsType"] = optionsType,
-                ["values"] = ParsePairs(parse.GetValue(values)),
+                ["values"] = pairs,
                 ["verify"] = !parse.GetValue(noVerify),
             };
 
             AddTarget(args, optionsType, parse.GetValue(layout), parse.GetValue(flow));
             CommandRoot.AddExpectScore(args, parse.GetValue(expectScore));
 
-            return await HostClient.CallAsync(
-                HostProtocol.OpOptionsSet,
-                args,
-                CommandRoot.Timeout(parse, timeout) * 2,
-                CancellationToken.None);
+            var payload = await HostClient
+                .CallAsync(
+                    HostProtocol.OpOptionsSet,
+                    args,
+                    CommandRoot.Timeout(parse, timeout) * 2,
+                    CancellationToken.None)
+                .ConfigureAwait(false);
+
+            if (lookedAt.Count > 0)
+            {
+                payload["vocabulary"] = vocabulary.Describe(lookedAt);
+            }
+
+            return payload;
         }));
 
         return command;

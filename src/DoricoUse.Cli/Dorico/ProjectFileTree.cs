@@ -445,8 +445,11 @@ internal static class ProjectFileTreeReader
 
         var needle = query.Trim();
 
-        // Narrow as little as possible: "LyricEventDefinition" is a guess at a name nobody uses, and the honest
-        // neighbourhood is what carries its longest shared beginning — "Lyric".
+        // Narrow as little as possible: a miss should show the honest neighbourhood, so the search falls back to
+        // whatever the query shares with a name the file does use — "LyricEventDefinition" misses on every corpus
+        // file, and "Lyric" is what is offered instead. (That name is not a guess: it is the application's own IO
+        // type, next to LyricElementDefinition and LyricElementTableDefinition in Dorico6.exe, which is why the
+        // lyric reader looks for it. See docs/hidden-commands.md for how the exe's vocabulary is read.)
         for (var length = needle.Length; length >= 3; length--)
         {
             var prefix = needle[..length];

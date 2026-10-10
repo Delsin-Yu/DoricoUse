@@ -242,6 +242,7 @@ internal static class ProjectFileScoreReader
         private readonly Dictionary<long, StaveDraft> _streamStaves = [];
         private readonly Dictionary<long, string> _streamKinds = [];
         private readonly List<SlurDraft> _slurs = [];
+        private readonly List<LyricEventDraft> _lyricEvents = [];
         private readonly List<TechniqueEventDraft> _techniqueEvents = [];
 
         /// <summary>The score library's own names: the playing techniques and their appearances.</summary>
@@ -1554,30 +1555,105 @@ internal static class ProjectFileScoreReader
                 (_, childCount, _) => SkipChildren(childCount));
 
         /// <summary>
-        /// One lyric of a lyric element table. The shape is not known — no file in the corpus has one.
+        /// One lyric of a lyric element table.
+        /// <para>
+        /// No file in the corpus has one, so the shape is not known from data — but the application's own vocabulary
+        /// is: its IO type is <c>LyricElementDefinition</c>, its event is <c>LyricEventDefinition</c>, the event
+        /// points at an element with <c>lyricElementID</c>, and a lyric's line is addressed by
+        /// <c>lyricLineNumberAndStaveIDAndLocation</c>. Everything below is read <i>by name</i> on that basis, keeps
+        /// the raw leaves as they are, and records which key it took each reading from, so a real lyric element
+        /// cannot be silently misread: either the expected key is there and is used, or the raw
+        /// <see cref="ProjectFileLyricElement.Fields"/> say exactly what the file holds.
+        /// </para>
         /// </summary>
         private bool WalkLyricElement(long count, FlowDraft flow)
         {
+            var element = new LyricElementDraft();
             var fields = new List<string>();
 
             var ok = WalkChildren(
                 count,
-                (key, _) =>
+                (key, value) =>
                 {
-                    Note(fields, NameAt(key));
+                    var name = NameAt(key);
+
+                    Note(fields, name);
+                    element.Keep(name, Value(value));
+
+                    // The element's own id. lyricElementID is the name the application uses for a lyric; elementID is
+                    // what the other element tables of this format write, kept as a fallback for a file that differs.
+                    if (element.Id < 0 && name is "lyricElementID" or "elementID")
+                    {
+                        var id = Number(value);
+
+                        if (id >= 0)
+                        {
+                            element.Id = id;
+                            element.IdKey = name;
+                        }
+                    }
 
                     return true;
                 },
                 (key, children, _) =>
                 {
-                    Note(fields, NameAt(key));
+                    var name = NameAt(key);
 
-                    return SkipChildren(children);
+                    Note(fields, name);
+                    element.KeepChild(name);
+
+                    return name == "propertyTable"
+                        ? WalkPropertyTable(children, element.Properties)
+                        : SkipChildren(children);
                 });
 
             if (ok)
             {
                 flow.LyricShapes.Add(fields);
+                flow.LyricReadings.Add(element);
+            }
+
+            return ok;
+        }
+
+        /// <summary>
+        /// One lyric placed in the music, by the same shape as a dynamic: the event carries where it sits, and the
+        /// element it names (through <c>lyricElementID</c>, by analogy with <c>slurElementID</c> and
+        /// <c>dynamicGroupID</c>) carries the text. The event's own property table is read as properties, because the
+        /// property tags the application knows for a lyric (<c>kLyricLineNumber</c>, <c>kLyricLineLocation</c>,
+        /// <c>kLyricSyllableType</c>, <c>kLyricIsChorus</c>, <c>kLyricIsTranslation</c>, ...) are what could say
+        /// which line and which verse a syllable belongs to.
+        /// </summary>
+        private bool WalkLyricEvent(long count, long stream, FlowDraft flow)
+        {
+            var lyric = new LyricEventDraft { Stream = stream, Flow = flow };
+
+            var ok = WalkChildren(
+                count,
+                (key, value) =>
+                {
+                    switch (NameAt(key))
+                    {
+                        case "eventID": lyric.EventId = Number(value); break;
+                        case "position": lyric.Position = ScoreRational.Parse(Value(value)); break;
+                        case "duration": lyric.Duration = Value(value) ?? string.Empty; break;
+                        case "lyricElementID": lyric.Element = Number(value); break;
+
+                        // A lyric's text may sit on the event rather than on the element: keep whatever else the
+                        // event carries so the report can show it, whichever side the file puts it on.
+                        default: lyric.Keep(NameAt(key), Value(value)); break;
+                    }
+
+                    return true;
+                },
+                (key, childCount, _) => NameAt(key) == "propertyTable"
+                    ? WalkPropertyTable(childCount, lyric.Properties)
+                    : SkipChildren(childCount));
+
+            if (ok)
+            {
+                flow.LyricEventCount++;
+                _lyricEvents.Add(lyric);
             }
 
             return ok;
@@ -1768,6 +1844,7 @@ internal static class ProjectFileScoreReader
                     "PlayingTechniqueEventDefinition" => WalkTechniqueEvent(childCount, stream, flow),
                     "BarDivisionEventDefinition" => WalkBarDivisionEvent(childCount),
                     "DynamicGroupEventDefinition" => WalkDynamicEvent(childCount, stream, flow),
+                    "LyricEventDefinition" => WalkLyricEvent(childCount, stream, flow),
                     _ => SkipChildren(childCount),
                 });
 
@@ -2123,7 +2200,36 @@ internal static class ProjectFileScoreReader
             var lyrics = new ProjectFileLyrics(
                 _flows.Sum(flow => flow.LyricTables),
                 _flows.Sum(flow => flow.LyricElements),
-                _flows.SelectMany(flow => flow.LyricShapes).ToList());
+                _flows.SelectMany(flow => flow.LyricShapes).ToList(),
+                [.. _flows
+                    .SelectMany(flow => flow.LyricReadings)
+                    .Select(ReadLyricElement)],
+                [.. _lyricEvents
+                    .OrderBy(lyric => lyric.Position)
+                    .ThenBy(lyric => lyric.Stream)
+                    .ThenBy(lyric => lyric.EventId)
+                    .Select(lyric =>
+                    {
+                        var (measure, beat) = Locate(spans, lyric.Position);
+                        _streamStaves.TryGetValue(lyric.Stream, out var stave);
+
+                        return new ProjectFileLyricEvent(
+                            lyric.EventId,
+                            (int)measure,
+                            beat.ToText(),
+                            lyric.Position.ToText(),
+                            lyric.Duration,
+                            lyric.Element,
+                            lyric.Stream < 0 ? null : (int)lyric.Stream,
+                            stave is null || stave.PlayerId is null ? null : names.GetValueOrDefault(stave.PlayerId.Value),
+                            stave is null || stave.PlayerId is null || stave.InstrumentId is null
+                                ? null
+                                : instruments.GetValueOrDefault((stave.PlayerId.Value, stave.InstrumentId.Value)),
+                            stave?.Stave,
+                            stave?.Voice,
+                            lyric.Fields);
+                    })],
+                _lyricEvents.Count);
 
             var slurs = _slurs
                 .OrderBy(slur => slur.Position)
@@ -2307,6 +2413,39 @@ internal static class ProjectFileScoreReader
 
         private static ProjectFileTreeField AsField(PropertyDraft property)
             => new(property.Type, property.Value);
+
+        /// <summary>
+        /// Reads one lyric element by name. The four names that are looked for are the ones the application uses for
+        /// a lyric's own content (<c>richText</c>, <c>text</c>, <c>syllableType</c>) and for the line it belongs to
+        /// (<c>lineNumber</c>, <c>lineLocation</c>, <c>lineType</c>); the text is only claimed when the name matches,
+        /// and the key it came from is reported beside it. Everything else the element holds is kept verbatim in
+        /// <see cref="ProjectFileLyricElement.Fields"/>, so a file whose names differ still says what it contains.
+        /// </summary>
+        private static ProjectFileLyricElement ReadLyricElement(LyricElementDraft element)
+        {
+            var text = First(element, "richText", "text", "lyricText", "syllabicText");
+            var syllable = First(element, "syllableType", "syllabic");
+            var line = First(element, "lineNumber", "lyricLineNumber");
+            var location = First(element, "lineLocation", "lyricLineLocation");
+            var lineType = First(element, "lineType", "lyricLineType");
+
+            return new ProjectFileLyricElement(
+                element.Id < 0 ? null : element.Id,
+                element.IdKey,
+                text?.Value,
+                text?.Key,
+                syllable?.Value,
+                line?.Value,
+                location?.Value,
+                lineType?.Value,
+                element.Fields,
+                element.ChildKinds,
+                [.. element.Properties.Select(property => new ProjectFileLyricField(property.Type, property.Value))]);
+        }
+
+        /// <summary>The first leaf of an element whose key is one of the given names, or null when none is.</summary>
+        private static ProjectFileLyricField? First(LyricElementDraft element, params string[] keys)
+            => element.Fields.FirstOrDefault(field => keys.Contains(field.Key, StringComparer.Ordinal));
 
         /// <summary>
         /// The location of one event: its own position and duration, the measure and beat the metre puts it at, and
@@ -2681,7 +2820,9 @@ internal static class ProjectFileScoreReader
         public int Techniques;
         public int LyricTables;
         public int LyricElements;
+        public int LyricEventCount;
         public List<List<string>> LyricShapes { get; } = [];
+        public List<LyricElementDraft> LyricReadings { get; } = [];
         public Dictionary<long, DynamicGroupDraft> Groups { get; } = [];
         public Dictionary<long, SlurElementDraft> SlurElements { get; } = [];
     }
@@ -2691,6 +2832,60 @@ internal static class ProjectFileScoreReader
     {
         public long Id = -1;
         public string? Events;
+    }
+
+    /// <summary>
+    /// One lyric element as the file writes it: its leaves in order, the kinds of its child nodes, and any property
+    /// table. <see cref="Id"/> stays -1 until a leaf named like an id turns up, so "no id found" stays
+    /// distinguishable from "id = 0". <see cref="IdKey"/> says which key the id came from, because the element's own
+    /// id field has not been seen in data.
+    /// </summary>
+    private sealed class LyricElementDraft
+    {
+        public long Id = -1;
+        public string? IdKey;
+
+        public List<ProjectFileLyricField> Fields { get; } = [];
+        public List<string> ChildKinds { get; } = [];
+        public List<PropertyDraft> Properties { get; } = [];
+
+        /// <summary>A leaf: the key the file uses, and its raw text (null when the leaf has no value).</summary>
+        public void Keep(string? key, string? value)
+        {
+            if (key is not null)
+            {
+                Fields.Add(new ProjectFileLyricField(key, value));
+            }
+        }
+
+        public void KeepChild(string? key)
+        {
+            if (key is not null && !ChildKinds.Contains(key))
+            {
+                ChildKinds.Add(key);
+            }
+        }
+    }
+
+    /// <summary>A lyric placed in the music, before its measure, its stave and its element are resolved.</summary>
+    private sealed class LyricEventDraft
+    {
+        public long EventId;
+        public ScoreRational Position;
+        public string Duration = string.Empty;
+        public long Element = -1;
+        public long Stream = -1;
+        public FlowDraft? Flow;
+        public List<ProjectFileLyricField> Fields { get; } = [];
+        public List<PropertyDraft> Properties { get; } = [];
+
+        public void Keep(string? key, string? value)
+        {
+            if (key is not null)
+            {
+                Fields.Add(new ProjectFileLyricField(key, value));
+            }
+        }
     }
 
     /// <summary>One property of an event: the file's own name for it and its value, encoded as a variant.</summary>

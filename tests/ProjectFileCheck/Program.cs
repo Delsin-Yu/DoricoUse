@@ -1,3 +1,4 @@
+using System.Text.Json.Nodes;
 using DoricoUse.Cli;
 using DoricoUse.Cli.Dorico;
 using DoricoUse.Cli.Views;
@@ -91,6 +92,35 @@ else
     catch (Exception ex)
     {
         Check("the report can be built three times in one process", false, ex.Message);
+    }
+
+    // The --lyrics payload is a contract of its own: an agent that reads it must find the same keys whether or not a
+    // lyric is there. Only the empty case can be checked on this machine (see the lyric section below), so what is
+    // pinned here is the shape: the counts, the caveats, and an empty `read`/`events` pair.
+    try
+    {
+        var lyricOptions = new ProjectFileView.Options { NoteLimit = 0, Lyrics = true };
+        var payload = JsonNode.Parse(ProjectFileView.Report(project, lyricOptions).ToJsonString())!["score"]!["lyrics"]!;
+        var lyricCaveats = payload["caveats"]!.AsArray();
+
+        Check(
+            "the --lyrics payload keeps its keys, its counts and 5 caveats on a file with no lyric",
+            payload["tables"]!.GetValue<int>() == 1
+            && payload["elements"]!.GetValue<int>() == 0
+            && payload["eventTotal"]!.GetValue<int>() == 0
+            && payload["read"]!.AsArray().Count == 0
+            && payload["events"]!.AsArray().Count == 0
+            && payload["elementFields"]!.AsArray().Count == 0
+            && payload["modelled"]!.GetValue<bool>()
+            && lyricCaveats.Count == 5,
+            $"{lyricCaveats.Count} caveats (expected 5)");
+    }
+    catch (Exception ex)
+    {
+        Check(
+            "the --lyrics payload keeps its keys, its counts and 5 caveats on a file with no lyric",
+            false,
+            ex.Message);
     }
 
     if (score is not null)
@@ -382,11 +412,29 @@ else
         $"{first.Measure}/{first.Position}");
 
     // Lyrics are an element table, not events, and this corpus has an empty one everywhere: nothing to read, and the
-    // report says so rather than inventing a shape.
+    // report says so rather than inventing a shape. `--lyrics` reads an element by name now (see the caveats), so the
+    // empty case has to stay empty: no elements read, no lyric events, no field names.
     Check(
         "the lyric element table is there, empty, with no element shape to read",
         score.Lyrics.Tables == 1 && score.Lyrics.Elements == 0 && score.Lyrics.Shapes.Count == 0,
         $"{score.Lyrics.Tables} tables, {score.Lyrics.Elements} elements");
+    Check(
+        "the lyric reader finds nothing where there is nothing: no element read, no lyric event",
+        score.Lyrics.Read.Count == 0 && score.Lyrics.Events.Count == 0 && score.Lyrics.EventTotal == 0,
+        $"{score.Lyrics.Read.Count} read, {score.Lyrics.EventTotal} events");
+
+    // The reading itself cannot be checked here: it rests on the application's vocabulary because no file on this
+    // machine has a lyric. Assert the link it would use is absent when the table is empty - the same escape hatch a
+    // user would reach for - and say plainly what file would settle the rest.
+    var lyricData = ProjectFileReader.Open(Corpus).ScoreData;
+    var lyricShape = ProjectFileTreeReader.Subtree(lyricData, "LyricElementDefinition", 1, -1);
+    Check(
+        "a lyric element is not present in the score data at all (nothing to read yet)",
+        lyricShape.Matched == 0,
+        lyricShape.Matched.ToString());
+    Skip(
+        "the reading of a lyric element and of LyricEventDefinition (no file on this machine has a lyric: every "
+        + "corpus file's LyricElementTableDefinition holds one `array` leaf and no element)");
 }
 
 Head($"dynamics against a second file: {FourthCorpus}");

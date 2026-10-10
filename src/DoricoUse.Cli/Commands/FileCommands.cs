@@ -60,9 +60,10 @@ internal static class FileCommands
 
         var lyrics = new Option<bool>("--lyrics")
         {
-            Description = "Include what the lyric element tables hold: how many there are, how many elements, and the "
-                + "field names of an element. Lyrics are table elements, not events, and this reader does not read "
-                + "their contents.",
+            Description = "Include the lyrics: the lyric element tables (how many, how many elements, the field "
+                + "names of an element), a reading of each element and of the lyric events that place one in the "
+                + "music. No corpus file has a lyric, so the shape comes from the application's own vocabulary and "
+                + "the `caveats` say which part of it is measured and which is inferred.",
         };
 
         var slurs = new Option<bool>("--slurs")

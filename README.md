@@ -202,9 +202,14 @@ Limits, reported as `caveats`:
   (frame geometry → measure mapping) is not derivable here: casting off is a layout computation and the file's own
   cache of it is empty.
 
-- **Lyrics are not modelled**: every file in the corpus has one empty lyric table and not a single element, so the
-  shape of a lyric was never seen. `--lyrics` reports presence and size; `--tree LyricElementTableDefinition` is
-  how to look at a file that has them.
+- **Lyrics are modelled but unverified against data.** Every one of the 88 project files on this machine has an
+  empty lyric table and not one element, so the reader is built on the *binary's* vocabulary
+  (`LyricElementDefinition`, `LyricEventDefinition`, `lyricElementID`, `lyricHyphen`, `kLyricSyllableType`, …) and
+  still reports `elements: 0` everywhere. `--lyrics` now returns `read`/`events`/`fields` plus **5 caveats** that
+  separate what is measured from what is inferred, and the one check that needs a real lyric is a documented `skip`.
+  To settle it, a file with lyrics is needed: add a syllable or two plus a second verse and a translation to a
+  *copy* of a score, save it as a new file, and run `file read --path <it> --lyrics`
+  (then `--tree LyricElementDefinition --depth 4` to see the raw truth).
 - **Rests are gaps**, not events; **measures are derived** from the stored metre/bar-division events.
 - Not modelled: the score library's engraving options, frame → measure mapping, playback/mixer data and tremolo.
 - `scorelibrary.dtn` and the other supplementary members are listed but not parsed.
@@ -294,9 +299,11 @@ Verified against Dorico Pro 6.2.30 on Windows 11:
   answer `kOK` when they are posted, so an ack says nothing about when a command ran — while an export dialog was
   open, a `File.Close` queued earlier closed a document minutes afterwards. Never queue something destructive, and
   when a command seems to do nothing, check `application.log` for when it really ran.
-- There is **no query for bars, staves, the note stream or the project at large**, no absolute stave addressing,
-  no caret query, and no way to create a project (`File.New` is not even in the catalogue), add a player or add an
-  instrument. Selection information is limited to duration, dots, accidental and rest mode.
+- There is **no query for bars, staves, the note stream or the project at large**, no absolute stave addressing and
+  no caret query. There is also no way to create a project through the **published** API: `File.New` is absent from
+  the catalogue while the application carries it (bound to Ctrl+N) and 161 further names the API never publishes —
+  including the whole `Debug.*` and `Custom.*` families (see `docs/hidden-commands.md`). Whether those execute when
+  sent was deliberately not tested.
 - Export: `File.Export?FilterID=<filter>` with `MusicXMLExportFilter`, `MIDIFileExportFilter`,
   `AudioFileExportFilter`, `DoricoFileExportFilter`, `TempoTrackExportFilter` — all dialog-bound, except
   `File.Export.Text?File=...&Show=false`, which is not. The dialog ignores any `File=` parameter: its 导出到
@@ -312,6 +319,34 @@ Verified against Dorico Pro 6.2.30 on Windows 11:
 - The best documentation is `application.log` (`%APPDATA%\Steinberg\Dorico 6`): every action Dorico performs is
   echoed there as the command and parameters that produce it. When a message's answer id is unknown,
   `raw send --expect any` sends it and shows whatever comes back.
+
+### Beyond the published API
+
+The application carries far more than the remote API publishes, and two of the three additions here come from
+reading that surface rather than from the protocol. The repo ships the **extractors, never the extracted data**.
+
+**Enum validation.** Dorico answers `kOK` to an unknown enum value and silently substitutes another, so a typo in
+`--param` used to be invisible. `python tools/extract_vocabulary.py "<path to Dorico6.exe>"` scans the binary (it
+takes the executable as an argument; nothing is hard-coded) and writes **5384 `k` spellings, 9103 type names, 1182
+command literals and 6816 option paths** to `%LOCALAPPDATA%\dorico-use\vocabulary.json` — a per-user file that is
+never committed and never redistributed. With it present, `command send --param`, `note insert --duration/--grid`
+and `options set --value` refuse a spelling this build does not know and suggest the nearest ones
+(`LogDuration=kQuavor` → `kQuaver, kBreve, kSemiQuaver, kLong`), and `--allow-unknown-enum` overrides that when you
+mean it. With no vocabulary on the machine the value is accepted and the payload says why, so the tool still works
+for someone who never ran the extractor. A hit proves the spelling exists in that build, not that the parameter
+accepts it.
+
+**Unpublished commands.** `docs/hidden-commands.md` diffs the binary's command-name pool against the live
+catalogue: **1191 names in the application, 1029 of them published, 162 not** — including `File.New` (Ctrl+N),
+`File.NewFromTemplate`, `Play.NavigateForwards` and the entire `Debug.*` and `Custom.*` families. Nothing was sent
+to Dorico to see whether they execute.
+
+**The scripting layer.** `docs/scripting.md` records what Dorico's Lua console really exposes, measured: the
+recorder is exactly a keystroke log (a recorded macro is three `app:doCommand([[EventEdit.NavigateDown]])` lines),
+while the object model behind it is real but half-built — `score.flows/players/layouts` and `EventStream:dump()`
+read fine, `createNote`/`copyRange`/`addPlayer` exist, and the convenient getters answer
+`Not implemented - this may leave the score in an unpredictable state @ streamwrapper.cpp:162`. That is why the
+community says scripting has no meaningful access to score data: the front door is a macro recorder.
 
 ## Architecture
 
@@ -346,8 +381,16 @@ against another, the per-note spelling letter matched onset by onset against a t
 with the export's `<transpose>` table asserted), score-order and overlap invariants, the generic tree walker
 compared with the typed reader, that the report can be built three times in one process (a shared node parented
 twice throws), and every error path (`NotFound`, `NotAContainer`, `MissingScoreData`, `MalformedMember`,
-`UnsupportedScoreData`). 129 checks, `0 skipped`; a check that needs a file which is not on the machine reports
-`skip` instead of passing.
+`UnsupportedScoreData`). 132 checks pass and one is a documented `skip` — reading a real lyric, which needs a file
+with lyrics.
+
+```bash
+dotnet build tests/VocabularyCheck/VocabularyCheck.csproj -v q --nologo
+./tests/VocabularyCheck/bin/Debug/net10.0/vocabulary-check.exe    # 96 checks: extraction + validation, no exe needed
+```
+
+`VocabularyCheck` extracts from a small synthetic executable it writes itself, so it needs neither the 154 MB app
+nor Dorico; a check that cannot run reports `skip` instead of passing.
 
 ## Roadmap
 
@@ -361,10 +404,13 @@ twice throws), and every error path (`NotFound`, `NotAContainer`, `MissingScoreD
 6. **Done** — `--expect-score` (refuse to act on the wrong document, on every mutating command), `note insert
    --from-start` and `--read` (write and prove in one call), the per-note spelling letter as a field, a `version`
    command, a proven Native AOT publish, and slurs/articulations/ties/beams/techniques/layout in `file read`.
-7. **Next** — a phrase that spans calls without restarting at the top (today `--from-start` is the honest reset),
-   positional entry if Dorico ever exposes it (only a mouse click addresses a point today, and the API cannot be
-   told which stave to use), lyrics once a file with lyrics turns up, and the accidental that `spelling` + `midi`
-   would let this reader derive.
+7. **Done** — the vocabulary extractor with enum validation, the unpublished-command diff (`docs/hidden-commands.md`)
+   and the scripting-layer analysis (`docs/scripting.md`), plus lyric *modelling* from the binary's own vocabulary.
+8. **Next, and mostly waiting on data only you can produce** — a file with lyrics (the reader is built and skipped
+   until one exists), a scratch project to find out whether the scripting write methods (`createNote`, …) actually
+   write, one command to test whether an unpublished name like `File.New` executes when sent, a phrase that spans
+   calls without restarting at the top, positional entry if Dorico ever exposes it, and the accidental that
+   `spelling` + `midi` would let the reader derive.
 
 Deliberately **not** planned: a cached command catalogue, on disk or otherwise. Dorico answers `getcommands` in
 4 ms (98 KB, 1090 commands) and a `command list` call costs about 86 ms end to end, nearly all of it process

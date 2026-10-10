@@ -30,7 +30,11 @@ internal static class CommandCommands
 
         var parameters = new Option<string[]>("--param")
         {
-            Description = "A command parameter as Key=Value. Repeatable: --param File=\"D:\\score.dorico\".",
+            Description = "A command parameter as Key=Value. Repeatable: --param File=\"D:\\score.dorico\". A "
+                + "value that looks like a Dorico enum spelling (kQuaver, kWriteMode) is checked against the "
+                + "vocabulary extracted from Dorico's binary and refused when it is not in it, because Dorico "
+                + "answers kOK to an unknown enum and silently substitutes another; see `version` and the "
+                + "vocabulary field of any payload that checked something.",
         };
 
         var timeoutOption = CommandRoot.TimeoutOption();
@@ -45,18 +49,34 @@ internal static class CommandCommands
             Description = "Do not read the status back after the command.",
         };
 
+        var allowUnknownEnum = new Option<bool>("--allow-unknown-enum")
+        {
+            Description = "Send an enum-looking value the vocabulary does not hold instead of refusing it. The "
+                + "vocabulary is a string scan of one build, so it can miss a spelling that is real.",
+        };
+
+        var dryRun = new Option<bool>("--dry-run")
+        {
+            Description = "Check the name and the parameters and print the composed command line, sending "
+                + "nothing: no host is started and Dorico is not contacted.",
+        };
+
         var expectScore = CommandRoot.ExpectScoreOption();
 
         var command = new Command(
             "send",
             "Send one Dorico command. The status is read back afterwards, because Dorico answers kOK even for "
-            + "commands that then fail.")
+            + "commands that then fail. Enum-looking parameter values are checked against the vocabulary "
+            + "extracted from Dorico's binary, when one has been extracted on this machine; without one they are "
+            + "sent unchecked, and the payload says so.")
         {
             name,
             parameters,
             timeoutOption,
             waitOption,
             noVerify,
+            allowUnknownEnum,
+            dryRun,
             expectScore,
         };
 
@@ -65,10 +85,21 @@ internal static class CommandCommands
             var waitMs = Math.Clamp(parse.GetValue(waitOption), 0, 120_000);
             var timeout = CommandRoot.Timeout(parse, timeoutOption);
             var values = ParseParameters(parse.GetValue(parameters));
+            var commandName = parse.GetValue(name) ?? string.Empty;
+
+            // Before anything else touches the host: an unknown enum value would be accepted with kOK and
+            // silently turned into another value inside Dorico, which is the failure this exists to prevent.
+            var vocabulary = EnumVocabulary.Shared;
+            var lookedAt = CheckValues(vocabulary, values, parse.GetValue(allowUnknownEnum));
+
+            if (parse.GetValue(dryRun))
+            {
+                return DryRun(commandName, values, vocabulary, lookedAt);
+            }
 
             var args = new JsonObject
             {
-                ["name"] = parse.GetValue(name),
+                ["name"] = commandName,
                 ["waitMs"] = waitMs,
                 ["verify"] = !parse.GetValue(noVerify),
             };
@@ -83,10 +114,78 @@ internal static class CommandCommands
             // The host may exchange twice with Dorico (command, then status) plus the requested wait.
             var budget = (timeout * 2) + TimeSpan.FromMilliseconds(waitMs);
 
-            return await HostClient.CallAsync(HostProtocol.OpCommand, args, budget, CancellationToken.None);
+            var payload = await HostClient
+                .CallAsync(HostProtocol.OpCommand, args, budget, CancellationToken.None)
+                .ConfigureAwait(false);
+
+            if (lookedAt.Count > 0)
+            {
+                payload["vocabulary"] = vocabulary.Describe(lookedAt);
+            }
+
+            return payload;
         }));
 
         return command;
+    }
+
+    /// <summary>
+    /// Puts every enum-looking value of this call through the vocabulary: a value it does not hold is a usage
+    /// error (exit 1) with the nearest spellings, and a value it holds — or one that cannot be checked at all,
+    /// because no vocabulary was extracted on this machine — is returned with its verdict for the payload.
+    /// </summary>
+    private static List<(string Key, string Value, VocabularyVerdict Verdict)> CheckValues(
+        EnumVocabulary vocabulary,
+        JsonObject values,
+        bool allowUnknown)
+    {
+        var lookedAt = new List<(string Key, string Value, VocabularyVerdict Verdict)>();
+
+        foreach (var (key, node) in values)
+        {
+            if (node is not JsonValue json || !json.TryGetValue<string>(out var value)
+                || !EnumVocabulary.IsSpelling(value))
+            {
+                continue;
+            }
+
+            vocabulary.Refuse("--param", key, value, allowUnknown);
+            lookedAt.Add((key, value, vocabulary.Check(value)));
+        }
+
+        return lookedAt;
+    }
+
+    /// <summary>
+    /// The plan, sent nowhere: the command line as Dorico would receive it, and what the vocabulary had to say
+    /// about its values. Because nothing is sent, no host is started and Dorico is not contacted — this is also
+    /// the way to check a value on a machine where Dorico must not be disturbed.
+    /// </summary>
+    private static JsonObject DryRun(
+        string commandName,
+        JsonObject values,
+        EnumVocabulary vocabulary,
+        List<(string Key, string Value, VocabularyVerdict Verdict)> lookedAt)
+    {
+        var pairs = new List<string>();
+
+        foreach (var (key, node) in values)
+        {
+            pairs.Add($"{key}={NodeRead.Text(node)}");
+        }
+
+        var plan = new JsonObject
+        {
+            ["dryRun"] = true,
+            ["name"] = commandName,
+            ["parameters"] = values.DeepClone(),
+            ["command"] = pairs.Count == 0 ? commandName : $"{commandName}?{string.Join(",", pairs)}",
+            ["vocabulary"] = vocabulary.Describe(lookedAt),
+            ["note"] = "Nothing was sent: no host was started and Dorico was not contacted. Drop --dry-run to "
+                + "send it, and read `status` afterwards — Dorico answers kOK even to a command that then fails.",
+        };
+
+        return new JsonObject { ["plan"] = plan };
     }
 
     private static Command BuildList()

@@ -1235,8 +1235,9 @@ internal static class ProjectFileView
 
     /// <summary>
     /// What the lyric element tables hold. Lyrics are elements in a table, not events on notes, and no file in the
-    /// corpus has a single one — so this reports presence and size, and the field names of an element when there is
-    /// one, rather than pretending to read syllables.
+    /// corpus has a single one — so this reports presence and size, the field names of an element when there is one,
+    /// and an attempt to read the element and the events that place it, anchored on the field names the application
+    /// itself uses (see <see cref="LyricsCaveats"/>, which separates what is measured from what is inferred).
     /// </summary>
     private static JsonObject Lyrics(ProjectFileLyrics lyrics)
     {
@@ -1254,13 +1255,103 @@ internal static class ProjectFileView
             JsonArr.AddNode(shapes, names);
         }
 
+        var elements = new JsonArray();
+
+        foreach (var element in lyrics.Read.Take(20))
+        {
+            var fields = new JsonArray();
+
+            foreach (var field in element.Fields.Take(32))
+            {
+                JsonArr.AddNode(fields, new JsonObject
+                {
+                    ["key"] = field.Key,
+                    ["value"] = field.Value,
+                });
+            }
+
+            var children = new JsonArray();
+
+            foreach (var kind in element.ChildKinds.Take(16))
+            {
+                JsonArr.AddText(children, kind);
+            }
+
+            var properties = new JsonArray();
+
+            foreach (var property in element.Properties.Take(24))
+            {
+                JsonArr.AddNode(properties, new JsonObject
+                {
+                    ["type"] = property.Key,
+                    ["value"] = property.Value,
+
+                    // The tags the application knows for a lyric. Flagged rather than interpreted further: which of
+                    // them a real file writes, and in what, was never seen.
+                    ["lyricTag"] = property.Key.StartsWith("kLyric", StringComparison.Ordinal),
+                });
+            }
+
+            JsonArr.AddNode(elements, new JsonObject
+            {
+                ["id"] = element.Id,
+                ["idKey"] = element.IdKey,
+                ["text"] = element.Text,
+                ["textKey"] = element.TextKey,
+                ["syllableType"] = element.SyllableType,
+                ["lineNumber"] = element.LineNumber,
+                ["lineLocation"] = element.LineLocation,
+                ["lineType"] = element.LineType,
+                ["fields"] = fields,
+                ["children"] = children,
+                ["properties"] = properties,
+            });
+        }
+
+        var events = new JsonArray();
+
+        foreach (var lyric in lyrics.Events.Take(100))
+        {
+            var fields = new JsonArray();
+
+            foreach (var field in lyric.Fields.Take(16))
+            {
+                JsonArr.AddNode(fields, new JsonObject
+                {
+                    ["key"] = field.Key,
+                    ["value"] = field.Value,
+                });
+            }
+
+            JsonArr.AddNode(events, new JsonObject
+            {
+                ["eventId"] = lyric.EventId,
+                ["measure"] = lyric.Measure,
+                ["beat"] = lyric.Beat,
+                ["position"] = lyric.Position,
+                ["duration"] = lyric.Duration,
+                ["element"] = lyric.Element < 0 ? null : lyric.Element,
+                ["player"] = lyric.Player,
+                ["instrument"] = lyric.Instrument,
+                ["stave"] = lyric.Stave,
+                ["voice"] = lyric.Voice,
+                ["stream"] = lyric.Stream,
+                ["fields"] = fields,
+            });
+        }
+
         return new JsonObject
         {
             ["tables"] = lyrics.Tables,
             ["elements"] = lyrics.Elements,
-            ["modelled"] = false,
+            ["eventTotal"] = lyrics.EventTotal,
+            ["returnedElements"] = elements.Count,
+            ["returnedEvents"] = events.Count,
+            ["modelled"] = true,
             ["caveats"] = LyricsCaveats.DeepClone(),
             ["elementFields"] = shapes,
+            ["read"] = elements,
+            ["events"] = events,
         };
     }
 
@@ -1409,17 +1500,47 @@ internal static class ProjectFileView
             + "'duration', and the event's 'position' is where the group starts."),
     ];
 
-    /// <summary>What <c>--lyrics</c> can and cannot say.</summary>
+    /// <summary>What <c>--lyrics</c> can and cannot say. Three kinds of statement, kept apart: what the file
+    /// measured, what the application's own vocabulary says (and was therefore inferred), and what stays
+    /// ambiguous.</summary>
     private static readonly JsonArray LyricsCaveats =
     [
         (JsonNode?)JsonValue.Create(
-            "lyrics are an element table (LyricElementTableDefinition), one per flow, not events on notes. This reader "
-            + "reports whether the table is there and how many elements it holds; a table with nothing in it is "
-            + "written as a leaf, which is what every file in the corpus has."),
+            "measured: the lyric element table (LyricElementTableDefinition) is there or not, how many elements it "
+            + "holds, every leaf of an element with its key and its raw value, the kinds of its child nodes, the "
+            + "property table of a lyric event, and - for a lyric event - its exact position in crotchets, the "
+            + "measure/beat that position falls on, and the player, instrument, stave and voice of its stream. The "
+            + "report caps itself: up to 20 elements (returnedElements), 32 leaves and 16 child kinds each, and 100 "
+            + "lyric events (returnedEvents); `events`/`eventTotal` and `elements` are the full counts."),
         (JsonNode?)JsonValue.Create(
-            "the contents of a lyric element are not read: no file in this corpus has a single one, so the shape of a "
-            + "lyric was never seen. `--tree LyricElementTableDefinition --depth 3` shows what a file with lyrics "
-            + "actually holds."),
+            "inferred from the application's own vocabulary, not from data: no file in this corpus has a lyric, so "
+            + "Dorico6.exe is the only source for the shape. Names taken from it: LyricElementTableDefinition (the "
+            + "table), LyricElementDefinition (one lyric), LyricEventDefinition (a lyric placed in the music; not in "
+            + "the published command catalogue either), lyricElementID (the element the event points at - taken by "
+            + "analogy with slurElementID and dynamicGroupID), elementID (the element's own id, used when "
+            + "lyricElementID is absent), lyricLineNumberAndStaveIDAndLocation plus LyricLineAddressDefinition, "
+            + "LyricLineNumberOffsetDefinition and LyricLineNumberOffsetMap (a lyric's line), lyricLineUserYOffsets "
+            + "(the line's engraving offset, which IS seen in every corpus file), and the property tags kLyric* "
+            + "(kLyricLineNumber, kLyricLineLocation, kLyricSyllableType, kLyricIsChorus, kLyricIsTranslation, "
+            + "kLyricIsItalic, kLyricShowVerseNumber, kLyricParagraphStyle, kLyricLineStartDx/EndDx)."),
+        (JsonNode?)JsonValue.Create(
+            "inferred, and the weakest claim here: which leaf of a lyric element holds the sung text. The names "
+            + "searched are richText, text, lyricText and syllabicText (in that order), and the key that matched is "
+            + "reported as textKey - null means none matched, and then `fields` is the whole truth. The application "
+            + "has no kLyricText property tag, so the text is stored somewhere this reader has not seen; there is no "
+            + "file to check the guess against."),
+        (JsonNode?)JsonValue.Create(
+            "ambiguous, stated rather than decided: whether lyricElementID sits on the lyric event (the reading here, "
+            + "by analogy with SlurEventDefinition and DynamicGroupEventDefinition) or on the element. Both are tried: "
+            + "an event is linked by lyricElementID, an element identifies itself by lyricElementID or elementID, and "
+            + "idKey says which one was found. Also ambiguous: what kLyricSyllableType and kLyricLineLocation hold "
+            + "(the enum types LyricLineType and LyricLineLocation exist in the binary, and LyricsEntryAdvanceType "
+            + "with them, but no enum member name for a syllable type was recovered), and whether File.* lyric fields "
+            + "are per line, per verse or per translation - kLyricIsChorus and kLyricIsTranslation suggest both exist."),
+        (JsonNode?)JsonValue.Create(
+            "so: this is a reading of a shape that was never seen. Every value reported comes from the file verbatim; "
+            + "only the names and the link between element and event are the application's word. `--tree "
+            + "LyricElementDefinition --depth 4` shows the same element without any interpretation at all."),
     ];
 
     /// <summary>

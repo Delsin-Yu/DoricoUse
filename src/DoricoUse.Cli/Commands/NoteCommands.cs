@@ -67,12 +67,14 @@ internal static class NoteCommands
         var duration = new Option<string?>("--duration")
         {
             Description = "Note value for these notes: crotchet, quaver, minim, semibreve, dottedcrotchet, ... "
-                + "(or a Dorico name such as kQuaver).",
+                + "(or a Dorico name such as kQuaver, which is checked against the vocabulary extracted from "
+                + "Dorico's binary).",
         };
 
         var grid = new Option<string?>("--grid")
         {
-            Description = "Rhythm grid the caret snaps to, e.g. kSemiquaver. This is not the note value.",
+            Description = "Rhythm grid the caret snaps to, e.g. kSemiquaver (checked against the vocabulary when "
+                + "one has been extracted from Dorico's binary). This is not the note value.",
         };
 
         var mode = new Option<string?>("--mode")
@@ -91,6 +93,13 @@ internal static class NoteCommands
         var dryRun = new Option<bool>("--dry-run")
         {
             Description = "Show the commands that would be sent, without sending them.",
+        };
+
+        var allowUnknownEnum = new Option<bool>("--allow-unknown-enum")
+        {
+            Description = "Pass --duration/--grid through even when the vocabulary extracted from Dorico's "
+                + "binary does not hold the value. The vocabulary is a string scan of one build, so it can miss "
+                + "a spelling that is real.",
         };
 
         var fromStart = new Option<bool>("--from-start")
@@ -156,6 +165,7 @@ internal static class NoteCommands
             mode,
             stay,
             dryRun,
+            allowUnknownEnum,
             fromStart,
             read,
             readTo,
@@ -296,16 +306,28 @@ internal static class NoteCommands
             }
 
             var durationValue = parse.GetValue(duration);
+            var gridValue = parse.GetValue(grid);
+            var allowUnknown = parse.GetValue(allowUnknownEnum);
+
+            // The two enum-valued arguments are checked here, before the host is asked to do anything: Dorico
+            // accepts an unknown grid resolution and silently keeps the old one, and `--duration` reaches the
+            // host's own note-value table, so a typo there should not need a round trip to be refused.
+            var vocabulary = EnumVocabulary.Shared;
+            var lookedAt = new List<(string Key, string Value, VocabularyVerdict Verdict)>();
 
             if (!string.IsNullOrWhiteSpace(durationValue))
             {
+                // The parameter the value ends up in; the binary spells it out as
+                // NoteInput.NoteValue?LogDuration=kCrotchet.
+                vocabulary.Refuse("--duration", "LogDuration", durationValue, allowUnknown);
+                lookedAt.Add(("LogDuration", durationValue, vocabulary.Check(durationValue)));
                 args["duration"] = durationValue;
             }
 
-            var gridValue = parse.GetValue(grid);
-
             if (!string.IsNullOrWhiteSpace(gridValue))
             {
+                vocabulary.Refuse("--grid", "RhythmicGridResolutionValue", gridValue, allowUnknown);
+                lookedAt.Add(("RhythmicGridResolutionValue", gridValue, vocabulary.Check(gridValue)));
                 args["grid"] = gridValue;
             }
 
@@ -362,6 +384,11 @@ internal static class NoteCommands
             var payload = await HostClient
                 .CallAsync(HostProtocol.OpNoteInsert, args, budget, CancellationToken.None)
                 .ConfigureAwait(false);
+
+            if (lookedAt.Count > 0)
+            {
+                payload["vocabulary"] = vocabulary.Describe(lookedAt);
+            }
 
             // A dry run sends and writes nothing, so there is no file to wait for: skip the read half instead of
             // blocking on a copy that will never appear.
