@@ -177,6 +177,11 @@ agent shell ──> dorico-use <command>  ──JSON lines over \\.\pipe\dorico-
 1. **Done** — lean WebSocket client (request/response pairing, status merging), session store, `session` group.
 2. **Done** — host process, pipe protocol, `host` group, `command send|list|info`, `raw send`, `session events`.
 3. **Done** — `project`, `options`, `library`, `playback`, `properties` and `note insert`, all verified live.
-4. **Next** — chords and tuplets in `note insert`, a cached catalogue so `command list` works with Dorico closed,
-   `File.Export` for reading a score back, and staff-aware note entry once the API offers a way to address a
-   stave.
+4. **Next** — chords and tuplets in `note insert`, `File.Export` for reading a score back, and staff-aware note
+   entry once the API offers a way to address a stave.
+
+Deliberately **not** planned: a cached command catalogue, on disk or otherwise. Dorico answers `getcommands` in
+4 ms (98 KB, 1090 commands) and a `command list` call costs about 86 ms end to end, nearly all of it process
+start-up — so a cache would save ~5 ms. Worse, the catalogue is version- and edition-specific: serving a snapshot
+while Dorico is closed would hand an agent a list that the Dorico it later talks to may not have. When Dorico is
+not reachable, failing is the honest answer.
