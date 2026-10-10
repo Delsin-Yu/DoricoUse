@@ -4,6 +4,7 @@ using System.Text.Json.Nodes;
 using System.Xml.Linq;
 using DoricoUse.Cli.Dorico;
 using DoricoUse.Cli.Json;
+using DoricoUse.Cli.Ui;
 
 namespace DoricoUse.Cli.Views;
 
@@ -95,7 +96,17 @@ internal static class ExportView
     /// reading took. <paramref name="WaitedMs"/> is the budget that was asked for, so <c>--wait-ms 0</c> shows up
     /// as one check and no budget rather than as a fast failure that pretended to wait.
     /// </summary>
-    public readonly record struct WatchResult(List<FileStamp> Files, int Checks, int WaitedMs, long ElapsedMs);
+    /// <param name="Dialog">
+    /// The modal dialog the watch found while it was waiting, or null. This is where a dialog is most likely to
+    /// appear — the export opens one — and the caller has to be told, because Dorico's queue is stalled for as long
+    /// as it is up. Null means the watch never saw one; it does not promise that none was up before it started.
+    /// </param>
+    public readonly record struct WatchResult(
+        List<FileStamp> Files,
+        int Checks,
+        int WaitedMs,
+        long ElapsedMs,
+        JsonObject? Dialog);
 
     /// <summary>
     /// Dorico's own settings, read from disk. They are the only place a client can learn anything about where the
@@ -385,7 +396,7 @@ internal static class ExportView
 
         files.Sort((left, right) => string.Compare(left.Name, right.Name, StringComparison.OrdinalIgnoreCase));
 
-        return new WatchResult(files, 1, 0, (long)Stopwatch.GetElapsedTime(started).TotalMilliseconds);
+        return new WatchResult(files, 1, 0, (long)Stopwatch.GetElapsedTime(started).TotalMilliseconds, DialogSurface.Peek());
     }
 
     /// <summary>
@@ -402,6 +413,7 @@ internal static class ExportView
     {
         var started = Stopwatch.GetTimestamp();
         var deadline = DateTime.UtcNow + budget;
+        JsonObject? dialog = null;
         var stable = new Dictionary<string, FileStamp>(StringComparer.OrdinalIgnoreCase);
         var found = new Dictionary<string, FileStamp>(StringComparer.OrdinalIgnoreCase);
         var lastChange = DateTime.UtcNow;
@@ -411,6 +423,10 @@ internal static class ExportView
         {
             checks++;
             var changed = false;
+
+            // Probed while waiting, because that is exactly when Dorico raises the dialog this export opens: a
+            // dialog found here is reported even when it is answered before the watch ends.
+            dialog ??= DialogSurface.Peek();
 
             foreach (var current in ScanOnce(directory, patterns, before))
             {
@@ -457,7 +473,8 @@ internal static class ExportView
             [.. found.Values.OrderBy(stamp => stamp.Name, StringComparer.OrdinalIgnoreCase)],
             checks,
             (int)budget.TotalMilliseconds,
-            (long)Stopwatch.GetElapsedTime(started).TotalMilliseconds);
+            (long)Stopwatch.GetElapsedTime(started).TotalMilliseconds,
+            dialog);
     }
 
     /// <summary>The MusicXML report: the receipt, the watched folder, the destination, and the files that are
@@ -492,6 +509,7 @@ internal static class ExportView
                 ["files"] = Files(watch.Files),
                 ["destination"] = DestinationJson(preferences),
                 ["commandQueue"] = commandQueue,
+                ["dialogWhileWaiting"] = watch.Dialog,
                 ["confirmation"] = Confirmation(directory, preferences),
             },
         };

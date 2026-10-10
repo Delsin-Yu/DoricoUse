@@ -3,6 +3,7 @@ using System.IO.Pipes;
 using System.Text;
 using System.Text.Json.Nodes;
 using DoricoUse.Cli.Dorico;
+using DoricoUse.Cli.Ui;
 
 namespace DoricoUse.Cli.Ipc;
 
@@ -31,17 +32,30 @@ internal static class HostClient
     }
 
     /// <summary>Sends one request and unwraps the payload, turning a host error into a CLI error.</summary>
+    /// <remarks>
+    /// A request that carries a Dorico command is reported to the execution tracker, with what Dorico answered:
+    /// that pair is what lets the payload say whether the command ran, was queued behind a dialog, or was refused
+    /// outright. The tracker is told after the answer, because a request the host itself refused never posted
+    /// anything and must not look like a command Dorico ignored.
+    /// </remarks>
     public static async Task<JsonObject> CallAsync(
         string op,
         JsonObject? args,
         TimeSpan timeout,
         CancellationToken cancellationToken)
     {
+        var sent = op == HostProtocol.OpCommand ? NodeRead.Str(args, "name") : null;
         var response = await SendAsync(op, args, timeout, cancellationToken).ConfigureAwait(false);
 
         if (NodeRead.Bool(response, "ok") == true)
         {
-            return NodeRead.Obj(response, "payload") ?? [];
+            var payload = NodeRead.Obj(response, "payload") ?? [];
+            var answer = NodeRead.Obj(payload, "result") ?? payload;
+
+            DialogSurface.MarkCommand(sent);
+            DialogSurface.AcknowledgeCommand(sent, NodeRead.Str(answer, "ack"));
+
+            return payload;
         }
 
         var error = NodeRead.Obj(response, "error") ?? [];

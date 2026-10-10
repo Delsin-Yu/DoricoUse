@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Text;
 using System.Text.Json.Nodes;
+using DoricoUse.Cli.Ui;
 
 namespace DoricoUse.Cli.Dorico;
 
@@ -175,7 +176,7 @@ internal sealed class LiveRead
                 expectScore)
             .ConfigureAwait(false);
 
-        var lines = await WaitForDumpAsync(timeout, cancellationToken).ConfigureAwait(false);
+        var dump = await WaitForDumpAsync(timeout, cancellationToken).ConfigureAwait(false);
 
         try
         {
@@ -186,7 +187,12 @@ internal sealed class LiveRead
             // A leftover script in the temporary folder is harmless.
         }
 
-        var payload = LiveReadDump.Parse(lines, noteLimit);
+        var payload = LiveReadDump.Parse(dump.Lines, noteLimit);
+
+        // The wait is where a dialog shows up: the script is queued behind one and the file never appears. Saying
+        // which dialog it was, and which button answers it, is the difference between a mystery and one extra
+        // command for the agent.
+        payload["dialogWhileWaiting"] = dump.Dialog;
 
         payload["script"] = new JsonObject
         {
@@ -200,15 +206,21 @@ internal sealed class LiveRead
         return payload;
     }
 
-    private static async Task<string[]> WaitForDumpAsync(TimeSpan timeout, CancellationToken cancellationToken)
+    /// <summary>What the wait for the script's output file saw: the lines, and the dialog that was up during it.</summary>
+    private sealed record Dump(string[] Lines, JsonObject? Dialog);
+
+    private static async Task<Dump> WaitForDumpAsync(TimeSpan timeout, CancellationToken cancellationToken)
     {
         var deadline = DateTimeOffset.UtcNow + timeout;
         var quiet = 0;
         long previous = -1;
+        JsonObject? dialog = null;
 
         while (DateTimeOffset.UtcNow < deadline)
         {
             await Task.Delay(100, cancellationToken).ConfigureAwait(false);
+
+            dialog ??= DialogSurface.Peek();
 
             if (!File.Exists(OutputPath))
             {
@@ -223,7 +235,9 @@ internal sealed class LiveRead
                 {
                     try
                     {
-                        return await File.ReadAllLinesAsync(OutputPath, cancellationToken).ConfigureAwait(false);
+                        return new Dump(
+                            await File.ReadAllLinesAsync(OutputPath, cancellationToken).ConfigureAwait(false),
+                            dialog);
                     }
                     catch (IOException ex)
                     {

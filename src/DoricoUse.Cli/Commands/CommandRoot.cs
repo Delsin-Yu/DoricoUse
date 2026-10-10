@@ -2,6 +2,7 @@ using System.CommandLine;
 using System.Text.Json.Nodes;
 using DoricoUse.Cli.Dorico;
 using DoricoUse.Cli.Json;
+using DoricoUse.Cli.Ui;
 
 namespace DoricoUse.Cli.Commands;
 
@@ -21,6 +22,7 @@ internal static class CommandRoot
         root.Subcommands.Add(NoteCommands.Build());
         root.Subcommands.Add(ExportCommands.Build());
         root.Subcommands.Add(FileCommands.Build());
+        root.Subcommands.Add(UiCommands.Build());
         root.Subcommands.Add(VersionCommands.Build());
         return root;
     }
@@ -99,22 +101,36 @@ internal static class CommandRoot
     /// </param>
     internal static int RunAsync(string command, Func<Task<JsonObject>> action, bool silent = false)
     {
+        if (silent)
+        {
+            try
+            {
+                _ = action().GetAwaiter().GetResult();
+
+                return 0;
+            }
+            catch (Exception ex)
+            {
+                WriteErrorIfAttached(ex);
+
+                return ex is CliException cli ? cli.ExitCode : 2;
+            }
+        }
+
+        // Every command passes through here, so every payload says whether a dialog is up and whether the command
+        // it posted actually ran. The two facts are gathered after the action, because that is when the answer
+        // exists; `dialog` is present even when it is null, which is what "nothing is modal" looks like.
+        DialogSurface.Begin();
+
         try
         {
             var payload = action().GetAwaiter().GetResult();
 
-            return silent ? 0 : ResponseWriter.Success(command, payload);
+            return ResponseWriter.Success(command, payload, DialogSurface.Extras(payload.ContainsKey("dialog")));
         }
         catch (Exception ex)
         {
-            if (!silent)
-            {
-                return ResponseWriter.Fail(command, ex);
-            }
-
-            WriteErrorIfAttached(ex);
-
-            return ex is CliException cli ? cli.ExitCode : 2;
+            return ResponseWriter.Fail(command, ex, DialogSurface.Extras());
         }
     }
 

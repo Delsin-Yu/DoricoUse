@@ -21,7 +21,7 @@ internal static class ResponseWriter
         Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
     };
 
-    public static int Success(string command, JsonObject? payload = null)
+    public static int Success(string command, JsonObject? payload = null, JsonObject? extras = null)
     {
         var root = new JsonObject
         {
@@ -37,15 +37,18 @@ internal static class ResponseWriter
             }
         }
 
+        Merge(root, extras);
         Write(root);
         return 0;
     }
 
-    public static int Fail(string command, Exception error)
+    public static int Fail(string command, Exception error, JsonObject? extras = null)
     {
         if (error is CliException cli)
         {
-            Write(Error(command, cli.Code, cli.Message, null, cli.Details, null));
+            var failure = Error(command, cli.Code, cli.Message, null, cli.Details, null);
+            Merge(failure, extras);
+            Write(failure);
             return cli.ExitCode;
         }
 
@@ -55,8 +58,30 @@ internal static class ResponseWriter
             ? error.ToString()
             : null;
 
-        Write(Error(command, "RuntimeError", error.Message, null, null, stack));
+        var report = Error(command, "RuntimeError", error.Message, null, null, stack);
+        Merge(report, extras);
+        Write(report);
         return 2;
+    }
+
+    /// <summary>
+    /// Adds the fields a command did not set itself — today the dialog probe and the command-queue verdict. A field
+    /// the payload already carries wins: <c>ui press</c> reports its own <c>dialog</c>, and it is the better answer.
+    /// </summary>
+    private static void Merge(JsonObject root, JsonObject? extras)
+    {
+        if (extras is null)
+        {
+            return;
+        }
+
+        foreach (var (key, value) in extras)
+        {
+            if (!root.ContainsKey(key))
+            {
+                root[key] = value?.DeepClone();
+            }
+        }
     }
 
     /// <summary>Set this to anything to have unexpected failures carry their stack trace in <c>error.data.stack</c>.</summary>

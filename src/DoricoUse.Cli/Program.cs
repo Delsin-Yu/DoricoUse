@@ -20,6 +20,7 @@ internal static class Program
         "note",
         "export",
         "file",
+        "ui",
         "version",
     ];
 

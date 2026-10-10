@@ -13,9 +13,11 @@ namespace DoricoUse.Cli.Commands;
 /// What this build is, where it keeps its state and which protocol constants it speaks.
 /// </summary>
 /// <remarks>
-/// The one command that always answers. It opens no pipe, starts no host, touches neither Dorico nor the network
+/// The one command that always answers. It opens no pipe, starts no host, contacts neither Dorico nor the network,
 /// and creates nothing on disk, so an agent can ask "which dorico-use is this, is it the Native AOT build, and
-/// where does it keep its session?" before anything else works — with Dorico closed and no host running.
+/// where does it keep its session?" before anything else works — with Dorico closed and no host running. The one
+/// thing outside itself it looks at is Dorico's windows, for the <c>dialog</c> field every payload carries; that
+/// needs no Dorico to answer and changes nothing.
 /// </remarks>
 internal static class VersionCommands
 {
@@ -57,9 +59,14 @@ internal static class VersionCommands
         ["edition"] = "Pro",
         ["platform"] = "windows",
         ["api"] = $"Remote Control handshake {DoricoProtocol.HandshakeVersion}",
-        ["note"] = "Only this combination is tested. The CLI uses no Windows-only API, so a macOS port is a "
-            + "contribution rather than a rewrite; other Dorico editions differ in which commands and options they "
-            + "accept and are untested.",
+
+        // A statement and not a flag: there is no compiler switch for the dialog surface, so a boolean would be a
+        // constant that tells nobody anything. What a build can be asked for is reported under `version.build`.
+        ["uiAutomation"] = "windows: Win32 dialog probe + UI Automation, always present in this build",
+        ["note"] = "Only this combination is tested. The pipe, the WebSocket and the file decoder are plain .NET, "
+            + "but reading Dorico's modal dialogs and pressing their buttons is Windows-only code that every "
+            + "build carries, so a macOS port has to exclude or replace that surface rather than add to it. Other "
+            + "Dorico editions differ in which commands and options they accept and are untested.",
     };
 
     private static JsonObject BuildInfo()

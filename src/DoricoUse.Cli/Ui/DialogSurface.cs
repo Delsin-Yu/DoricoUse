@@ -1,0 +1,347 @@
+using System.Diagnostics;
+using System.Globalization;
+using System.Text.Json.Nodes;
+using DoricoUse.Cli.Dorico;
+
+namespace DoricoUse.Cli.Ui;
+
+/// <summary>
+/// The one place a dialog is looked at, and the one place an invocation decides what to report about it.
+/// </summary>
+/// <remarks>
+/// <para>
+/// Every command's payload passes through <see cref="Extras"/> on its way out, so no command can forget to say that
+/// a dialog is up. The cost is only paid when there is something to say: the presence probe is cheap Win32, and the
+/// UI Automation read behind it runs only when a window is actually modal.
+/// </para>
+/// <para>
+/// The <c>dialog</c> field is always present — <c>null</c> when nothing is modal — and the <c>execution</c> field
+/// only appears when this invocation posted something to Dorico, because that is when it has something to say.
+/// </para>
+/// </remarks>
+internal static class DialogSurface
+{
+    /// <summary>How often a wait loop may look: often enough to catch a dialog, rare enough to be free.</summary>
+    private static readonly TimeSpan PeekInterval = TimeSpan.FromMilliseconds(400);
+
+    /// <summary>How long <c>ui press --timeout-ms</c> waits for its dialog by default.</summary>
+    public const int DefaultPressTimeoutMs = 0;
+
+    private static long lastPeek;
+    private static JsonObject? peeked;
+
+    /// <summary>Starts the execution log and the dialog probe for one invocation.</summary>
+    public static void Begin() => LogQueue.Begin();
+
+    /// <summary>Records a command this invocation sent to Dorico, so the log can be asked what became of it.</summary>
+    public static void MarkCommand(string? name)
+    {
+        if (!string.IsNullOrWhiteSpace(name))
+        {
+            LogQueue.Mark(name);
+        }
+    }
+
+    /// <summary>Records Dorico's answer, which is what tells "never posted" apart from "posted but not run".</summary>
+    public static void AcknowledgeCommand(string? name, string? ack)
+    {
+        if (!string.IsNullOrWhiteSpace(name))
+        {
+            LogQueue.Acknowledge(name, ack);
+        }
+    }
+
+    /// <summary>
+    /// What this invocation has to say about Dorico's dialogs and its command queue, ready to be merged into the
+    /// payload. Always carries <c>dialog</c>, null when nothing is modal.
+    /// </summary>
+    /// <param name="dialogOwned">
+    /// True when the command's own payload already carries <c>dialog</c> — <c>ui dialog</c> and <c>ui press</c> do,
+    /// and theirs is the better answer, so the probe is not repeated here.
+    /// </param>
+    public static JsonObject Extras(bool dialogOwned = false)
+    {
+        var extras = new JsonObject();
+        var execution = LogQueue.Verdict(LogQueue.DefaultBudget);
+
+        if (execution is not null)
+        {
+            extras["execution"] = execution;
+        }
+
+        if (!dialogOwned)
+        {
+            extras["dialog"] = Current();
+        }
+
+        return extras;
+    }
+
+    /// <summary>The dialog that is up right now, or null, without waiting.</summary>
+    public static JsonObject? Current() => Describe(DialogProbe.Probe(), raw: false, out _);
+
+    /// <summary>
+    /// Probes while a caller is waiting for something else, at most once every <see cref="PeekInterval"/>. Once a
+    /// dialog has been seen it is kept, because what a wait loop has to report is that a dialog <b>was</b> there.
+    /// </summary>
+    public static JsonObject? Peek()
+    {
+        if (peeked is not null)
+        {
+            return peeked;
+        }
+
+        var now = Stopwatch.GetTimestamp();
+
+        if (lastPeek != 0 && Stopwatch.GetElapsedTime(lastPeek).TotalMilliseconds < PeekInterval.TotalMilliseconds)
+        {
+            return null;
+        }
+
+        lastPeek = now;
+        peeked = Current();
+
+        return peeked;
+    }
+
+    /// <summary>Reads the dialog that is up, for <c>ui dialog</c>.</summary>
+    /// <param name="raw">True to include every UI Automation element the read walked.</param>
+    /// <param name="probe">The presence probe's own cost, whether or not a dialog was found.</param>
+    public static JsonObject? Read(bool raw, out JsonObject probe)
+    {
+        var presence = DialogProbe.Probe();
+        var dialog = Describe(presence, raw, out _);
+
+        probe = DialogModel.ProbePayload(new DialogProbeInfo(
+            How: dialog is null ? presence.How : presence.How + "+uia",
+            Milliseconds: presence.Milliseconds,
+            Degraded: presence.Degraded,
+            Error: presence.Error));
+
+        return dialog;
+    }
+
+    /// <summary>
+    /// Presses one button, after re-probing: the dialog named must be the one that is up, or the press refuses.
+    /// </summary>
+    /// <param name="dialogId">The <c>dialog.id</c> the caller named.</param>
+    /// <param name="buttonId">The <c>button.id</c> the caller named.</param>
+    /// <param name="allowUnknownDialog">True when <c>--allow-unknown-dialog</c> was passed.</param>
+    /// <param name="allowDestructive">True when <c>--allow-destructive</c> was passed.</param>
+    /// <param name="path">A value to write into a picker's file-name box first, or null.</param>
+    /// <param name="timeoutMs">How long to wait for the named dialog to appear, in milliseconds.</param>
+    public static JsonObject Press(
+        string dialogId,
+        string buttonId,
+        bool allowUnknownDialog,
+        bool allowDestructive,
+        string? path,
+        int timeoutMs)
+    {
+        var presence = WaitForDialog(timeoutMs);
+        var window = presence.Dialog
+            ?? throw new CliException(
+                "DialogNotFound",
+                $"Nothing is modal in Dorico, so there is no '{dialogId}' to press '{buttonId}' in. A dialog can be "
+                + "raised by a command in another invocation; `ui dialog` reads the current state.",
+                DialogModel.RefusalExitCode)
+            {
+                Details = new JsonObject
+                {
+                    ["requestedDialog"] = dialogId,
+                    ["requestedButton"] = buttonId,
+                    ["probe"] = DialogModel.ProbePayload(new DialogProbeInfo(presence.How, presence.Milliseconds, presence.Degraded, presence.Error)),
+                },
+            };
+
+        var owner = Format(window.Owner);
+        var started = Stopwatch.GetTimestamp();
+        DialogRead read;
+
+        try
+        {
+            read = DialogReader.Read(window.Handle, window.Title, window.WindowClass, owner, raw: false);
+        }
+        catch (Exception ex)
+        {
+            throw new CliException(
+                "DialogProbeFailed",
+                $"The dialog '{window.Title}' is up but could not be read through UI Automation ({ex.Message}), so "
+                + "no button can be identified and nothing was pressed.",
+                DialogModel.ProbeFailureExitCode)
+            {
+                Details = new JsonObject
+                {
+                    ["title"] = window.Title,
+                    ["class"] = window.WindowClass,
+                },
+            };
+        }
+
+        try
+        {
+            var description = DialogModel.Describe(read.Input);
+
+            if (!string.Equals(description.Id, dialogId, StringComparison.Ordinal))
+            {
+                throw new CliException(
+                    "WrongDialog",
+                    $"The dialog that is up is '{description.Id}' ('{description.Title}'), not '{dialogId}'. Pressing "
+                    + "the button by id would have acted on the wrong dialog, so nothing was pressed. `ui dialog` "
+                    + "reads what is up now.",
+                    DialogModel.RefusalExitCode)
+                {
+                    Details = new JsonObject
+                    {
+                        ["requested"] = dialogId,
+                        ["actual"] = description.Id,
+                        ["title"] = description.Title,
+                        ["buttons"] = DialogModel.Payload(description, new DialogProbeInfo(presence.How, presence.Milliseconds))["buttons"]?.DeepClone(),
+                    },
+                };
+            }
+
+            var button = DialogModel.Authorize(description, buttonId, allowUnknownDialog, allowDestructive);
+            var index = IndexOf(description, button.Id);
+            var picker = path is null ? null : FilePicker.Fill(window.Handle, path);
+            var outcome = DialogPresser.Press(read.ButtonElements[index]);
+
+            var pressed = new JsonObject
+            {
+                ["dialog"] = description.Id,
+                ["button"] = button.Id,
+                ["name"] = button.Name,
+                ["alias"] = button.Alias,
+                ["role"] = button.Role,
+                ["pattern"] = outcome.Pattern,
+                ["elementGone"] = outcome.ElementGone,
+                ["note"] = outcome.ElementGone
+                    ? "The press reported that the element had gone while it was pressed (UIA_E_ELEMENTNOTAVAILABLE). "
+                        + "That is what a press which closes its own window does, measured on the library manager's "
+                        + "关闭 button, so it is a success and not a failure. The `dialog` field below is the "
+                        + "re-probe and is the only evidence."
+                    : "The press reported success. That is not evidence either: the `dialog` field below is the "
+                        + "re-probe of what is up now.",
+            };
+
+            var result = new JsonObject { ["pressed"] = pressed };
+
+            if (picker is not null)
+            {
+                result["picker"] = picker;
+            }
+
+            // Two probes, not one: the win32 presence probe is cheap and always answers, and the read behind it is
+            // what names the dialog that replaced this one.
+            var after = Describe(DialogProbe.Probe(), raw: false, out _);
+
+            result["dialog"] = after;
+            pressed["afterDialog"] = after is null ? null : NodeRead.Str(after, "id");
+            pressed["readMs"] = (long)Stopwatch.GetElapsedTime(started).TotalMilliseconds;
+
+            return result;
+        }
+        finally
+        {
+            DialogPresser.ReleaseAll(read.ButtonElements);
+        }
+    }
+
+    private static int IndexOf(DialogDescription description, string buttonId)
+    {
+        for (var index = 0; index < description.Buttons.Count; index++)
+        {
+            if (string.Equals(description.Buttons[index].Id, buttonId, StringComparison.Ordinal))
+            {
+                return index;
+            }
+        }
+
+        // Authorize has already refused an id that is not there, so this cannot happen.
+        throw new CliException("ButtonNotFound", $"No button '{buttonId}' in '{description.Id}'.", DialogModel.RefusalExitCode);
+    }
+
+    private static DialogPresence WaitForDialog(int timeoutMs)
+    {
+        var deadline = Stopwatch.GetTimestamp() + (long)(Math.Max(0, timeoutMs) * (double)Stopwatch.Frequency / 1000);
+        DialogPresence presence;
+
+        do
+        {
+            presence = DialogProbe.Probe();
+
+            if (presence.Dialog is not null || Stopwatch.GetTimestamp() >= deadline)
+            {
+                return presence;
+            }
+
+            Thread.Sleep(150);
+        }
+        while (true);
+    }
+
+    /// <summary>
+    /// The <c>dialog</c> object for one probe result: the window facts, the UI Automation read behind them, and what
+    /// the read cost. A read that fails still reports the window, because knowing a dialog is up matters even when
+    /// its content cannot be read.
+    /// </summary>
+    private static JsonObject? Describe(DialogPresence presence, bool raw, out bool truncated)
+    {
+        truncated = false;
+
+        if (presence.Dialog is not { } window)
+        {
+            return null;
+        }
+
+        var owner = Format(window.Owner);
+        var started = Stopwatch.GetTimestamp();
+
+        try
+        {
+            var read = DialogReader.Read(window.Handle, window.Title, window.WindowClass, owner, raw);
+            truncated = read.Truncated;
+
+            try
+            {
+                var description = DialogModel.Describe(read.Input);
+                var probe = new DialogProbeInfo(
+                    How: "win32+uia",
+                    Milliseconds: presence.Milliseconds + (long)Stopwatch.GetElapsedTime(started).TotalMilliseconds,
+                    Degraded: false,
+                    Error: null,
+                    Nodes: read.Nodes,
+                    Truncated: read.Truncated);
+
+                var payload = DialogModel.Payload(description, probe);
+
+                if (raw && read.Raw is not null)
+                {
+                    payload["elements"] = read.Raw;
+                }
+
+                return payload;
+            }
+            finally
+            {
+                DialogPresser.ReleaseAll(read.ButtonElements);
+            }
+        }
+        catch (Exception ex)
+        {
+            // The window is modal, so it is reported with what Win32 knows and no buttons. Everything that could
+            // not be read is named in probe.error rather than hidden behind an empty dialog.
+            var description = DialogModel.Describe(DialogReader.Empty(window.Title, window.WindowClass, owner));
+            var probe = new DialogProbeInfo(
+                How: presence.How,
+                Milliseconds: presence.Milliseconds + (long)Stopwatch.GetElapsedTime(started).TotalMilliseconds,
+                Degraded: true,
+                Error: ex.Message);
+
+            return DialogModel.Payload(description, probe);
+        }
+    }
+
+    private static string? Format(nint handle)
+        => handle == nint.Zero ? null : "0x" + ((long)handle).ToString("X8", CultureInfo.InvariantCulture);
+}
