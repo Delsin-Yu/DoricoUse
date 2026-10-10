@@ -19,6 +19,8 @@ internal static class CommandRoot
         root.Subcommands.Add(ScoreCommands.BuildPlayback());
         root.Subcommands.Add(ScoreCommands.BuildProperties());
         root.Subcommands.Add(NoteCommands.Build());
+        root.Subcommands.Add(ExportCommands.Build());
+        root.Subcommands.Add(FileCommands.Build());
         return root;
     }
 

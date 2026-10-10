@@ -350,19 +350,27 @@ internal sealed class HostServer(HostOptions options, HostLog log)
     private async Task<JsonObject> NoteInsertAsync(JsonObject args, TimeSpan timeout)
     {
         var notes = ReadStringArray(args, "notes");
+        var chords = ReadChordGroups(args, "chords");
         var rest = NodeRead.Bool(args, "rest") ?? false;
         var duration = NodeRead.Str(args, "duration");
         var grid = NodeRead.Str(args, "grid");
+        var tuplet = NodeRead.Str(args, "tuplet");
+        var staff = ReadStringArray(args, "staff");
         var exit = NodeRead.Bool(args, "exit") ?? true;
         var waitMs = Math.Clamp(NodeRead.Long(args, "waitMs") ?? 0, 0, 120_000);
         var verify = NodeRead.Bool(args, "verify") ?? true;
         var dryRun = NodeRead.Bool(args, "dryRun") ?? false;
 
-        if (notes.Count == 0 && !rest)
+        // `notes` is the flat list (the original contract); `chords` is the same thing grouped, one entry per
+        // rhythmic position. A version of the CLI that predates chords sends only `notes`, so it still works.
+        var events = chords.Count > 0 ? chords : notes.Select(note => new List<string> { note }).ToList();
+        var chordCount = events.Count(group => group.Count > 1);
+
+        if (events.Count == 0 && !rest)
         {
             throw new CliException(
                 "InvalidArgument",
-                "note insert needs notes (--pitch/--octave or --notes) or --rest.",
+                "note insert needs notes (--pitch/--octave, --notes or --chord) or --rest.",
                 1);
         }
 
@@ -389,25 +397,87 @@ internal sealed class HostServer(HostOptions options, HostLog log)
             steps.Add(new Step("NoteInput.SetGridResolution", [new("RhythmicGridResolutionValue", grid)]));
         }
 
-        foreach (var text in notes)
+        var staffSteps = new List<Step>();
+
+        foreach (var move in staff)
         {
-            if (!NoteName.TryParse(text, out var pitch, out var octave, out var accidental))
+            if (!NoteStaff.TryResolve(move, out var staffCommand))
             {
                 throw new CliException(
                     "InvalidArgument",
-                    $"Could not read the note name '{text}'. Write it like F#5, Bb4 or C4.",
+                    $"'{move}' is not a stave move. Use {NoteStaff.Names()}.",
                     1);
             }
 
-            if (accidental is not null)
+            staffSteps.Add(new Step(staffCommand));
+        }
+
+        steps.AddRange(staffSteps);
+
+        string? resolvedTuplet = null;
+
+        if (!string.IsNullOrWhiteSpace(tuplet))
+        {
+            if (!NoteTuplet.TryResolve(tuplet, out resolvedTuplet))
             {
-                steps.Add(new Step("NoteInput.SetAccidental", [new("Type", accidental)]));
+                throw new CliException(
+                    "InvalidArgument",
+                    $"'{tuplet}' is not a tuplet definition. Use {NoteTuplet.Names()}.",
+                    1);
             }
 
-            steps.Add(new Step("NoteInput.Pitch", [new("Pitch", pitch), new("OctaveValue", Invariant(octave))]));
+            // Opening the run before the first note is what makes the following notes a tuplet.
+            steps.Add(new Step("NoteInput.StartTupletRun", [new("Definition", resolvedTuplet)]));
+        }
 
-            // No advance here: NoteInput.Pitch commits the note and moves the caret on by the current note value.
-            // Sending MoveAdvance as well would insert a rest after every note.
+        foreach (var group in events)
+        {
+            var parsed = new List<(string Pitch, int Octave, string? Accidental)>();
+
+            foreach (var text in group)
+            {
+                if (!NoteName.TryParse(text, out var pitch, out var octave, out var accidental))
+                {
+                    throw new CliException(
+                        "InvalidArgument",
+                        $"Could not read the note name '{text}'. Write it like F#5, Bb4 or C4.",
+                        1);
+                }
+
+                parsed.Add((pitch, octave, accidental));
+            }
+
+            if (parsed.Count > 1)
+            {
+                // Chord input is a toggle in Dorico (the Q key), and the status does not report it, so the CLI
+                // opens it for the group and closes it again afterwards: a chord is one rhythmic position.
+                steps.Add(new Step("NoteInput.StartEndChord"));
+            }
+
+            foreach (var (pitch, octave, accidental) in parsed)
+            {
+                if (accidental is not null)
+                {
+                    steps.Add(new Step("NoteInput.SetAccidental", [new("Type", accidental)]));
+                }
+
+                steps.Add(new Step("NoteInput.Pitch", [new("Pitch", pitch), new("OctaveValue", Invariant(octave))]));
+
+                // No advance here: NoteInput.Pitch commits the note and moves the caret on by the current note
+                // value. Sending MoveAdvance as well would insert a rest after every note.
+            }
+
+            if (parsed.Count > 1)
+            {
+                steps.Add(new Step("NoteInput.StartEndChord"));
+            }
+        }
+
+        if (resolvedTuplet is not null)
+        {
+            // A tuplet run that the last note completed has already closed itself; this is what closes one the
+            // notes left open, and it is a no-op otherwise.
+            steps.Add(new Step("NoteInput.EndTupletRun"));
         }
 
         if (rest)
@@ -423,21 +493,31 @@ internal sealed class HostServer(HostOptions options, HostLog log)
 
         if (dryRun)
         {
-            return new JsonObject
+            var plan = new JsonObject
             {
-                ["note"] = new JsonObject
-                {
-                    ["dryRun"] = true,
-                    ["notes"] = NotesJson(notes),
-                    ["rest"] = rest,
-                    ["duration"] = resolvedDuration,
-                    ["grid"] = grid,
-                    ["steps"] = StepsJson(steps),
-                    ["enterDecision"] = "Note input needs Write mode, and NoteInput.Enter is a toggle, so both are "
-                        + "sent only when the status says they are needed. Run without --dry-run to see which ones "
-                        + "were.",
-                },
+                ["dryRun"] = true,
+                ["notes"] = NotesJson(notes),
+                ["rest"] = rest,
+                ["duration"] = resolvedDuration,
+                ["grid"] = grid,
+                ["tuplet"] = resolvedTuplet,
+                ["steps"] = StepsJson(steps),
+                ["enterDecision"] = "Note input needs Write mode, and NoteInput.Enter is a toggle, so both are "
+                    + "sent only when the status says they are needed. Run without --dry-run to see which ones "
+                    + "were.",
             };
+
+            if (chordCount > 0)
+            {
+                plan["chords"] = ChordsJson(events);
+            }
+
+            if (staff.Count > 0)
+            {
+                plan["staff"] = StaffJson(staff);
+            }
+
+            return new JsonObject { ["note"] = plan };
         }
 
         var stepTimeout = timeout < TimeSpan.FromSeconds(5) ? timeout : TimeSpan.FromSeconds(5);
@@ -508,11 +588,22 @@ internal sealed class HostServer(HostOptions options, HostLog log)
                 ["rest"] = rest,
                 ["duration"] = resolvedDuration,
                 ["grid"] = grid,
+                ["tuplet"] = resolvedTuplet,
                 ["enteredWriteMode"] = enteredWriteMode,
                 ["enteredNoteInput"] = enteredNoteInput,
                 ["steps"] = results,
                 ["roundTripMs"] = (long)Stopwatch.GetElapsedTime(started).TotalMilliseconds,
             };
+
+            if (chordCount > 0)
+            {
+                payload["chords"] = ChordsJson(events);
+            }
+
+            if (staff.Count > 0)
+            {
+                payload["staff"] = StaffJson(staff);
+            }
 
             if (stoppedAt is not null)
             {
@@ -602,6 +693,87 @@ internal sealed class HostServer(HostOptions options, HostLog log)
         }
 
         return json;
+    }
+
+    private static JsonArray ChordsJson(List<List<string>> events)
+    {
+        var json = new JsonArray();
+
+        foreach (var group in events)
+        {
+            var entry = new JsonArray();
+
+            foreach (var note in group)
+            {
+                JsonArr.AddText(entry, note);
+            }
+
+            JsonArr.AddNode(json, entry);
+        }
+
+        return json;
+    }
+
+    private static JsonArray StaffJson(List<string> staff)
+    {
+        var json = new JsonArray();
+
+        foreach (var move in staff)
+        {
+            JsonArr.AddText(json, move);
+        }
+
+        return json;
+    }
+
+    /// <summary>
+    /// Reads `chords`, the grouped form of `notes`: one inner array per rhythmic position, so an inner array of
+    /// two or more names is one chord.
+    /// </summary>
+    private static List<List<string>> ReadChordGroups(JsonObject args, string key)
+    {
+        var groups = new List<List<string>>();
+        var array = NodeRead.Arr(args, key);
+
+        if (array is null)
+        {
+            return groups;
+        }
+
+        foreach (var item in array)
+        {
+            if (item is JsonArray inner)
+            {
+                var group = new List<string>();
+
+                foreach (var note in inner)
+                {
+                    var text = NodeRead.Text(note);
+
+                    if (!string.IsNullOrWhiteSpace(text))
+                    {
+                        group.Add(text);
+                    }
+                }
+
+                if (group.Count > 0)
+                {
+                    groups.Add(group);
+                }
+
+                continue;
+            }
+
+            // Tolerate a flat list of names under the same key.
+            var single = NodeRead.Text(item);
+
+            if (!string.IsNullOrWhiteSpace(single))
+            {
+                groups.Add([single]);
+            }
+        }
+
+        return groups;
     }
 
     private static List<string> ReadStringArray(JsonObject args, string key)

@@ -18,6 +18,8 @@ internal static class Program
         "playback",
         "properties",
         "note",
+        "export",
+        "file",
     ];
 
     private static int Main(string[] args)

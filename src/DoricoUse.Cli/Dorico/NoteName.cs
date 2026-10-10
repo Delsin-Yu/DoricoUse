@@ -10,6 +10,9 @@ namespace DoricoUse.Cli.Dorico;
 /// </remarks>
 internal static class NoteName
 {
+    /// <summary>The separator that turns a run of note names into one chord: <c>"C4+E4+G4"</c>.</summary>
+    public const char ChordSeparator = '+';
+
     public static bool TryParse(string text, out string pitch, out int octave, out string? accidental)
     {
         pitch = string.Empty;
@@ -68,4 +71,36 @@ internal static class NoteName
         "bb" => "kDoubleFlat",
         _ => null,
     };
+
+    /// <summary>
+    /// Splits one token into the notes it names: <c>"C4"</c> is one note, <c>"C4+E4+G4"</c> is a chord of
+    /// three. A chord is written with <see cref="ChordSeparator"/> because that character never appears in a
+    /// note name, so the split is unambiguous.
+    /// </summary>
+    public static bool TryParseGroup(string text, out List<string> notes)
+    {
+        notes = [];
+
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return false;
+        }
+
+        var parts = text.Split(ChordSeparator, StringSplitOptions.TrimEntries);
+
+        foreach (var part in parts)
+        {
+            // Validate every member here, so a bad chord is rejected before anything is sent.
+            if (part.Length == 0 || !TryParse(part, out _, out _, out _))
+            {
+                notes = [];
+
+                return false;
+            }
+        }
+
+        notes = [.. parts];
+
+        return notes.Count > 0;
+    }
 }
