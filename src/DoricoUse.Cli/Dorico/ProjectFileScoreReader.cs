@@ -47,7 +47,14 @@ namespace DoricoUse.Cli.Dorico;
 /// <c>flow → blocks → block → events</c>. The block's <c>blockInstance</c> names the stream it sounds in, and the
 /// stream's <c>flowPlayer → flowPlayerInstrument → voiceStreamInfos / staveStreamInfos</c> chain names the player,
 /// the instrument and the stave. A note carries <c>position</c> and <c>duration</c> as exact rationals in
-/// <b>crotchets</b> (a 16th is <c>1/4</c>; a 4/4 bar is 4 of them) and <c>pitch</c> as a MIDI note number.
+/// <b>crotchets</b> (a 16th is <c>1/4</c>; a 4/4 bar is 4 of them) and <c>pitch</c> as a MIDI note number — the
+/// <b>sounding</b> pitch: a horn in F that reads a written B4 stores the E4 it sounds.
+/// </para>
+/// <para>
+/// <b>The letter a note is spelled with is a property of the event</b>: <c>propertyTable → entries → entry</c> writes
+/// <c>propertyType: kNoteSpelling, value: string: "B"</c>. That letter is the only notation the file stores about
+/// the pitch — there is no accidental beside it — and it is what lets a Bb be told from an A# at the same MIDI
+/// number. It is reported as <c>ProjectFileNote.Spelling</c>, exactly as the file writes it.
 /// </para>
 /// <para>
 /// <b>Bars are not stored.</b> A project stores bar divisions — time-signature events with positions — not bar
@@ -2051,7 +2058,8 @@ internal static class ProjectFileScoreReader
                         ? null
                         : instruments.GetValueOrDefault((stave.PlayerId.Value, stave.InstrumentId.Value)),
                     stave?.Stave,
-                    stave?.Voice));
+                    stave?.Voice,
+                    Spelling(note.Properties)));
             }
 
             var staves = _streamStaves.Values
@@ -2279,6 +2287,14 @@ internal static class ProjectFileScoreReader
         /// <summary>The MIDI number a note event writes, or null when the field is not one.</summary>
         private static int? Midi(string? pitch)
             => int.TryParse(pitch, NumberStyles.Integer, CultureInfo.InvariantCulture, out var value) ? value : null;
+
+        /// <summary>
+        /// The letter the score spells a note with: the note event's <c>kNoteSpelling</c> property, written as a
+        /// variant string holding a letter. It is reported exactly as the file writes it and is null when the event
+        /// states none — it is <i>read</i>, never derived from the MIDI number, which is the whole point of it.
+        /// </summary>
+        private static string? Spelling(List<PropertyDraft> properties)
+            => VariantText(Property(properties, "kNoteSpelling"));
 
         /// <summary>A property of an event, by the file's own name for it.</summary>
         private static string? Property(List<PropertyDraft> properties, string name)

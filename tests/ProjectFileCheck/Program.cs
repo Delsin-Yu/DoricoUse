@@ -167,6 +167,30 @@ else
             flute.All(note => note.Duration == "1/4"),
             string.Join(' ', flute.Select(note => note.Duration)));
 
+        // The spelling letter is the note property kNoteSpelling, read as its own field. It is what tells a Bb from
+        // an A# at the same MIDI number, which the name derived from the MIDI number cannot: the sixth note of this
+        // run is a B (i.e. a Bb5), and the derived name can only say A#5. That is the README's own example, now
+        // checkable as a field instead of a sentence.
+        Check(
+            "every note states the letter it is spelled with",
+            score.Notes.Count == 16002 && score.Notes.All(note => note.Spelling is not null),
+            score.Notes.Count(note => note.Spelling is null) + " without a letter");
+        Check(
+            "the letters are the seven note names and nothing else",
+            score.Notes.Select(note => note.Spelling!).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal)
+                .SequenceEqual(["A", "B", "C", "D", "E", "F", "G"]),
+            string.Join(',', score.Notes.Select(note => note.Spelling).Distinct(StringComparer.Ordinal).Order()));
+        Check(
+            "1666 notes are spelled with a letter the MIDI-derived name does not use",
+            score.Notes.Count(note => SharpLetter(note.Midi) != note.Spelling) == 1666,
+            score.Notes.Count(note => SharpLetter(note.Midi) != note.Spelling).ToString());
+
+        var sixth = flute[5];
+        Check(
+            "the flute run's sixth note is spelled B where the derived name says A#5",
+            sixth.Position == "29/4" && sixth.Pitch == "A#5" && sixth.Midi == 82 && sixth.Spelling == "B",
+            $"{sixth.Pitch} / {sixth.Spelling}");
+
         var bassoon = score.Notes.First(note => note.Player == "Bassoon 1");
         Check(
             "Bassoon 1 opens on a two-bar D3 (measure 1, position 0)",
@@ -521,8 +545,7 @@ else
         notes.Occurrences[0].Path == "kScore/flows/array/flow/blocks/array/block/events/NoteEventDefinition",
         notes.Occurrences[0].Path);
 
-    var lyricTable = ProjectFileTreeReader.Subtree(data, "LyricElementTableDefinition", 2, -1);
-    Check(
+    var lyricTable = ProjectFileTreeReader.Subtree(data, "LyricElementTableDefinition", 2, -1);    Check(
         "the empty lyric table is found where the flows keep their element tables",
         lyricTable.Matched == 1
         && lyricTable.Occurrences[0].Path
@@ -546,6 +569,16 @@ else
         "the tree sees as many dynamic events as the typed reader",
         dynamicEvents.Matched == 754 && dynamicEvents.Returned == 2 && dynamicEvents.Truncated,
         dynamicEvents.Matched.ToString());
+
+    // A grace note is a note event of its own kind, and it states a spelling letter too — which is why the file
+    // holds 16024 of them (the README's number) while the notes list, which does not report grace notes, accounts
+    // for 16002. The tree walker is what can show that: nothing else in the report reaches a grace note.
+    var graceNotes = ProjectFileTreeReader.Subtree(data, "GraceNoteEventDefinition", 4, -1);
+    Check(
+        "a grace note carries a spelling letter too: 22 of the 16024 kNoteSpelling properties in this file",
+        graceNotes.Matched == 22 && graceNotes.Returned == 22
+        && graceNotes.Occurrences.All(node => Carries(node, "kNoteSpelling")),
+        graceNotes.Matched.ToString());
 
     // A partial name is not a match — the query is exact, so that the answer is always the same shape of thing — and
     // the neighbourhood is what gives the caller the name to use.
@@ -869,6 +902,100 @@ else
         string.Join(' ', full.CastingOff.Select(field => field.Key)));
 }
 
+// ---------------------------------------------------------------- the spelling letter against the export
+
+Head($"the note spelling letter against Dorico's own export: {FourthCorpus}");
+
+// The MusicXML export that sits beside that project on disk. It carries the notation's own <step> per note, so the
+// letter this reader takes out of kNoteSpelling can be compared with a second source, note onset by note onset —
+// the same technique the dynamics and the slurs were checked with. MusicXML writes the *written* pitch, and the
+// file stores the sounding one, so the export's own <transpose> is applied first: that is what the element means
+// (sounding = written + chromatic + 12 x octave-change, and the sounding letter is the written letter shifted by
+// <diatonic> steps), and the parts it appears on are checked below.
+const string FourthExport = @"無限城への誘い - 总谱 - 01 無限城への誘い.musicxml";
+
+if (!File.Exists(FourthCorpus) || !File.Exists(FourthExport))
+{
+    Skip("the note spelling against Dorico's own export (the project or the export is not on this machine)");
+}
+else
+{
+    var score = ProjectFileReader.Open(FourthCorpus).Score;
+
+    var inFile = new Dictionary<string, List<string>>(StringComparer.Ordinal);
+
+    foreach (var note in score.Notes)
+    {
+        Onset(inFile, NormalizePlayer(note.Player ?? string.Empty), Rational.Parse(note.Position))
+            .Add((note.Spelling ?? "?") + ":" + note.Midi);
+    }
+
+    var export = ReadExport(FourthExport);
+
+    var filePlayers = inFile.Keys
+        .Select(key => key[..key.IndexOf('@', StringComparison.Ordinal)])
+        .ToHashSet(StringComparer.Ordinal);
+
+    Check(
+        "every instrument the file gives notes to is a part of the export",
+        filePlayers.Count == 25 && filePlayers.IsSubsetOf(export.Players),
+        $"{filePlayers.Count} players with notes against {export.Players.Count} parts");
+
+    Check(
+        "the export states the transposition of exactly the eight parts that need one",
+        export.Transpositions.Count == 8
+        && export.Transpositions["horn 1"] == (Diatonic: -4, Chromatic: -7, Octaves: 0)
+        && export.Transpositions["trumpet 2"] == (Diatonic: -1, Chromatic: -2, Octaves: 0)
+        && export.Transpositions["trumpet 3"] == (Diatonic: -1, Chromatic: -2, Octaves: 0)
+        && export.Transpositions["piccolo"] == (Diatonic: 0, Chromatic: 0, Octaves: 1)
+        && export.Transpositions["double bass"] == (Diatonic: 0, Chromatic: 0, Octaves: -1)
+        && !export.Transpositions.ContainsKey("violin i"),
+        string.Join(
+            ' ',
+            export.Transpositions.OrderBy(pair => pair.Key, StringComparer.Ordinal)
+                .Select(pair => pair.Key + "=" + pair.Value.Diatonic + "/" + pair.Value.Chromatic
+                    + "/" + pair.Value.Octaves)));
+
+    var inExport = export.Onsets;
+    var shared = inFile.Keys.Where(inExport.ContainsKey).ToList();
+    var differing = new List<string>();
+    var compared = 0;
+
+    foreach (var key in shared)
+    {
+        var mine = inFile[key];
+        var theirs = inExport[key];
+
+        mine.Sort(StringComparer.Ordinal);
+        theirs.Sort(StringComparer.Ordinal);
+        compared += mine.Count;
+
+        if (!mine.SequenceEqual(theirs, StringComparer.Ordinal))
+        {
+            differing.Add(key + " file [" + string.Join(',', mine) + "] export [" + string.Join(',', theirs) + "]");
+        }
+    }
+
+    Check(
+        "the file's pitched onsets are exactly the export's; the rest are its unpitched percussion",
+        shared.Count == 8316 && inFile.Count == 8445 && inExport.Count == 8316
+        && inFile.Count - shared.Count == 129 && export.Pitchless == 129,
+        $"{shared.Count} shared of {inFile.Count} in the file and {inExport.Count} in the export, "
+        + $"{export.Pitchless} pitchless in the export");
+
+    Check(
+        "every one of them agrees, letter for letter and sounding pitch for sounding pitch",
+        differing.Count == 0 && compared == 8476,
+        $"{compared} notes at {shared.Count} onsets, {differing.Count} differ: {differing.FirstOrDefault()}");
+
+    Check(
+        "the notes the export writes without a sounding pitch are the unpitched percussion",
+        export.Pitchless == 129 && score.Notes.Count - compared == 129,
+        $"{export.Pitchless} unpitched in the export, {score.Notes.Count - compared} not compared in the file");
+
+    Console.WriteLine();
+}
+
 // ---------------------------------------------------------------- the variant values and the families
 
 Head("the value encoding");
@@ -1025,9 +1152,218 @@ static string TechniqueId(ProjectFileNoteMark mark)
     return "pt." + char.ToLowerInvariant(value[1]) + value[2..];
 }
 
+/// <summary>The letter a MIDI number alone would be named with — sharps only, as 'pitch' does.</summary>
+static string? SharpLetter(int? midi)
+    => midi is null ? null : "C C# D D# E F F# G G# A A# B".Split(' ')[((midi.Value % 12) + 12) % 12][..1];
+
+/// <summary>A note's letter and its sounding pitch, per onset: the terms the two sources can be compared in.</summary>
+static List<string> Onset(Dictionary<string, List<string>> into, string player, Rational position)
+{
+    var key = player + "@" + position.Numerator + "/" + position.Denominator;
+
+    if (!into.TryGetValue(key, out var list))
+    {
+        into[key] = list = [];
+    }
+
+    return list;
+}
+
+/// <summary>
+/// The player names of the file and of the export differ only in how they spell an instrument's key: the project
+/// calls one "Trumpet (B♭) 1" and the export writes "Trumpet (B Flat) 1". Dropping the parenthetical part leaves the
+/// same name on both sides.
+/// </summary>
+static string NormalizePlayer(string name)
+    => System.Text.RegularExpressions.Regex
+        .Replace(System.Text.RegularExpressions.Regex.Replace(name, @"\([^)]*\)", " "), @"\s+", " ")
+        .Trim()
+        .ToLowerInvariant();
+
+/// <summary>Where a note letter sits in the diatonic scale, and how many semitones its natural pitch is above C.</summary>
+static (int Step, int Semitones) PitchStep(string name) => name switch
+{
+    "C" => (0, 0),
+    "D" => (1, 2),
+    "E" => (2, 4),
+    "F" => (3, 5),
+    "G" => (4, 7),
+    "A" => (5, 9),
+    "B" => (6, 11),
+    _ => (-1, 0),
+};
+
+/// <summary>Whether a node, or any node under it, carries a property of this type.</summary>
+static bool Carries(ProjectFileTreeNode node, string property)
+    => node.Fields.Any(field => field.Key == "propertyType" && field.Value == property)
+        || node.Children.Any(child => Carries(child, property));
+
+/// <summary>
+/// What one MusicXML export says, reduced to what a comparison needs: the <c>&lt;step&gt;</c> letter and the
+/// <i>sounding</i> MIDI number of every note, keyed by part and by its onset as a rational number of crotchets.
+/// </summary>
+/// <remarks>
+/// Only the parts of MusicXML that carry a note's letter and position are read — <c>measure</c>, <c>attributes</c>,
+/// <c>note</c>, <c>backup</c>, <c>forward</c>, <c>pitch</c>, <c>unpitched</c>, <c>tie</c>, <c>grace</c>,
+/// <c>chord</c>, <c>transpose</c> — because the comparison is about the file's own letter, not about the export.
+/// A rest, a grace note and the continuation of a tie are steps the cursor moves over, not notes: the file reports
+/// none of them as notes (a tie chain is one event, and a grace note is another event kind), so they are skipped
+/// rather than compared. <c>&lt;transpose&gt;</c> is applied because MusicXML writes the written pitch: sounding =
+/// written + chromatic + 12 x octave-change, and the sounding letter is the written letter shifted by
+/// <c>&lt;diatonic&gt;</c> steps.
+/// </remarks>
+static ExportScore ReadExport(string path)
+{
+    var onsets = new Dictionary<string, List<string>>(StringComparer.Ordinal);
+    var players = new HashSet<string>(StringComparer.Ordinal);
+    var transpositions = new Dictionary<string, (int Diatonic, int Chromatic, int Octaves)>(StringComparer.Ordinal);
+    var pitchless = 0;
+
+    System.Xml.Linq.XDocument document;
+
+    using (var reader = System.Xml.XmlReader.Create(path, new System.Xml.XmlReaderSettings
+    {
+        // The export carries a DOCTYPE pointing at an external DTD; nothing in it is needed to read the notes.
+        DtdProcessing = System.Xml.DtdProcessing.Ignore,
+        XmlResolver = null,
+    }))
+    {
+        document = System.Xml.Linq.XDocument.Load(reader);
+    }
+
+    var root = document.Root ?? throw new InvalidDataException($"'{path}' has no root element");
+    var parts = root.Elements("part").ToDictionary(
+        part => part.Attribute("id")?.Value ?? string.Empty,
+        part => part,
+        StringComparer.Ordinal);
+
+    foreach (var scorePart in root.Element("part-list")?.Elements("score-part") ?? [])
+    {
+        var id = scorePart.Attribute("id")?.Value ?? string.Empty;
+        var player = NormalizePlayer(scorePart.Element("part-name")?.Value ?? string.Empty);
+
+        players.Add(player);
+
+        if (!parts.TryGetValue(id, out var part))
+        {
+            continue;
+        }
+
+        var transpose = part.Descendants("transpose").FirstOrDefault();
+
+        if (transpose is not null)
+        {
+            transpositions[player] = (
+                Whole(transpose.Element("diatonic")?.Value),
+                Whole(transpose.Element("chromatic")?.Value),
+                Whole(transpose.Element("octave-change")?.Value));
+        }
+
+        var (diatonic, chromatic, octaves) = transpositions.GetValueOrDefault(player);
+
+        var divisions = 1;
+        var measureStart = Rational.Zero;
+
+        foreach (var measure in part.Elements("measure"))
+        {
+            var cursor = Rational.Zero;
+            var reach = Rational.Zero;
+            var previous = (Rational?)null;
+
+            foreach (var item in measure.Elements())
+            {
+                switch (item.Name.LocalName)
+                {
+                    case "attributes":
+                        var per = Whole(item.Element("divisions")?.Value);
+
+                        if (per > 0)
+                        {
+                            divisions = per;
+                        }
+
+                        break;
+
+                    case "note":
+                        var grace = item.Element("grace") is not null;
+                        var chord = item.Element("chord") is not null;
+                        var onset = chord && previous is { } held ? held : measureStart + cursor;
+
+                        if (!chord)
+                        {
+                            previous = onset;
+                        }
+
+                        var pitch = item.Element("pitch");
+                        var tied = item.Elements("tie").Any(tie => tie.Attribute("type")?.Value == "stop");
+
+                        if (!grace && !tied && item.Element("rest") is null)
+                        {
+                            var (step, semitones) = PitchStep(pitch?.Element("step")?.Value ?? string.Empty);
+
+                            if (pitch is null)
+                            {
+                                pitchless++;
+                            }
+                            else if (step < 0)
+                            {
+                                throw new InvalidDataException($"'{path}' has a note whose <step> is not a letter");
+                            }
+                            else
+                            {
+                                var written = ((Whole(pitch.Element("octave")?.Value) + 1) * 12)
+                                    + semitones
+                                    + Whole(pitch.Element("alter")?.Value);
+
+                                Onset(onsets, player, onset).Add(
+                                    "CDEFGAB"[(step + diatonic % 7 + 7) % 7] + ":"
+                                    + (written + chromatic + (12 * octaves)));
+                            }
+                        }
+
+                        if (!chord && !grace)
+                        {
+                            cursor += new Rational(Whole(item.Element("duration")?.Value), divisions);
+                        }
+
+                        reach = Max(reach, cursor);
+                        break;
+
+                    case "backup":
+                        cursor -= new Rational(Whole(item.Element("duration")?.Value), divisions);
+                        reach = Max(reach, cursor);
+                        break;
+
+                    case "forward":
+                        cursor += new Rational(Whole(item.Element("duration")?.Value), divisions);
+                        reach = Max(reach, cursor);
+                        break;
+                }
+            }
+
+            measureStart += reach;
+        }
+    }
+
+    return new ExportScore(onsets, players, transpositions, pitchless);
+}
+
+static int Whole(string? text) => int.TryParse(text, out var value) ? value : 0;
+
+static Rational Max(Rational left, Rational right) => left.CompareTo(right) >= 0 ? left : right;
+
+/// <summary>What one export says about its notes, in the terms the file's own notes can be compared in.</summary>
+internal sealed record ExportScore(
+    Dictionary<string, List<string>> Onsets,
+    HashSet<string> Players,
+    Dictionary<string, (int Diatonic, int Chromatic, int Octaves)> Transpositions,
+    int Pitchless);
+
 /// <summary>An exact rational, so a triplet cannot round into a false positive.</summary>
 internal readonly struct Rational : IComparable<Rational>
 {
+    public static readonly Rational Zero = new(0, 1);
+
     public Rational(long numerator, long denominator)
     {
         if (denominator < 0)
@@ -1070,6 +1406,12 @@ internal readonly struct Rational : IComparable<Rational>
         => new(
             (long)((Int128)left.Numerator * right.Denominator + (Int128)right.Numerator * left.Denominator),
             (long)((Int128)left.Denominator * right.Denominator));
+
+    public static Rational operator -(Rational left, Rational right)
+        => new(
+            (long)((Int128)left.Numerator * right.Denominator - (Int128)right.Numerator * left.Denominator),
+            (long)((Int128)left.Denominator * right.Denominator));
+
     private static long Gcd(long left, long right)
     {
         while (right != 0)

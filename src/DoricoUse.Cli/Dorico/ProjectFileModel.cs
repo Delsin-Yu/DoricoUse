@@ -259,6 +259,11 @@ internal sealed record ProjectFileMeter(
 /// One notated note event. <see cref="Position"/> and <see cref="Duration"/> are exact rationals in crotchets;
 /// <see cref="Measure"/> and <see cref="Beat"/> are derived from the metre.
 /// </summary>
+/// <remarks>
+/// <see cref="Pitch"/> is derived from <see cref="Midi"/>. <see cref="Spelling"/> is not derived: it is the letter
+/// the file's own <c>kNoteSpelling</c> property states for this note, and it is null when the event states none.
+/// The project stores no accidental beside it, so the letter alone does not pin the written pitch either.
+/// </remarks>
 internal sealed record ProjectFileNote(
     long EventId,
     int Measure,
@@ -271,7 +276,8 @@ internal sealed record ProjectFileNote(
     string? Player,
     string? Instrument,
     int? Stave,
-    int? Voice);
+    int? Voice,
+    string? Spelling);
 
 /// <summary>
 /// One dynamic marking placed in the music: the events carry <i>where</i> (and which group), the group definition

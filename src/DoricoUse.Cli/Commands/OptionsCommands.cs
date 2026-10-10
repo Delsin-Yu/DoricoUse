@@ -128,6 +128,7 @@ internal static class OptionsCommands
             };
 
             AddTarget(args, optionsType, parse.GetValue(layout), parse.GetValue(flow));
+            CommandRoot.AddExpectScore(args, parse.GetValue(expectScore));
 
             return await HostClient.CallAsync(
                 HostProtocol.OpOptionsSet,

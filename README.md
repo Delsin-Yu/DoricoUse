@@ -26,8 +26,10 @@ dotnet build src/DoricoUse.Cli/DoricoUse.Cli.csproj
 dotnet publish src/DoricoUse.Cli/DoricoUse.Cli.csproj -c Release -r win-x64
 ```
 
-The published Native AOT binary lands in `src/DoricoUse.Cli/bin/Release/net10.0/win-x64/publish/dorico-use.exe`.
-The source is plain `net10.0` (no Win32 dependency), so the same code can target macOS later.
+The published Native AOT binary lands in `src/DoricoUse.Cli/bin/Release/net10.0/win-x64/publish/dorico-use.exe`
+(~8.5 MB, no `hostfxr`, `version` reports `nativeAot:true`) and the publish is clean — no IL2026/IL3050 trim
+warnings. With `--artifacts-path <dir>` the binary lands in `<dir>/publish/DoricoUse.Cli/release_win-x64/`, not in
+the `bin` tree. The source is plain `net10.0` (no Win32 dependency), so the same code can target macOS later.
 
 **Stop the host before rebuilding**: a running host holds the executable open and the build fails with
 `MSB3027 ... being used by another process`. `host stop` before building, `host restart` after.
@@ -56,20 +58,24 @@ The source is plain `net10.0` (no Win32 dependency), so the same code can target
 | `export musicxml [--path <watch dir>] [--wait-ms n]` | Export MusicXML. **Needs a click on 确定 inside Dorico** (see below). |
 | `export text --path <file.csv>` | Export project text/comments as CSV. Fully unattended. |
 | `raw send --json '{"message":...}' --expect <id\|any>` | Escape hatch for protocol messages this CLI does not model. |
+| `version` | This build (assembly version, whether it is Native AOT), where its state lives, and the protocol constants. Starts no host, needs no Dorico. |
 
 Shared options: `--timeout-ms` (default 15000; 120000 for `session connect`) and `--raw` (add the unmodified
 Dorico payload). `--address` and `--client-name` belong to the host, since it owns the connection; only
-`session probe` takes them directly.
+`session probe` takes them directly. `--version` is System.CommandLine's own option and prints a bare version
+string, not JSON — the `version` command is the one with the envelope.
 
 ### Sharing one Dorico
 
 Every command acts on **whichever document Dorico has active**, and bringing any window to the front changes that —
 there is no query for it and no way to address a document. When more than one agent uses the same Dorico, that is
-how a save lands in someone else's project. So the mutating commands (`command send`, `note insert`,
-`session read`, `export musicxml`, `export text`) take `--expect-score <id>`: the host reads the status first and
-refuses with `WrongActiveScore` (`error.data {expected, actual}`) when the active document is not the one named.
-`session status` and `host status` (`activeScoreId`) report the ID. The check runs inside the same gated exchange
-as the action, so the window between them is one round trip — a stolen focus can only cause a refusal.
+how a save lands in someone else's project. So every **mutating** command (`command send`, `note insert`,
+`session read`, `export musicxml`, `export text`, `options set`) takes `--expect-score <id>`: the host reads the
+status first and refuses with `WrongActiveScore` (`error.data {expected, actual}`) when the active document is not
+the one named. `session status` and `host status` (`activeScoreId`) report the ID. The check runs inside the same
+gated exchange as the action, so the window between them is one round trip — a stolen focus can only cause a
+refusal. Verify it the way it can fail: `session read --expect-score 999` must refuse, and so must every other
+command in that list.
 
 ### Entering notes
 
@@ -182,9 +188,14 @@ The other blocks read the same way, and each states in its own `caveats` what it
 Verified against independent MusicXML exports and against 20 project files from Dorico 6.0.0 through 6.2.30.
 Limits, reported as `caveats`:
 
-- **Pitch spelling is only a letter**: the project stores a MIDI number plus a per-note spelling *letter*
-  (`kNoteSpelling`, 16024 of them in the reference score) and no accidental, so `pitch` is derived from the MIDI
-  number alone and uses sharps only (Bb5 shows as `A#5`); read `midi` when the exact pitch matters.
+- **Pitch spelling is a letter, and it is now a field.** The project stores a MIDI number plus a per-note spelling
+  *letter* (`kNoteSpelling`) and no accidental, so each note carries `spelling` beside `pitch`/`midi`: MIDI 82 is
+  spelled `B` (a B♭5 that the sharp-only derived `pitch` can only call `A#5`). Checked against Dorico's own
+  MusicXML export note onset by note onset: 8476 notes compared for letter *and* sounding MIDI, **0 differences**
+  — after applying the export's own `<transpose>` table, because MusicXML writes the *written* pitch and the file
+  the *sounding* one (a horn in F reading B4 stores E4). 129 events have no counterpart at all: unpitched
+  percussion, where the export writes only a display step, so those letters are unverified and the caveat says so.
+  Grace notes carry a spelling letter too but are a separate event kind this reader does not list.
 - **Ties and beams are not events**: a tie chain is one note event with the sounding duration, the beaming a score
   is printed with is computed at layout time, and no corpus file has both beam properties and an export.
 - **A click in the window is the only way to address a point**, so anything about where music sits on a page
@@ -331,10 +342,12 @@ dotnet build tests/ProjectFileCheck/ProjectFileCheck.csproj -v q --nologo
 `ProjectFileCheck` compiles the reader's sources **and the view that renders them** and asserts the file-format
 facts: the three tag markers seen in the corpus, a note run cross-checked against a MusicXML export, the dynamics
 histogram and positions matched against Dorico's own export of two pieces, slurs/articulations/ties/layout matched
-against another, score-order and overlap invariants, the generic tree walker compared with the typed reader, that
-the report can be built three times in one process (a shared node parented twice throws), and every error path
-(`NotFound`, `NotAContainer`, `MissingScoreData`, `MalformedMember`, `UnsupportedScoreData`). 119 checks,
-`0 skipped`.
+against another, the per-note spelling letter matched onset by onset against a third (8476 notes, 0 differences,
+with the export's `<transpose>` table asserted), score-order and overlap invariants, the generic tree walker
+compared with the typed reader, that the report can be built three times in one process (a shared node parented
+twice throws), and every error path (`NotFound`, `NotAContainer`, `MissingScoreData`, `MalformedMember`,
+`UnsupportedScoreData`). 129 checks, `0 skipped`; a check that needs a file which is not on the machine reports
+`skip` instead of passing.
 
 ## Roadmap
 
@@ -345,11 +358,13 @@ the report can be built three times in one process (a shared node parented twice
    decoder); `export musicxml`/`export text`.
 5. **Done** — insert/overwrite control, `session read` (save a copy and read it back in one command), the tree
    escape hatch and dynamics in `file read`, and an honest export destination report.
-6. **Done** — `--expect-score` (refuse to act on the wrong document), `note insert --from-start` and `--read`
-   (write and prove in one call), and slurs/articulations/ties/beams/techniques/layout in `file read`.
-7. **Next** — the note spelling letter (`kNoteSpelling`) as its own field, a phrase that spans calls without
-   restarting at the top, positional entry if Dorico ever exposes it (today only a mouse click addresses a point,
-   and the API cannot be told which stave to use), and lyrics once a file with lyrics turns up.
+6. **Done** — `--expect-score` (refuse to act on the wrong document, on every mutating command), `note insert
+   --from-start` and `--read` (write and prove in one call), the per-note spelling letter as a field, a `version`
+   command, a proven Native AOT publish, and slurs/articulations/ties/beams/techniques/layout in `file read`.
+7. **Next** — a phrase that spans calls without restarting at the top (today `--from-start` is the honest reset),
+   positional entry if Dorico ever exposes it (only a mouse click addresses a point today, and the API cannot be
+   told which stave to use), lyrics once a file with lyrics turns up, and the accidental that `spelling` + `midi`
+   would let this reader derive.
 
 Deliberately **not** planned: a cached command catalogue, on disk or otherwise. Dorico answers `getcommands` in
 4 ms (98 KB, 1090 commands) and a `command list` call costs about 86 ms end to end, nearly all of it process

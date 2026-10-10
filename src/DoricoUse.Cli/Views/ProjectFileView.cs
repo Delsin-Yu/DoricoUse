@@ -30,9 +30,26 @@ internal static class ProjectFileView
     private static readonly JsonArray Caveats =
     [
         (JsonNode?)JsonValue.Create(
-            "pitch: the project stores a MIDI note number, and beside it a spelling *letter* (the note property "
-            + "kNoteSpelling) but no accidental; the name here is derived from the MIDI number alone and uses sharps "
-            + "only. Read 'midi' when the exact pitch matters."),
+            "pitch: the project stores a MIDI note number, and 'pitch' is the name derived from that number alone, so "
+            + "it uses sharps only and reads Bb5 as A#5. Read 'midi' when the exact pitch matters, and 'spelling' for "
+            + "the letter the score actually notated."),
+        (JsonNode?)JsonValue.Create(
+            "spelling: the letter the score itself spells the note with, read from the note event's kNoteSpelling "
+            + "property (the file writes it as a variant string, e.g. string: \"B\" -> \"B\"). It is a *letter only*: "
+            + "the project stores no accidental for the note, so 'spelling' plus 'midi' is what pins the written "
+            + "pitch (midi 82 with letter B is Bb5, with letter A it is A#5) — neither is derived from the other. "
+            + "Every note event in all 20 corpus files states exactly one kNoteSpelling and its value is always a "
+            + "single letter A-G (199,893 notes, 0 exceptions), so null means the file stated none at all; a grace "
+            + "note carries one too and is a separate event kind that this list does not report (22 of the 16,024 "
+            + "kNoteSpelling properties in Bad Apple!!). Verified note by note against Dorico's own MusicXML export "
+            + "of 無限城への誘い, a second source: the letter agrees with the export's <step> and 'midi' with the "
+            + "export's sounding pitch on all 8,476 pitched note events of that score (8,316 onsets), 0 differences "
+            + "— once the export's own <transpose> is applied, because the export writes the transposed pitch for its "
+            + "F and Bb instruments while the file stores the sounding one. The remaining 129 note events are "
+            + "unpitched percussion, which the export writes as <unpitched> with only a staff display position and "
+            + "so no sounding pitch to compare with: there the letter is the drum-mapped pitch (a bass drum is B4 "
+            + "here) and it was not checked against anything. For the non-transposing parts the accidental implied "
+            + "by the letter and the MIDI number is the export's own <alter> on all 6,968 of their notes."),
         (JsonNode?)JsonValue.Create(
             "duration: an exact rational in crotchets (a 16th is 1/4, a 4/4 bar is 4). It is the sounding duration of "
             + "the tie chain, so a note tied across a bar line is one event."),
@@ -468,6 +485,7 @@ internal static class ProjectFileView
                 ["duration"] = note.Duration,
                 ["pitch"] = note.Pitch,
                 ["midi"] = note.Midi,
+                ["spelling"] = note.Spelling,
                 ["player"] = note.Player,
                 ["instrument"] = note.Instrument,
                 ["stave"] = note.Stave,

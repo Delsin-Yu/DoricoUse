@@ -21,6 +21,7 @@ internal static class CommandRoot
         root.Subcommands.Add(NoteCommands.Build());
         root.Subcommands.Add(ExportCommands.Build());
         root.Subcommands.Add(FileCommands.Build());
+        root.Subcommands.Add(VersionCommands.Build());
         return root;
     }
 

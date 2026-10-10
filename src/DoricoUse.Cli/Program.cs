@@ -20,6 +20,7 @@ internal static class Program
         "note",
         "export",
         "file",
+        "version",
     ];
 
     private static int Main(string[] args)
