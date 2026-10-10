@@ -1,2 +1,3 @@
-* text=auto
+* text=auto eol=lf
 *.png binary
+*.dorico binary
