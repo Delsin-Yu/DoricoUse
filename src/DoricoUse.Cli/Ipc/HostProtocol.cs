@@ -61,16 +61,26 @@ internal static class HostProtocol
         ["payload"] = payload,
     };
 
-    public static JsonObject Error(string code, string message, int exitCode = 2) => new()
+    public static JsonObject Error(string code, string message, int exitCode = 2, JsonObject? details = null)
     {
-        ["ok"] = false,
-        ["error"] = new JsonObject
+        var error = new JsonObject
         {
             ["code"] = code,
             ["message"] = message,
-        },
-        ["exitCode"] = exitCode,
-    };
+        };
+
+        if (details is not null)
+        {
+            error["data"] = details.DeepClone();
+        }
+
+        return new JsonObject
+        {
+            ["ok"] = false,
+            ["error"] = error,
+            ["exitCode"] = exitCode,
+        };
+    }
 
     private static string Sanitize(string value)
     {

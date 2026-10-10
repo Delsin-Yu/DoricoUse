@@ -45,6 +45,8 @@ internal static class CommandCommands
             Description = "Do not read the status back after the command.",
         };
 
+        var expectScore = CommandRoot.ExpectScoreOption();
+
         var command = new Command(
             "send",
             "Send one Dorico command. The status is read back afterwards, because Dorico answers kOK even for "
@@ -55,6 +57,7 @@ internal static class CommandCommands
             timeoutOption,
             waitOption,
             noVerify,
+            expectScore,
         };
 
         command.SetAction(parse => CommandRoot.RunAsync("command send", async () =>
@@ -74,6 +77,8 @@ internal static class CommandCommands
             {
                 args["parameters"] = values;
             }
+
+            CommandRoot.AddExpectScore(args, parse.GetValue(expectScore));
 
             // The host may exchange twice with Dorico (command, then status) plus the requested wait.
             var budget = (timeout * 2) + TimeSpan.FromMilliseconds(waitMs);

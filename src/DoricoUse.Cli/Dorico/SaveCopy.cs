@@ -130,7 +130,8 @@ internal static class SaveCopy
     public static async Task<JsonObject> SaveAsync(
         string path,
         TimeSpan timeout,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        int? expectScore = null)
     {
         var args = new JsonObject
         {
@@ -139,6 +140,11 @@ internal static class SaveCopy
             ["waitMs"] = 0,
             ["verify"] = false,
         };
+
+        if (expectScore is not null)
+        {
+            args["expectScore"] = expectScore.Value;
+        }
 
         var payload = await HostClient
             .CallAsync(HostProtocol.OpCommand, args, timeout, cancellationToken)

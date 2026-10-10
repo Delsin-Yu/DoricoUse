@@ -98,6 +98,7 @@ internal static class NoteCommands
         };
 
         var timeout = CommandRoot.TimeoutOption();
+        var expectScore = CommandRoot.ExpectScoreOption();
 
         var command = new Command("insert", "Insert one or more notes, a chord, a tuplet, or a rest.")
         {
@@ -115,6 +116,7 @@ internal static class NoteCommands
             dryRun,
             waitMs,
             timeout,
+            expectScore,
         };
 
         command.SetAction(parse => CommandRoot.RunAsync("note insert", async () =>
@@ -207,6 +209,8 @@ internal static class NoteCommands
             {
                 args["grid"] = gridValue;
             }
+
+            CommandRoot.AddExpectScore(args, parse.GetValue(expectScore));
 
             var modeValue = parse.GetValue(mode);
 

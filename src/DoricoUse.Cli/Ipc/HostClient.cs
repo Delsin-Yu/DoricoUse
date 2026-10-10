@@ -49,7 +49,10 @@ internal static class HostClient
         throw new CliException(
             NodeRead.Str(error, "code") ?? "HostError",
             NodeRead.Str(error, "message") ?? "The host reported an error.",
-            NodeRead.Int(response, "exitCode") ?? 2);
+            NodeRead.Int(response, "exitCode") ?? 2)
+        {
+            Details = NodeRead.Obj(error, "data"),
+        };
     }
 
     /// <summary>Answers only if a host is already listening; never starts one.</summary>

@@ -205,7 +205,7 @@ internal sealed class HostServer(HostOptions options, HostLog log)
         }
         catch (CliException ex)
         {
-            return (HostProtocol.Error(ex.Code, ex.Message, ex.ExitCode), false);
+            return (HostProtocol.Error(ex.Code, ex.Message, ex.ExitCode, ex.Details), false);
         }
         catch (Exception ex)
         {
@@ -296,6 +296,59 @@ internal sealed class HostServer(HostOptions options, HostLog log)
         }, timeout, _cts.Token).ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// Refuses to act when the document Dorico has active is not the one the caller said it expects.
+    /// </summary>
+    /// <remarks>
+    /// Every command acts on whichever document is active, and bringing any window to the front changes that.
+    /// When several agents share one Dorico this is how a save lands in somebody else's project, so a caller that
+    /// knows which document it means can say so with `--expect-score` and get a loud refusal instead. The check
+    /// runs inside the same gated exchange as the action, so the window between them is one round trip.
+    /// </remarks>
+    private async Task EnsureExpectedScoreAsync(DoricoClient client, JsonObject args, TimeSpan timeout)
+    {
+        if (NodeRead.Int(args, "expectScore") is null)
+        {
+            return;
+        }
+
+        var status = await client.GetStatusAsync(timeout, _cts.Token).ConfigureAwait(false);
+        EnsureExpectedScore(args, status);
+    }
+
+    private static void EnsureExpectedScore(JsonObject args, JsonObject status)
+    {
+        if (NodeRead.Int(args, "expectScore") is not { } expected)
+        {
+            return;
+        }
+
+        var actual = NodeRead.Int(status, "activeOpenScoreID");
+
+        if (actual == expected)
+        {
+            return;
+        }
+
+        var details = new JsonObject { ["expected"] = expected };
+
+        if (actual is not null)
+        {
+            details["actual"] = actual.Value;
+        }
+
+        throw new CliException(
+            "WrongActiveScore",
+            $"Dorico's active document is not the one this command was told to expect (expected score "
+            + $"{expected}, found {(actual is null ? "none" : actual.Value.ToString())}). Bring the right window to "
+            + "the front and run it again, or drop --expect-score to act on whatever is active - which is how a "
+            + "command ends up in somebody else's project.",
+            2)
+        {
+            Details = details,
+        };
+    }
+
     private async Task<JsonObject> CommandAsync(JsonObject args, TimeSpan timeout)
     {
         var name = NodeRead.Str(args, "name");
@@ -311,6 +364,8 @@ internal sealed class HostServer(HostOptions options, HostLog log)
 
         return await _keeper.ExecuteAsync($"command {name}", async client =>
         {
+            await EnsureExpectedScoreAsync(client, args, timeout).ConfigureAwait(false);
+
             var started = Stopwatch.GetTimestamp();
             var ack = await client.SendCommandAsync(name, parameters, timeout, _cts.Token).ConfigureAwait(false);
             var elapsed = (long)Stopwatch.GetElapsedTime(started).TotalMilliseconds;
@@ -558,6 +613,7 @@ internal sealed class HostServer(HostOptions options, HostLog log)
             var enteredNoteInput = false;
 
             var status = await client.GetStatusAsync(statusTimeout, _cts.Token).ConfigureAwait(false);
+            EnsureExpectedScore(args, status);
             var enteredWriteMode = false;
 
             // A fresh project starts in Setup mode, where there is no caret to write at.
@@ -904,6 +960,8 @@ internal sealed class HostServer(HostOptions options, HostLog log)
 
         return await _keeper.ExecuteAsync("sequence", async client =>
         {
+            await EnsureExpectedScoreAsync(client, args, timeout).ConfigureAwait(false);
+
             var results = new JsonArray();
             var started = Stopwatch.GetTimestamp();
             string? stoppedAt = null;

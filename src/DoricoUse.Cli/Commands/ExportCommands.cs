@@ -54,6 +54,7 @@ internal static class ExportCommands
         };
 
         var timeout = CommandRoot.TimeoutOption();
+        var expectScore = CommandRoot.ExpectScoreOption();
 
         var command = new Command(
             "musicxml",
@@ -64,6 +65,7 @@ internal static class ExportCommands
             path,
             wait,
             timeout,
+            expectScore,
         };
 
         command.SetAction(parse => CommandRoot.RunAsync("export musicxml", async () =>
@@ -77,7 +79,8 @@ internal static class ExportCommands
             var acknowledgement = await SendAsync(
                 "File.Export",
                 new JsonObject { ["FilterID"] = ExportView.MusicXmlFilterId },
-                CommandRoot.Timeout(parse, timeout)).ConfigureAwait(false);
+                CommandRoot.Timeout(parse, timeout),
+                parse.GetValue(expectScore)).ConfigureAwait(false);
 
             var queue = await ProbeQueueAsync().ConfigureAwait(false);
 
@@ -127,6 +130,7 @@ internal static class ExportCommands
         };
 
         var timeout = CommandRoot.TimeoutOption();
+        var expectScore = CommandRoot.ExpectScoreOption();
 
         var command = new Command(
             "text",
@@ -136,6 +140,7 @@ internal static class ExportCommands
             path,
             wait,
             timeout,
+            expectScore,
         };
 
         command.SetAction(parse => CommandRoot.RunAsync("export text", async () =>
@@ -152,7 +157,8 @@ internal static class ExportCommands
                     ["File"] = requested,
                     ["Show"] = "false",
                 },
-                CommandRoot.Timeout(parse, timeout)).ConfigureAwait(false);
+                CommandRoot.Timeout(parse, timeout),
+                parse.GetValue(expectScore)).ConfigureAwait(false);
 
             var files = await ExportView.WaitAsync(
                 Path.GetDirectoryName(written) ?? ".",
@@ -177,7 +183,11 @@ internal static class ExportCommands
     /// MusicXML export holds the command open until its dialog is confirmed, and reading the status afterwards
     /// would say nothing about the files.
     /// </summary>
-    private static async Task<JsonObject> SendAsync(string name, JsonObject parameters, TimeSpan timeout)
+    private static async Task<JsonObject> SendAsync(
+        string name,
+        JsonObject parameters,
+        TimeSpan timeout,
+        int? expectScore = null)
     {
         var args = new JsonObject
         {
@@ -186,6 +196,11 @@ internal static class ExportCommands
             ["waitMs"] = 0,
             ["verify"] = false,
         };
+
+        if (expectScore is not null)
+        {
+            args["expectScore"] = expectScore.Value;
+        }
 
         var payload = await HostClient
             .CallAsync(HostProtocol.OpCommand, args, timeout, CancellationToken.None)

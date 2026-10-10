@@ -104,20 +104,33 @@ internal sealed class SessionKeeper(string address, string clientName)
         }
     }
 
-    public JsonObject Snapshot() => new()
+    public JsonObject Snapshot()
     {
-        ["connected"] = IsConnected,
-        ["address"] = Address,
-        ["clientName"] = ClientName,
-        ["app"] = _app is null ? null : SessionView.App(_app),
-        ["requests"] = Requests,
-        ["lastError"] = LastError,
-        ["events"] = new JsonObject
+        var snapshot = new JsonObject
         {
-            ["total"] = Events.Count,
-            ["counts"] = SessionView.EventCounts(Events),
-        },
-    };
+            ["connected"] = IsConnected,
+            ["address"] = Address,
+            ["clientName"] = ClientName,
+            ["app"] = _app is null ? null : SessionView.App(_app),
+            ["requests"] = Requests,
+            ["lastError"] = LastError,
+            ["events"] = new JsonObject
+            {
+                ["total"] = Events.Count,
+                ["counts"] = SessionView.EventCounts(Events),
+            },
+        };
+
+        // Which document is active is session-wide state, and every command acts on it: report it so an operator
+        // can see whose project is live (and pass the same number to --expect-score).
+        if (_client is not null
+            && NodeRead.Int(_client.Session.Status.Current, "activeOpenScoreID") is { } activeScoreId)
+        {
+            snapshot["activeScoreId"] = activeScoreId;
+        }
+
+        return snapshot;
+    }
 
     public async Task StopAsync()
     {

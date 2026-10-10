@@ -46,6 +46,24 @@ internal static class CommandRoot
     };
 
     /// <summary>
+    /// Guards against acting on the wrong document: the host compares this with the score Dorico has active and
+    /// refuses the command when they differ.
+    /// </summary>
+    internal static Option<int?> ExpectScoreOption() => new("--expect-score")
+    {
+        Description = "Refuse to run unless Dorico's active document is this score ID. `session status` and "
+            + "`host status` report the ID; use it when several agents share one Dorico.",
+    };
+
+    internal static void AddExpectScore(JsonObject args, int? expectScore)
+    {
+        if (expectScore is not null)
+        {
+            args["expectScore"] = expectScore.Value;
+        }
+    }
+
+    /// <summary>
     /// Loads the stored settings and applies the per-invocation overrides. Nothing is saved here: only a real
     /// handshake writes the store, so a read-only command never rewrites state.
     /// </summary>

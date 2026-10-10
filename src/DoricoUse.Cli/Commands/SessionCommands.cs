@@ -61,6 +61,7 @@ internal static class SessionCommands
         };
 
         var timeout = CommandRoot.TimeoutOption();
+        var expectScore = CommandRoot.ExpectScoreOption();
 
         var command = new Command(
             "read",
@@ -73,6 +74,7 @@ internal static class SessionCommands
             measure,
             player,
             timeout,
+            expectScore,
         };
 
         command.SetAction(parse => CommandRoot.RunAsync("session read", async () =>
@@ -95,7 +97,7 @@ internal static class SessionCommands
                 Math.Min(SaveCopy.DefaultWait.TotalMilliseconds, protocolTimeout.TotalMilliseconds));
 
             var acknowledgement = await SaveCopy
-                .SaveAsync(destination, protocolTimeout, CancellationToken.None)
+                .SaveAsync(destination, protocolTimeout, CancellationToken.None, parse.GetValue(expectScore))
                 .ConfigureAwait(false);
 
             ProjectFile? file = null;
