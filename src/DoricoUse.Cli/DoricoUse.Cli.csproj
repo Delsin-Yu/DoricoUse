@@ -2,7 +2,17 @@
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
-    <TargetFramework>net10.0</TargetFramework>
+    <!--
+      The CLI reads Dorico's windows and presses their buttons through Win32 and UI Automation, so it targets
+      Windows. The two check projects stay on net10.0 and compile the CLI's sources by hand; everything that needs
+      a Windows API therefore lives under Ui/, in files only this project compiles.
+    -->
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <!--
+      The UI Automation calls go through raw COM vtable pointers: the built-in COM marshaller generates its stubs at
+      run time and a Native AOT image cannot do that. Everything else in the project is ordinary safe C#.
+    -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <AssemblyName>dorico-use</AssemblyName>
