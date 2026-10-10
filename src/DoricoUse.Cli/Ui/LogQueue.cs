@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Globalization;
 using System.Text;
 using System.Text.Json.Nodes;
@@ -45,8 +46,30 @@ internal static class LogQueue
     private static bool started;
     private static string? failure;
 
-    /// <summary>How long to keep looking for a command's lines before deciding. Measured: they appear in the same millisecond.</summary>
+    /// <summary>How long to wait for the <c>Posting</c> line of the command this invocation sent.</summary>
+    /// <remarks>
+    /// Measured on 2026-10-11, on the reproduction of the bug this replaces: the offset was taken at
+    /// 05:42:49.45 and the line Dorico wrote is stamped 05:42:49.593, so the flush took about 75 ms and the line
+    /// is normally there on the first or second poll. The budget is for a slower flush, not for the normal case.
+    /// It is bounded rather than open-ended because a command the API refused leaves no line at all — measured:
+    /// <c>Play.StopScrubPlayback</c> answered <c>kError kCommandNotAllowed</c> and was never posted — and that
+    /// verdict has to arrive too.
+    /// </remarks>
     public static readonly TimeSpan DefaultBudget = TimeSpan.FromMilliseconds(1000);
+
+    /// <summary>
+    /// How long to keep watching after the <c>Posting</c> line for the matching <c>Executing</c> line, which is
+    /// what separates <c>ran</c> from <c>queued</c>.
+    /// </summary>
+    /// <remarks>
+    /// Measured: a command that really runs executes in the same millisecond it is posted (<c>Posting
+    /// 05:15:50.603</c>, <c>Executing 05:15:50.603</c>), while a command posted behind the export dialog produced
+    /// no <c>Executing</c> line for 24 s (05:16:54.727, then 05:17:18.757 after 取消). So this second waits only
+    /// for the good answer to have a chance to appear; a command still without an <c>Executing</c> line when it
+    /// expires is reported as queued, with the time actually watched named in the evidence. The cost is paid only
+    /// by a command that is not running, because a command that ran ends the wait immediately.
+    /// </remarks>
+    public static readonly TimeSpan ExecutingBudget = TimeSpan.FromMilliseconds(1000);
 
     /// <summary>
     /// How long to look when this invocation posted nothing by name — a note insert is a sequence the host sends.
@@ -60,13 +83,26 @@ internal static class LogQueue
     public static string? LogPath => logPath;
 
     /// <summary>Remembers where Dorico's log ended, so the delta is this invocation's own work.</summary>
-    public static void Begin()
+    public static void Begin() => Begin(FindLogPath());
+
+    /// <summary>
+    /// Watches one named file from one offset, which is the same thing <see cref="Begin()"/> does with the log
+    /// Dorico is writing.
+    /// </summary>
+    /// <remarks>
+    /// This overload exists so the wait can be measured without Dorico: the check project points it at a fixture
+    /// log and appends lines to that file while <see cref="Verdict"/> waits, which is the one way to assert the
+    /// retry and the offset rule — the two things that were wrong — without a live modal dialog (no check can raise
+    /// one). The CLI itself only ever calls the parameterless overload.
+    /// </remarks>
+    /// <param name="path">The file to watch, or null when there is none.</param>
+    public static void Begin(string? path)
     {
         Posted.Clear();
         started = true;
         failure = null;
         startOffset = 0;
-        logPath = FindLogPath();
+        logPath = path;
 
         if (logPath is null)
         {
@@ -111,10 +147,11 @@ internal static class LogQueue
     }
 
     /// <summary>
-    /// Decides what happened, waiting briefly for the lines Dorico writes. Null when this invocation posted
-    /// nothing and the log gained nothing, in which case the payload carries no <c>execution</c> field at all.
+    /// Decides what happened, waiting for the lines Dorico writes: first the command's own <c>Posting</c> line,
+    /// then its <c>Executing</c> line. Null when this invocation has nothing to say about Dorico's queue, in
+    /// which case the payload carries no <c>execution</c> field at all.
     /// </summary>
-    /// <param name="budget">How long to keep looking before reporting what is on disk.</param>
+    /// <param name="budget">How long to wait for the <c>Posting</c> line before reporting what is on disk.</param>
     public static JsonObject? Verdict(TimeSpan budget)
     {
         if (!started)
@@ -122,69 +159,67 @@ internal static class LogQueue
             return null;
         }
 
+        var passive = Posted.Count == 0;
+
         if (logPath is null || failure is not null)
         {
-            return Posted.Count == 0
+            return passive
                 ? null
                 : Report("unknown", failure ?? "No Dorico log was found, so whether the command ran cannot be said.", []);
         }
 
         string[] lines;
-
-        var passive = Posted.Count == 0;
-        var window = passive && budget > PassiveBudget ? PassiveBudget : budget;
+        var startedAt = Stopwatch.GetTimestamp();
 
         try
         {
-            lines = ReadDelta(window, passive);
+            lines = ReadDelta(passive && budget > PassiveBudget ? PassiveBudget : budget, passive);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
             return Report("unknown", $"The Dorico log could not be read ({ex.Message}).", []);
         }
 
-        if (Posted.Count == 0 && lines.Length == 0)
-        {
-            return null;
-        }
-
-        var evidence = new List<string>();
-
-        foreach (var posted in Posted)
-        {
-            var state = Classify(posted, lines, window, out var sentence);
-            evidence.Add($"{posted.Name}: {state} - {sentence}");
-        }
+        var waited = Stopwatch.GetElapsedTime(startedAt);
 
         // Commands the host posted on its own (a note insert is a sequence of them) are visible in the log but not
         // in Posted. A posting with no Executing line among them is the same alarm.
         var orphans = Unmatched(lines);
 
-        foreach (var orphan in orphans)
+        if (passive)
         {
-            evidence.Add($"{orphan}: queued - posted with no Executing line "
-                + $"{Seconds(window)} s later (posted by the host, not by name from here)");
+            // This invocation sent nothing to Dorico by name — `ui press`, `ui dialog`, the live read — so the only
+            // thing the field could honestly say is that one of the postings the log did gain is stuck on the
+            // queue. With none, the payload carries no `execution` field: an `unknown` here would be a verdict on
+            // nothing, and the log's unrelated lines would be its evidence.
+            return orphans.Count == 0
+                ? null
+                : Report("queued", string.Join("; ", orphans.Select(orphan => $"{orphan}: queued - posted with "
+                    + $"no Executing line {Seconds(waited)} s later (posted by the host, not by name from here)")),
+                    lines);
         }
 
+        var evidence = new List<string>();
         var states = new List<string>();
 
         foreach (var posted in Posted)
         {
-            states.Add(Classify(posted, lines, window, out _));
+            var state = Classify(posted, lines, waited, out var sentence);
+            states.Add(state);
+            evidence.Add($"{posted.Name}: {state} - {sentence}");
         }
 
-        states.AddRange(orphans.Select(_ => "queued"));
-
-        if (states.Count == 0)
+        foreach (var orphan in orphans)
         {
-            states.Add("unknown");
-            evidence.Add("No command was posted during this invocation, and the log gained no Posting line.");
+            states.Add("queued");
+            evidence.Add($"{orphan}: queued - posted with no Executing line "
+                + $"{Seconds(waited)} s later (posted by the host, not by name from here)");
         }
 
         return Report(Worst(states), string.Join("; ", evidence), lines);
     }
 
-    private static string Classify(PostedCommand posted, string[] lines, TimeSpan budget, out string sentence)
+    private static string Classify(PostedCommand posted, string[] lines, TimeSpan waited, out string sentence)
     {
         if (WasExecuted(lines, posted.Name))
         {
@@ -194,8 +229,11 @@ internal static class LogQueue
 
         if (WasPosted(lines, posted.Name))
         {
-            sentence = $"posted with no Executing line {Seconds(budget)} s later: the command is on Dorico's queue, "
-                + "not run, which is what a modal dialog does";
+            sentence = $"posted, with no Executing line {Seconds(waited)} s later: the command is on Dorico's "
+                + "queue, not run, which is what a modal dialog does"
+                + (WasQueued(lines, posted.Name)
+                    ? ", and Dorico's own log names it in its queue (`Queue after push`)"
+                    : string.Empty);
             return "queued";
         }
 
@@ -252,11 +290,29 @@ internal static class LogQueue
     private static string Seconds(TimeSpan budget) => budget.TotalSeconds.ToString("0.#", CultureInfo.InvariantCulture);
 
     /// <summary>
-    /// Reads what the log gained since <see cref="Begin"/>, polling until everything asked for is there or the
-    /// budget runs out. Lines before the first newline are dropped: the offset was taken while Dorico may have been
-    /// mid-write.
+    /// Reads what the log gained since <see cref="Begin"/>, in the two phases the verdict needs: wait for the
+    /// command's own <c>Posting</c> line, then watch <see cref="ExecutingBudget"/> for the matching
+    /// <c>Executing</c> line that separates <c>ran</c> from <c>queued</c>.
     /// </summary>
+    /// <remarks>
+    /// The second phase runs only once every posted command has a <c>Posting</c> line, because before that there is
+    /// nothing to watch an <c>Executing</c> line for, and an invocation that posted nothing by name has no posting
+    /// of its own to wait for at all.
+    /// </remarks>
     private static string[] ReadDelta(TimeSpan budget, bool passive)
+    {
+        var lines = Poll(budget, seen => Settled(seen, passive));
+
+        if (passive || !Posted.All(posted => WasPosted(lines, posted.Name)))
+        {
+            return lines;
+        }
+
+        return Poll(ExecutingBudget, seen => Posted.All(posted => WasExecuted(seen, posted.Name)));
+    }
+
+    /// <summary>Reads the delta every <see cref="PollInterval"/> until it satisfies <paramref name="settled"/> or the budget runs out.</summary>
+    private static string[] Poll(TimeSpan budget, Func<string[], bool> settled)
     {
         var deadline = DateTime.UtcNow + budget;
 
@@ -264,7 +320,7 @@ internal static class LogQueue
         {
             var lines = ReadFrom(logPath!, startOffset);
 
-            if (Settled(lines, passive) || DateTime.UtcNow >= deadline)
+            if (settled(lines) || DateTime.UtcNow >= deadline)
             {
                 return lines;
             }
@@ -280,18 +336,40 @@ internal static class LogQueue
             return lines.Length > 0;
         }
 
-        return Posted.All(posted => WasExecuted(lines, posted.Name));
+        return Posted.All(posted => WasPosted(lines, posted.Name));
     }
 
     private static string[] ReadFrom(string path, long offset)
     {
         using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+
+        // A log that shrank (a restart that truncated it) makes the remembered offset meaningless: read the whole
+        // file rather than a delta that no longer exists.
+        if (offset > stream.Length)
+        {
+            offset = 0;
+        }
+
+        // The offset can land inside a line Dorico was writing when Begin() took it, and half a line is not a line
+        // this can classify: that leading fragment is dropped. It is dropped only when the offset really is inside
+        // a line - the byte before it being anything but a newline. Dropping it unconditionally was the bug this
+        // replaces: the end of a quiet log is a line boundary, so the first line of the delta was always thrown
+        // away, and that line is the command's own `Posting` line - measured on 2026-10-11, where the payload said
+        // `unknown` while Dorico's log held `Posting command (requested): NoteInput.Enter` at that exact offset.
+        var partial = offset > 0;
+
+        if (partial)
+        {
+            stream.Seek(offset - 1, SeekOrigin.Begin);
+            partial = stream.ReadByte() != '\n';
+        }
+
         stream.Seek(offset, SeekOrigin.Begin);
 
         using var reader = new StreamReader(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: false);
         var text = reader.ReadToEnd();
 
-        if (offset > 0)
+        if (partial)
         {
             var newline = text.IndexOf('\n', StringComparison.Ordinal);
             text = newline < 0 ? string.Empty : text[(newline + 1)..];
@@ -303,6 +381,26 @@ internal static class LogQueue
     private static bool WasPosted(string[] lines, string name) => lines.Any(line => Name(line, PostingMarker) == name);
 
     private static bool WasExecuted(string[] lines, string name) => lines.Any(line => Name(line, ExecutingMarker) == name);
+
+    /// <summary>
+    /// True when Dorico's own log names the command in its queue (<c>Queue after push: {…}</c>).
+    /// </summary>
+    /// <remarks>
+    /// Measured on 2026-10-11: the queued <c>NoteInput.Enter</c> that the defect was reported with produced
+    /// <c>Queue after push: {NoteInput.Enter} {NoteInput.Enter}</c> while the export dialog held the queue — Dorico
+    /// itself naming the queue, which is stronger evidence than a <c>Posting</c> line alone. It is not used to
+    /// decide the state, because the same measurement showed the line is not written for every push (the first of
+    /// those two postings left no such line at all); it only says so in the queued verdict's evidence when it is
+    /// there.
+    /// </remarks>
+    private static bool WasQueued(string[] lines, string name)
+    {
+        var braced = "{" + name;
+
+        return lines.Any(line => line.Contains(QueueMarker, StringComparison.Ordinal)
+            && (line.Contains(braced + "}", StringComparison.Ordinal)
+                || line.Contains(braced + "?", StringComparison.Ordinal)));
+    }
 
     /// <summary>The postings in this delta that nothing ever executed.</summary>
     private static List<string> Unmatched(string[] lines)
@@ -328,6 +426,9 @@ internal static class LogQueue
     private const string PostingMarker = "Posting command (requested): ";
 
     private const string ExecutingMarker = "Executing command: ";
+
+    /// <summary>Dorico's own name for its queue, written after a push: <c>Queue after push: {…}</c>.</summary>
+    private const string QueueMarker = "Queue after push:";
 
     /// <summary>
     /// The command name out of one log line. The logged name is the command followed by its parameters, so the
