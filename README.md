@@ -440,8 +440,11 @@ dotnet build tests/ProjectFileCheck/ProjectFileCheck.csproj -v q --nologo
 ./tests/ProjectFileCheck/bin/Debug/net10.0/project-file-check.exe
 ```
 
-`ProjectFileCheck` compiles the reader's sources **and the view that renders them** and asserts the file-format
-facts: the three tag markers seen in the corpus, a note run cross-checked against a MusicXML export, the dynamics
+`ProjectFileCheck` compiles the reader's sources **and the view that renders them**. Seventeen of its checks run
+against `tests/corpus/fixture.dorico`, a small project committed with the repository (one Piano player, two staves,
+three notes: a B flat, an F sharp and a C) so that the decoder is exercised for real in continuous integration; the
+rest assert facts about the maintainer's own scores, which are not in the repository and report `skip` when you do
+not have them. It asserts: the three tag markers seen in the corpus, a note run cross-checked against a MusicXML export, the dynamics
 histogram and positions matched against Dorico's own export of two pieces, slurs/articulations/ties/layout matched
 against another, the per-note spelling letter matched onset by onset against a third (8476 notes, 0 differences,
 with the export's `<transpose>` table asserted), score-order and overlap invariants, the generic tree walker

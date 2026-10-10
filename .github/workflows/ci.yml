@@ -32,9 +32,10 @@ jobs:
           dotnet build tests/VocabularyCheck/VocabularyCheck.csproj -c Release --nologo
 
       - name: run the checks
-        # Both checks report `skip` for a fixture this machine does not have and exit 0, so a missing corpus
-        # (which is deliberately not in the repository - see NOTICE) never fails a build. Add your own score
-        # under tests/corpus to have the real checks run: see CONTRIBUTING.md.
+        # Both checks exit non-zero on a failure. The fixture committed at tests/corpus/fixture.dorico always
+        # runs, so the decoder is exercised on every push; the checks that need the maintainer's own scores
+        # report `skip` and exit 0 instead, because those files are deliberately not in the repository
+        # (see NOTICE). See CONTRIBUTING.md to point them at your own.
         run: |
           ./tests/ProjectFileCheck/bin/Release/net10.0/project-file-check.exe
           ./tests/VocabularyCheck/bin/Release/net10.0/vocabulary-check.exe

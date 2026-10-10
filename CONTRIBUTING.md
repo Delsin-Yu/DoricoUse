@@ -23,11 +23,13 @@ than *what* — a reader should be able to tell a measured fact from an inferenc
 
 ## The test corpus
 
-`ProjectFileCheck` runs against real `.dorico` files, which are **not** in this repository: they are other
-people's music. A check whose file is missing reports `skip` and the run still exits 0, so a fresh clone passes
-with a lot of skips.
+`ProjectFileCheck` runs against two kinds of `.dorico` file. `tests/corpus/fixture.dorico` **is** in the
+repository - a small project the maintainers made for testing, dedicated to the public domain, with one Piano
+player, two staves and three notes (a flat, a sharp and a natural), so the checks that matter most run on every
+push. The rest are the maintainer's own scores, which are **not** here: a check whose file is missing reports
+`skip` and the run still exits 0.
 
-To run the real checks, put a score you are allowed to redistribute under `tests/corpus/` and adjust the paths at
+To run those ones too, put a score you are allowed to redistribute under `tests/corpus/` and adjust the paths at
 the top of `tests/ProjectFileCheck/Program.cs` (they are `const string`s). A good corpus file is small, has one or
 two players, and — if you want the export cross-checks to run — comes with a MusicXML export written by Dorico
 itself (File > Export > MusicXML) beside it. If you contribute a score, say where it came from and under which

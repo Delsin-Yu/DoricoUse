@@ -47,6 +47,80 @@ void Head(string title) => Console.WriteLine($"== {title}");
 
 // ---------------------------------------------------------------- the corpus file
 
+// ---------------------------------------------------------------- the committed fixture
+
+// This one is in the repository, so it runs everywhere, including continuous integration: a small project made
+// with Dorico for testing - one Piano player, one 4/4 bar, three notes (a B flat, an F sharp, a C in the bass).
+// Deliberately shaped so the parts most likely to break are covered: two staves, a flat, a sharp, a natural, and
+// the spelling letter behind each one. See tests/corpus/README.md for its provenance and licence.
+const string FixtureRelative = @"tests/corpus/fixture.dorico";
+
+static string? Locate(string relative)
+{
+    for (var directory = new DirectoryInfo(AppContext.BaseDirectory); directory is not null; directory = directory.Parent)
+    {
+        var candidate = Path.Combine(directory.FullName, relative);
+
+        if (File.Exists(candidate))
+        {
+            return candidate;
+        }
+    }
+
+    return File.Exists(relative) ? Path.GetFullPath(relative) : null;
+}
+
+var fixture = Locate(FixtureRelative);
+
+Head("the fixture committed with this repository");
+
+if (fixture is null)
+{
+    Skip("every check on the committed fixture (tests/corpus/fixture.dorico is missing)");
+}
+else
+{
+    var manifest = ProjectFileReader.Open(fixture);
+
+    Check("the fixture is a Dorico project package", manifest.Container.RootPath == "score.dtn");
+    Check("and it has the members a project has", manifest.Members.Count >= 8, manifest.Members.Count.ToString());
+
+    var fixtureScore = manifest.Score!;
+
+    Check("one flow", fixtureScore.Flows.Count == 1, fixtureScore.Flows.Count.ToString());
+    Check("one player, and it is the Piano", fixtureScore.Players.Count == 1 && fixtureScore.Players[0].Name == "Piano");
+    Check("two layouts: the full score and the part", fixtureScore.Layouts.Count == 2);
+    Check("one 4/4 bar", fixtureScore.Meters.Count == 1 && fixtureScore.Meters[0].TimeSignature == "4/4");
+    Check("three notes", fixtureScore.Notes.Count == 3, fixtureScore.Notes.Count.ToString());
+    Check("on two staves, in two voices", fixtureScore.Staves.Count(stave => stave.Notes > 0) == 2);
+
+    var byMidi = fixtureScore.Notes.ToDictionary(note => note.Midi ?? -1);
+
+    // The three notes are the whole point of the fixture: a flat, a sharp and a natural, each of which only the
+    // spelling letter can name. MIDI 70 prints as A#4 from the note number alone; the letter says B, so the note
+    // is a B flat - that is the derivation, checked note by note.
+    var flat = byMidi.GetValueOrDefault(70);
+    var sharp = byMidi.GetValueOrDefault(66);
+    var natural = byMidi.GetValueOrDefault(48);
+
+    Check("the first note is a B flat: MIDI 70 spelled with the letter B", flat is { Spelling: "B" } && flat.Accidental == "kFlat", $"{flat?.Spelling}/{flat?.Accidental}");
+    Check("and its derived pitch name is the sharp-only one", flat?.Pitch == "A#4", flat?.Pitch);
+    Check("the second note is an F sharp", sharp is { Spelling: "F", Accidental: "kSharp" }, $"{sharp?.Spelling}/{sharp?.Accidental}");
+    Check("the third note is a plain C in the bass", natural is { Spelling: "C", Accidental: "kNatural" } && natural.Stave == 2, $"{natural?.Spelling}/{natural?.Accidental}/stave {natural?.Stave}");
+    Check("a single concert-pitch player means every note gets a derived accidental", fixtureScore.Notes.All(note => note.Accidental is not null));
+    Check("positions and durations are the exact rationals that were entered", fixtureScore.Notes.All(note => note.Duration == "1") && fixtureScore.Notes.Count(note => note.Position == "0") == 1);
+
+    Check("the lyric table is there and empty", fixtureScore.Lyrics.Tables == 1 && fixtureScore.Lyrics.Elements == 0);
+    Check("nothing else is decorated: no dynamics, no slurs", fixtureScore.Dynamics.Count == 0 && fixtureScore.Slurs.Count == 0);
+
+    // The two readers have to agree on this file too, not only on the reference corpus.
+    var fixtureCensus = ProjectFileTreeReader.Census(manifest.ScoreData, -1);
+    var noteEvents = fixtureCensus.Names.FirstOrDefault(name => name.Name == "NoteEventDefinition");
+    Check("the tree walker sees the same three note events", noteEvents?.Count == fixtureScore.Notes.Count, noteEvents?.Count.ToString());
+
+    Console.WriteLine();
+}
+
 Head($"corpus: {Corpus}");
 
 if (!File.Exists(Corpus))
