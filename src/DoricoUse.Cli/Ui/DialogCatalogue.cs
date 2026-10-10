@@ -110,6 +110,24 @@ internal static class DialogCatalogue
             ]),
 
         new DialogCatalogueEntry(
+            Id: "dorico.crash-report",
+            Measured: true,
+            Note: "Measured: Dorico's crash reporter is a Qt6101QWindowIcon window titled "
+                + "向 Steinberg 发送崩溃报告 with the three buttons 发送到 Steinberg, 不发送 and 不再询问. It owns "
+                + "nothing, yet it disabled every other window of the process — measured with it up, both the "
+                + "document window and the modeless library manager read enabled=false — which is why it is a "
+                + "blocking dialog and not a panel, whatever its window class says. All three of its buttons share "
+                + "one automation id, so their ids come from their labels.",
+            TitleGlobs: ["向 Steinberg 发送崩溃报告"],
+            RequiredButtonLabels: ["不发送", "不再询问"],
+            Buttons:
+            [
+                Button("upload", DialogModel.RoleUnknown, safe: false, labels: ["发送到 Steinberg"]),
+                Button("dismiss", DialogModel.RoleDismiss, safe: true, alias: AliasNo, labels: ["不发送"]),
+                Button("no-ask-again", DialogModel.RoleUnknown, safe: false, labels: ["不再询问"]),
+            ]),
+
+        new DialogCatalogueEntry(
             Id: "dorico.folder-picker",
             Measured: true,
             Note: "Measured: raised by the export dialog's folder button, caption 选择文件夹, class #32770, in "

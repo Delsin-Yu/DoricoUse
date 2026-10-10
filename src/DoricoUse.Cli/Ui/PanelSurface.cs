@@ -1,0 +1,447 @@
+using System.Diagnostics;
+using System.Globalization;
+using System.Text.Json.Nodes;
+using DoricoUse.Cli.Json;
+
+namespace DoricoUse.Cli.Ui;
+
+/// <summary>
+/// The modeless windows Dorico has up: what they are, what they are made of, and how to work one of their elements.
+/// </summary>
+/// <remarks>
+/// <para>
+/// A panel is not a dialog, and this file exists so that the difference is visible in the payload rather than
+/// buried. <c>dialog</c> keeps its meaning — the one blocking modal, or null — and a panel is reported beside it, in
+/// <c>panels</c>. An agent that only knew about dialogs cannot be surprised by a panel appearing where a dialog was
+/// expected, and an agent that needs the library manager has a name for it.
+/// </para>
+/// <para>
+/// The <c>panels</c> array on every payload is cheap Win32 and carries no elements. Reading a panel's elements is
+/// UI Automation, so it happens only in <c>ui panels</c> and <c>ui press</c>, which are the two commands that asked
+/// for it.
+/// </para>
+/// </remarks>
+internal static class PanelSurface
+{
+    /// <summary>Every Dorico window that is not the document window, with the elements of the one that was asked for.</summary>
+    /// <param name="panelId">The <c>panel.id</c> to read in full, or null to list the windows without elements.</param>
+    /// <param name="raw">True to keep every element the walk visited, for a caller that is diagnosing.</param>
+    public static JsonObject List(string? panelId, bool raw)
+    {
+        var started = Stopwatch.GetTimestamp();
+        var presence = DialogProbe.Probe();
+        var panels = new JsonArray();
+        var read = 0;
+        string? missing = null;
+
+        foreach (var window in presence.All ?? [])
+        {
+            var id = PanelModel.PanelId(window.Title, window.WindowClass, PanelModel.KindUnknown);
+            var wanted = panelId is null
+                || string.Equals(id, panelId, StringComparison.Ordinal)
+                || window.Handle.ToString(CultureInfo.InvariantCulture) == panelId
+                || Handle(window.Handle) == panelId;
+
+            if (!wanted)
+            {
+                continue;
+            }
+
+            if (panelId is not null)
+            {
+                // Written out rather than with a collection expression: assigning a `JsonObject` into a `JsonArray`
+                // that way picks the generic `JsonArray.Add<T>`, which needs code generation and is refused by the
+                // Native AOT publish (IL2026/IL3050).
+                JsonArr.AddNode(panels, ReadWindow(window, presence, raw, ref read));
+                missing = null;
+
+                break;
+            }
+
+            JsonArr.AddNode(panels, PanelModel.Describe(
+                window,
+                presence.DocumentEnabled,
+                presence.Document,
+                presence.Dialog?.Handle ?? nint.Zero));
+        }
+
+        if (panelId is not null && panels.Count == 0 && missing is null)
+        {
+            missing = $"No visible window of Dorico has the id '{panelId}'. The `panels` array of this payload lists "
+                + "the ones it has, each with its own id.";
+        }
+
+        var result = new JsonObject
+        {
+            ["panels"] = panels,
+            ["count"] = panels.Count,
+            ["readWithUia"] = read,
+            ["ms"] = (long)Stopwatch.GetElapsedTime(started).TotalMilliseconds,
+            ["probe"] = DialogModel.ProbePayload(new DialogProbeInfo(
+                How: read > 0 ? "win32+uia" : DialogProbe.How,
+                Milliseconds: presence.Milliseconds,
+                Degraded: presence.Degraded,
+                Error: presence.Error,
+                Windows: presence.Windows,
+                DocumentEnabled: presence.DocumentEnabled)),
+        };
+
+        if (missing is not null)
+        {
+            result["miss"] = missing;
+        }
+
+        result["note"] = "A panel is a modeless window: it does not stall Dorico's command queue, which is why it is "
+            + "reported here and not in `dialog`. `blocksQueue` is the hint from the window facts; `execution` on a "
+            + "command's payload is the measurement of the queue.";
+
+        return result;
+    }
+
+    /// <summary>
+    /// Works one element of one panel: chooses a tab, flips a check box, selects a list or tree item, opens an
+    /// expander, presses a button, or writes a text field through the value pattern.
+    /// </summary>
+    /// <param name="panelId">The <c>panel.id</c> the caller named.</param>
+    /// <param name="elementId">The <c>element.id</c> the caller named.</param>
+    /// <param name="value">Text to write into the element, when it has a value pattern.</param>
+    /// <param name="allowUnknownDialog">True when <c>--allow-unknown-dialog</c> was passed.</param>
+    public static JsonObject Act(string panelId, string elementId, string? value, bool allowUnknownDialog)
+    {
+        var presence = DialogProbe.Probe();
+        var window = (presence.All ?? [])
+            .FirstOrDefault(candidate => string.Equals(
+                PanelModel.PanelId(candidate.Title, candidate.WindowClass, PanelModel.KindUnknown),
+                panelId,
+                StringComparison.Ordinal));
+
+        if (window is null)
+        {
+            throw new CliException(
+                "PanelNotFound",
+                $"No visible window of Dorico has the id '{panelId}'. `ui panels` lists the ones it has, each with its "
+                + "own id and with the elements of the one you name.",
+                DialogModel.RefusalExitCode)
+            {
+                Details = new JsonObject
+                {
+                    ["requested"] = panelId,
+                    ["ids"] = Ids(presence),
+                },
+            };
+        }
+
+        var known = PanelCatalogue.Match(window.Title, window.WindowClass);
+
+        if (known is null && !allowUnknownDialog)
+        {
+            throw new CliException(
+                "UnknownDialog",
+                $"The window '{window.Title}' ({window.WindowClass}) is not in this build's panel catalogue, so "
+                + "working one of its elements is refused. It is reported in full by `ui panels`. Pass "
+                + "--allow-unknown-dialog to act on an unmeasured panel anyway.",
+                DialogModel.RefusalExitCode)
+            {
+                Details = new JsonObject
+                {
+                    ["panel"] = PanelModel.PanelId(window.Title, window.WindowClass, PanelModel.KindUnknown),
+                    ["title"] = window.Title,
+                    ["class"] = window.WindowClass,
+                },
+            };
+        }
+
+        var started = Stopwatch.GetTimestamp();
+        var read = PanelReader.Read(window.Handle);
+
+        try
+        {
+            var described = PanelModel.Describe(read.Elements);
+            var index = IndexOf(described, elementId);
+
+            if (index < 0)
+            {
+                throw new CliException(
+                    "ElementNotFound",
+                    $"The panel '{panelId}' ('{window.Title}') has no element '{elementId}'. Its ids are: "
+                    + (described.Count == 0 ? "(none: the read found no actionable element)" : string.Join(", ", described.Select(element => element.Id))),
+                    DialogModel.RefusalExitCode)
+                {
+                    Details = new JsonObject
+                    {
+                        ["panel"] = panelId,
+                        ["requested"] = elementId,
+                        ["ids"] = Ids(described),
+                    },
+                };
+            }
+
+            var element = described[index];
+            var input = read.Elements[index];
+            var action = PanelModel.Action(input);
+            var performed = new JsonObject
+            {
+                ["panel"] = panelId,
+                ["element"] = element.Id,
+                ["role"] = element.Role,
+                ["name"] = element.Name,
+                ["action"] = action.ToString().ToLowerInvariant(),
+                ["stateBefore"] = element.State,
+            };
+
+            if (action == PanelAction.None)
+            {
+                throw new CliException(
+                    "ElementNotActionable",
+                    $"Element '{element.Id}' ('{element.Name}') of '{panelId}' exposes no pattern this build can use: "
+                    + "no invoke, no toggle, no selection, no expand-collapse and no value. Its role is "
+                    + $"'{element.Role}'. This build never clicks a coordinate and never types at random.",
+                    DialogModel.RefusalExitCode)
+                {
+                    Details = new JsonObject
+                    {
+                        ["panel"] = panelId,
+                        ["element"] = element.Id,
+                        ["name"] = element.Name,
+                        ["role"] = element.Role,
+                    },
+                };
+            }
+
+            var handle = read.Handles[index];
+
+            switch (action)
+            {
+                case PanelAction.Value:
+                    if (value is null)
+                    {
+                        throw new CliException(
+                            "ValueRequired",
+                            $"Element '{element.Id}' ('{element.Name}') is a text field: it needs --value to be written "
+                            + "into, because pressing a text field does nothing this build can verify.",
+                            DialogModel.RefusalExitCode)
+                        {
+                            Details = new JsonObject { ["panel"] = panelId, ["element"] = element.Id },
+                        };
+                    }
+
+                    if (!UiaCalls.TrySetValue(handle, value, out var problem))
+                    {
+                        throw new CliException(
+                            "ElementNotSettable",
+                            $"Element '{element.Id}' ('{element.Name}') exposes no value pattern, so '{value}' was not "
+                            + "written anywhere.",
+                            DialogModel.RefusalExitCode)
+                        {
+                            Details = new JsonObject { ["panel"] = panelId, ["element"] = element.Id },
+                        };
+                    }
+
+                    if (problem is not null)
+                    {
+                        throw new CliException(
+                            "ElementNotSettable",
+                            $"Element '{element.Id}' ('{element.Name}') refused the value: {problem}.",
+                            DialogModel.RefusalExitCode)
+                        {
+                            Details = new JsonObject { ["panel"] = panelId, ["element"] = element.Id, ["value"] = value },
+                        };
+                    }
+
+                    performed["value"] = value;
+
+                    break;
+
+                case PanelAction.Toggle:
+                    UiaCalls.ToggleButton(handle);
+                    break;
+
+                case PanelAction.Select:
+                    UiaCalls.SelectItem(handle);
+                    break;
+
+                case PanelAction.Expand:
+                    UiaCalls.Expand(handle, open: true);
+                    break;
+
+                case PanelAction.Collapse:
+                    UiaCalls.Expand(handle, open: false);
+                    break;
+
+                default:
+                    UiaCalls.InvokeButton(handle);
+                    break;
+            }
+
+            performed["ms"] = (long)Stopwatch.GetElapsedTime(started).TotalMilliseconds;
+            performed["note"] = "The action's own answer is not evidence — measured, a press that destroys its own "
+                + "window reported an error after it had worked. `stateAfter` and the `panels` array below are a "
+                + "second read of the same window, in the same invocation, which is the evidence.";
+
+            // One read again, and it answers both questions: what the element says now, and what the panel is now. A
+            // separate `stateAfter` read would be a third snapshot of a window that may already differ from the one
+            // the `panels` array describes, so there is one.
+            var (stateAfter, after) = ReRead(window, presence, elementId, started);
+
+            performed["stateAfter"] = stateAfter;
+
+            var panelAfter = new JsonArray();
+            JsonArr.AddNode(panelAfter, after);
+
+            return new JsonObject
+            {
+                ["worked"] = performed,
+                ["panels"] = panelAfter,
+                ["count"] = 1,
+                ["readWithUia"] = 1,
+            };
+        }
+        finally
+        {
+            PanelReader.ReleaseAll(read.Handles);
+        }
+    }
+
+    /// <summary>
+    /// Reads the panel once more, in the same invocation, to see what the action did: the element's own new state,
+    /// and the panel as it is now. A fresh read is the only honest answer — the element pointers from the first read
+    /// describe the tree as it was before the action.
+    /// </summary>
+    private static (JsonNode? State, JsonObject Panel) ReRead(
+        WindowFacts window,
+        DialogPresence presence,
+        string elementId,
+        long started)
+    {
+        try
+        {
+            var read = PanelReader.Read(window.Handle);
+
+            try
+            {
+                var described = PanelModel.Describe(read.Elements);
+                var index = IndexOf(described, elementId);
+
+                // An element that is gone is a real answer too: it is what a tab that was closed and a panel that
+                // was dismissed look like, and the null says exactly that.
+                JsonNode? state = index < 0
+                    ? null
+                    : new JsonObject
+                    {
+                        ["state"] = described[index].State,
+                        ["value"] = read.Elements[index].Value,
+                        ["toggle"] = read.Elements[index].ToggleState,
+                        ["selected"] = read.Elements[index].Selected,
+                    };
+
+                return (
+                    state,
+                    PanelModel.Elements(
+                        window,
+                        presence.DocumentEnabled,
+                        read.Elements,
+                        read.Truncated,
+                        (long)Stopwatch.GetElapsedTime(started).TotalMilliseconds,
+                        error: null,
+                        documentHandle: presence.Document,
+                        dialogHandle: presence.Dialog?.Handle ?? nint.Zero));
+            }
+            finally
+            {
+                PanelReader.ReleaseAll(read.Handles);
+            }
+        }
+        catch (CliException ex)
+        {
+            return (
+                new JsonObject { ["error"] = ex.Code },
+                PanelModel.Elements(window, presence.DocumentEnabled, null, truncated: false, 0, ex.Message));
+        }
+    }
+
+    /// <summary>The window facts plus the elements of one window, for <c>ui panels &lt;id&gt;</c>.</summary>
+    private static JsonObject ReadWindow(WindowFacts window, DialogPresence presence, bool raw, ref int read)
+    {
+        var started = Stopwatch.GetTimestamp();
+
+        try
+        {
+            var result = PanelReader.Read(window.Handle);
+            read++;
+
+            try
+            {
+                var payload = PanelModel.Elements(
+                    window,
+                    presence.DocumentEnabled,
+                    result.Elements,
+                    result.Truncated,
+                    (long)Stopwatch.GetElapsedTime(started).TotalMilliseconds,
+                    error: null,
+                    documentHandle: presence.Document,
+                    dialogHandle: presence.Dialog?.Handle ?? nint.Zero);
+
+                if (raw)
+                {
+                    payload["visited"] = result.Nodes;
+                }
+
+                return payload;
+            }
+            finally
+            {
+                PanelReader.ReleaseAll(result.Handles);
+            }
+        }
+        catch (Exception ex)
+        {
+            // A panel that cannot be read is still reported: knowing the window is up matters even when its content
+            // is not reachable, and the error says so instead of leaving an empty element list to be misread.
+            return PanelReader.Failure(
+                window,
+                presence.DocumentEnabled,
+                (long)Stopwatch.GetElapsedTime(started).TotalMilliseconds,
+                ex.Message);
+        }
+    }
+
+    private static int IndexOf(List<PanelElementDescription> elements, string id)
+    {
+        for (var index = 0; index < elements.Count; index++)
+        {
+            if (string.Equals(elements[index].Id, id, StringComparison.Ordinal))
+            {
+                return index;
+            }
+        }
+
+        return -1;
+    }
+
+    private static JsonArray Ids(List<PanelElementDescription> elements)
+    {
+        var ids = new JsonArray();
+
+        foreach (var element in elements)
+        {
+            JsonArr.AddText(ids, element.Id);
+        }
+
+        return ids;
+    }
+
+    /// <summary>The page ids of the windows that are up, for an error message that tells the caller what to name.</summary>
+    private static JsonArray Ids(DialogPresence presence)
+    {
+        var ids = new JsonArray();
+
+        foreach (var window in presence.All ?? [])
+        {
+            JsonArr.AddText(ids, PanelModel.PanelId(window.Title, window.WindowClass, PanelModel.KindUnknown));
+        }
+
+        return ids;
+    }
+
+    private static string Handle(nint handle) => "0x" + ((long)handle).ToString("X8", CultureInfo.InvariantCulture);
+}

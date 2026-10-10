@@ -29,8 +29,40 @@ internal static class UiCommands
             + "command's payload reports the same thing without a second invocation.");
 
         ui.Subcommands.Add(BuildDialog());
+        ui.Subcommands.Add(BuildPanels());
         ui.Subcommands.Add(BuildPress());
         return ui;
+    }
+
+    private static Command BuildPanels()
+    {
+        var panel = new Option<string?>("--panel")
+        {
+            Description = "Read this panel's elements in full, e.g. dorico.library-manager. Omit it to list every "
+                + "Dorico window that is not the document window — that listing is Win32 only and carries no elements.",
+        };
+
+        var raw = new Option<bool>("--raw")
+        {
+            Description = "Also report how many elements the walk visited, kept or not.",
+        };
+
+        var command = new Command(
+            "panels",
+            "Every window Dorico has up besides its document window, with the elements of the one you name. A panel "
+            + "is modeless: it does not stall Dorico's command queue, so it is reported here and never as `dialog`.")
+        {
+            panel,
+            raw,
+        };
+
+        command.SetAction(parse => CommandRoot.RunAsync("ui panels", () =>
+        {
+            var payload = PanelSurface.List(parse.GetValue(panel), parse.GetValue(raw));
+            return Task.FromResult(payload);
+        }));
+
+        return command;
     }
 
     private static Command BuildDialog()
@@ -74,18 +106,34 @@ internal static class UiCommands
 
     private static Command BuildPress()
     {
-        var dialog = new Option<string>("--dialog")
+        var dialog = new Option<string?>("--dialog")
         {
             Description = "The dialog.id to press in, e.g. dorico.export-musicxml. Every payload that reports a "
                 + "dialog carries it, and so does `ui dialog`.",
-            Required = true,
         };
 
-        var button = new Option<string>("--button")
+        var panel = new Option<string?>("--panel")
+        {
+            Description = "The panel.id to work an element of, e.g. dorico.library-manager. `ui panels` lists them; "
+                + "a panel is modeless, so it is never the `dialog`.",
+        };
+
+        var button = new Option<string?>("--button")
         {
             Description = "The button id to press, e.g. cancel or accept. `dialog.buttons[].id` lists them; "
-                + "`dialog.pressWith` is a ready-to-paste line for the safest one.",
-            Required = true,
+                + "`dialog.pressWith` is a ready-to-paste line for the safest one. Alias of --element for a dialog.",
+        };
+
+        var element = new Option<string?>("--element")
+        {
+            Description = "The element id to work: a button, a check box, a tab, a list or tree item, an edit field. "
+                + "`ui panels --panel <id>` lists them with the action each one takes.",
+        };
+
+        var value = new Option<string?>("--value")
+        {
+            Description = "Text to write into a text field through the UI Automation value pattern, e.g. a path in a "
+                + "file picker's name box. Refused with ElementNotSettable when the element will not take it.",
         };
 
         var allowDestructive = new Option<bool>("--allow-destructive")
@@ -96,9 +144,9 @@ internal static class UiCommands
 
         var allowUnknown = new Option<bool>("--allow-unknown-dialog")
         {
-            Description = "Press a button of a dialog that is not in this build's catalogue. The payload then "
-                + "carries a warning, every button of such a dialog is unsafe, so --allow-destructive is needed "
-                + "too.",
+            Description = "Work a button of a dialog, or an element of a panel, that is not in this build's "
+                + "catalogue. The payload then carries a warning, every button of such a dialog is unsafe, so "
+                + "--allow-destructive is needed too.",
         };
 
         var path = new Option<string?>("--path")
@@ -116,26 +164,68 @@ internal static class UiCommands
 
         var command = new Command(
             "press",
-            "Press one button of the dialog that is up, after re-probing it: the dialog named must be the one that "
-            + "is up, or the press refuses with WrongDialog. The payload's `dialog` is what is up afterwards, which "
-            + "is the only evidence — a press that closes its own window can report an error after succeeding.")
+            "Work one element: press a button of the dialog that is up after re-probing it (the dialog named must be "
+            + "the one that is up, or the press refuses with WrongDialog), or toggle, choose, expand, press or fill "
+            + "an element of a panel. The payload says what is up afterwards, which is the only evidence — a press "
+            + "that closes its own window can report an error after succeeding.")
         {
             dialog,
+            panel,
             button,
+            element,
+            value,
             allowDestructive,
             allowUnknown,
             path,
             timeout,
         };
 
-        command.SetAction(parse => CommandRoot.RunAsync("ui press", () => Task.FromResult(DialogSurface.Press(
-            parse.GetValue(dialog) ?? string.Empty,
-            parse.GetValue(button) ?? string.Empty,
-            parse.GetValue(allowUnknown),
-            parse.GetValue(allowDestructive),
-            parse.GetValue(path),
-            Math.Clamp(parse.GetValue(timeout), 0, 120_000)))));
+        command.SetAction(parse => CommandRoot.RunAsync("ui press", () =>
+        {
+            var dialogId = parse.GetValue(dialog);
+            var panelId = parse.GetValue(panel);
+            var elementId = parse.GetValue(element) ?? parse.GetValue(button);
+            var workspace = Nullable(parse.GetValue(value) ?? parse.GetValue(path));
+
+            if (string.IsNullOrWhiteSpace(elementId))
+            {
+                throw new CliException(
+                    "InvalidArgument",
+                    "ui press needs an element to work: --button <id> for a dialog, or --element <id> for a dialog "
+                    + "or a panel. `ui dialog` and `ui panels` list the ids that exist right now.",
+                    1);
+            }
+
+            if (!string.IsNullOrWhiteSpace(panelId) && !string.IsNullOrWhiteSpace(dialogId))
+            {
+                throw new CliException(
+                    "InvalidArgument",
+                    "ui press works in one window: pass --dialog <id> or --panel <id>, not both. A panel is a "
+                    + "modeless window and is never the `dialog`.",
+                    1);
+            }
+
+            if (!string.IsNullOrWhiteSpace(panelId))
+            {
+                return Task.FromResult(PanelSurface.Act(
+                    panelId,
+                    elementId,
+                    workspace,
+                    parse.GetValue(allowUnknown)));
+            }
+
+            return Task.FromResult(DialogSurface.Press(
+                dialogId ?? string.Empty,
+                elementId,
+                parse.GetValue(allowUnknown),
+                parse.GetValue(allowDestructive),
+                workspace,
+                Math.Clamp(parse.GetValue(timeout), 0, 120_000)));
+        }));
 
         return command;
     }
+
+    /// <summary>An option that was passed as the empty string means "nothing", not "a value of zero length".</summary>
+    private static string? Nullable(string? value) => string.IsNullOrEmpty(value) ? null : value;
 }

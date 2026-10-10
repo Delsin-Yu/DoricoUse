@@ -3,21 +3,6 @@ using System.Runtime.InteropServices;
 
 namespace DoricoUse.Cli.Ui;
 
-/// <summary>One top-level window, as Win32 describes it. No UI Automation, no COM: this is the cheap presence fact.</summary>
-/// <param name="Handle">The window handle.</param>
-/// <param name="ProcessId">The process that owns the window.</param>
-/// <param name="Owner">The window's <c>GW_OWNER</c>, or zero.</param>
-/// <param name="Foreground">True for the window that currently holds the foreground.</param>
-/// <param name="WindowClass">The Win32 window class, verbatim.</param>
-/// <param name="Title">The window caption, verbatim.</param>
-internal sealed record WindowFacts(
-    nint Handle,
-    uint ProcessId,
-    nint Owner,
-    bool Foreground,
-    string WindowClass,
-    string Title);
-
 /// <summary>What the presence probe found, including how it failed when it did.</summary>
 /// <param name="Dialog">The modal window, or null when nothing of Dorico's is modal.</param>
 /// <param name="How">The mechanism, for <c>probe.how</c>.</param>
@@ -31,6 +16,12 @@ internal sealed record WindowFacts(
 /// Whether Dorico's document window was enabled, or null when no document window was found. This is the fact the
 /// modality rule turns on, so it is reported rather than inferred from an absent dialog.
 /// </param>
+/// <param name="All">
+/// Every visible top-level window of Dorico's own process, topmost first. The document window and the modal window
+/// are both in here and are flagged as such, because a list that silently dropped them could not answer "which of
+/// these is the one holding the queue" either.
+/// </param>
+/// <param name="Document">The handle the probe resolved as Dorico's document window, or zero.</param>
 /// <param name="Degraded">True when the probe itself failed.</param>
 /// <param name="Error">Why it failed, when it did.</param>
 internal sealed record DialogPresence(
@@ -39,6 +30,8 @@ internal sealed record DialogPresence(
     long Milliseconds,
     int Windows = 0,
     bool? DocumentEnabled = null,
+    IReadOnlyList<WindowFacts>? All = null,
+    nint Document = default,
     bool Degraded = false,
     string? Error = null);
 
@@ -90,10 +83,37 @@ internal static class DialogProbe
             var document = DocumentWindow(windows, dorico);
             var enabled = document is null ? (bool?)null : IsWindowEnabled(document.Handle);
 
+            // Measured correction: while a modal that owns nothing is up — the crash reporter is one, and it
+            // disables every other window of the process — Windows still calls one of those disabled windows the
+            // process's main window, and it is not always the document. The document window is the <b>largest</b>
+            // window that a modal disabled, which is a fact about how a score window fills a screen: measured with
+            // the crash reporter up, the resolution named the 1768x1077 library manager and the 3286x1841 document
+            // window beside it. When the resolved window is enabled, or is the largest disabled one already, nothing
+            // changes.
+            if (document is not null && enabled == false)
+            {
+                var largest = windows
+                    .Where(window => dorico.Contains(window.ProcessId)
+                        && window.Handle != document.Handle
+                        && window.Owner == nint.Zero
+                        && !window.Enabled
+                        && Area(window.Handle) > Area(document.Handle))
+                    .OrderByDescending(window => Area(window.Handle))
+                    .FirstOrDefault();
+
+                if (largest is not null)
+                {
+                    document = largest;
+                }
+            }
+
+            var documentHandle = document?.Handle ?? nint.Zero;
+            var all = mine.ToArray();
+
             if (document is null || enabled == true)
             {
                 // No document window, or nothing has disabled it: whatever else is on screen is not modal.
-                return new DialogPresence(null, How, Elapsed(started), mine.Count, enabled);
+                return new DialogPresence(null, How, Elapsed(started), mine.Count, enabled, all, documentHandle);
             }
 
             var candidates = windows
@@ -102,7 +122,7 @@ internal static class DialogProbe
 
             if (candidates.Count == 0)
             {
-                return new DialogPresence(null, How, Elapsed(started), mine.Count, enabled);
+                return new DialogPresence(null, How, Elapsed(started), mine.Count, enabled, all, documentHandle);
             }
 
             var chosen = candidates
@@ -110,7 +130,7 @@ internal static class DialogProbe
                 .ThenByDescending(window => window.Owner == document.Handle)
                 .First();
 
-            return new DialogPresence(chosen, How, Elapsed(started), mine.Count, enabled);
+            return new DialogPresence(chosen, How, Elapsed(started), mine.Count, enabled, all, documentHandle);
         }
         catch (Exception ex)
         {
@@ -144,6 +164,7 @@ internal static class DialogProbe
                     processId,
                     GetWindow(handle, GwOwner),
                     handle == foreground,
+                    IsWindowEnabled(handle),
                     Class(handle),
                     Text(handle)));
 

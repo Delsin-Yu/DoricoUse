@@ -45,6 +45,16 @@ internal static class UiaCalls
 
     // IUIAutomationTogglePattern
     private const int Toggle = 0;
+    private const int ToggleCurrentState = 1;
+
+    // IUIAutomationSelectionItemPattern
+    private const int SelectionItemSelect = 0;
+    private const int SelectionItemCurrentIsSelected = 3;
+
+    // IUIAutomationExpandCollapsePattern
+    private const int ExpandCollapseExpand = 0;
+    private const int ExpandCollapseCollapse = 1;
+    private const int ExpandCollapseCurrentState = 2;
 
     // IUIAutomationLegacyIAccessiblePattern
     private const int LegacyDoDefaultAction = 1;
@@ -70,11 +80,31 @@ internal static class UiaCalls
     /// <summary>Control type ids this build distinguishes.</summary>
     public const int ControlTypeButton = 50000;
 
-    public const int ControlTypeEdit = 50004;
+    public const int ControlTypeCheckBox = 50002;
 
     public const int ControlTypeComboBox = 50003;
 
+    public const int ControlTypeEdit = 50004;
+
+    public const int ControlTypeMenuItem = 50011;
+
+    public const int ControlTypeRadioButton = 50013;
+
+    public const int ControlTypeTabItem = 50019;
+
+    public const int ControlTypeTreeItem = 50024;
+
+    public const int ControlTypeListItem = 50029;
+
+    public const int ControlTypeSplitButton = 50031;
+
     public const int ControlTypeText = 50020;
+
+    /// <summary>Selection item pattern id.</summary>
+    public const int SelectionItemPatternId = 10010;
+
+    /// <summary>Expand-collapse pattern id.</summary>
+    public const int ExpandCollapsePatternId = 10005;
 
     /// <summary>S_FALSE, which a tree walk returns for "no such child" rather than an error.</summary>
     private const int False = 1;
@@ -119,6 +149,213 @@ internal static class UiaCalls
         var hr = UiaCom.CallIntOutPointer(element, ElementGetCurrentPattern, patternId, out var pattern);
 
         return hr < 0 || pattern == nint.Zero ? nint.Zero : pattern;
+    }
+
+    /// <summary>
+    /// What a panel element's own state patterns say, all in one place because they are the whole point of the
+    /// panel layer: a dialog only ever needed "press this", and a panel needs "which tab is chosen", "is this check
+    /// box on" and "what does this field hold".
+    /// </summary>
+    /// <param name="element">The element.</param>
+    /// <param name="controlType">Its control type, which decides which patterns are worth asking for.</param>
+    /// <returns>
+    /// The toggle state (<c>on</c>/<c>off</c>/<c>indeterminate</c>), the selection-item state, the expand-collapse
+    /// state, the value and whether the element has an invoke pattern. Each is null when the element does not
+    /// expose the pattern.
+    /// </returns>
+    /// <remarks>
+    /// <para>
+    /// The vtable slots are the client-interface order: IUIAutomationTogglePattern is Toggle then
+    /// get_CurrentToggleState; IUIAutomationSelectionItemPattern is Select, AddToSelection, RemoveFromSelection then
+    /// get_CurrentIsSelected; IUIAutomationExpandCollapsePattern is Expand, Collapse then
+    /// get_CurrentExpandCollapseState.
+    /// </para>
+    /// <para>
+    /// The control type decides which patterns are asked for, and that is a speed decision with a measurement behind
+    /// it: a first version asked every element for all five patterns and took 1034 ms for the three buttons of the
+    /// measured crash reporter, because each <c>GetCurrentPattern</c> on a Qt element is a COM round trip. A button
+    /// is not asked whether it is checked, and a check box is not asked for a text value.
+    /// </para>
+    /// </remarks>
+    public static (string? Toggle, bool? Selected, string? Expanded, string? Value, bool Invokable) State(
+        nint element,
+        int controlType)
+    {
+        string? toggleState = null;
+        bool? selected = null;
+        string? expanded = null;
+        string? value = null;
+        var invokable = false;
+
+        if (controlType is ControlTypeButton or ControlTypeSplitButton or ControlTypeMenuItem)
+        {
+            invokable = HasPattern(element, InvokePatternId);
+        }
+        else if (controlType is ControlTypeCheckBox or ControlTypeRadioButton)
+        {
+            toggleState = ReadToggle(element);
+            invokable = HasPattern(element, InvokePatternId);
+        }
+        else if (controlType is ControlTypeEdit or ControlTypeComboBox)
+        {
+            if (TryValue(element, out var text, out _))
+            {
+                value = text;
+            }
+        }
+        else if (controlType is ControlTypeTabItem or ControlTypeListItem or ControlTypeTreeItem)
+        {
+            selected = ReadSelected(element);
+            expanded = ReadExpanded(element);
+            invokable = HasPattern(element, InvokePatternId);
+        }
+        else
+        {
+            // Anything else that got this far: ask for what a value pattern and an invoke pattern answer, and leave
+            // the state patterns alone.
+            if (TryValue(element, out var text, out _))
+            {
+                value = text;
+            }
+
+            invokable = HasPattern(element, InvokePatternId);
+        }
+
+        return (toggleState, selected, expanded, value, invokable);
+    }
+
+    private static string? ReadToggle(nint element)
+    {
+        var pattern = Pattern(element, TogglePatternId);
+
+        if (pattern == nint.Zero)
+        {
+            return null;
+        }
+
+        try
+        {
+            return UiaCom.CallInt(pattern, ToggleCurrentState, out var raw) < 0
+                ? null
+                : raw switch
+                {
+                    1 => "on",
+                    2 => "indeterminate",
+                    _ => "off",
+                };
+        }
+        finally
+        {
+            UiaCom.Release(pattern);
+        }
+    }
+
+    private static bool? ReadSelected(nint element)
+    {
+        var pattern = Pattern(element, SelectionItemPatternId);
+
+        if (pattern == nint.Zero)
+        {
+            return null;
+        }
+
+        try
+        {
+            return UiaCom.CallInt(pattern, SelectionItemCurrentIsSelected, out var flag) >= 0 ? flag != 0 : null;
+        }
+        finally
+        {
+            UiaCom.Release(pattern);
+        }
+    }
+
+    private static string? ReadExpanded(nint element)
+    {
+        var pattern = Pattern(element, ExpandCollapsePatternId);
+
+        if (pattern == nint.Zero)
+        {
+            return null;
+        }
+
+        try
+        {
+            return UiaCom.CallInt(pattern, ExpandCollapseCurrentState, out var raw) < 0
+                ? null
+                : raw switch
+                {
+                    0 => "expanded",
+                    1 => "collapsed",
+                    2 => "partiallyExpanded",
+                    3 => "leafNode",
+                    _ => null,
+                };
+        }
+        finally
+        {
+            UiaCom.Release(pattern);
+        }
+    }
+
+    /// <summary>True when the element exposes a pattern at all, without keeping the pattern object.</summary>
+    public static bool HasPattern(nint element, int patternId)
+    {
+        var pattern = Pattern(element, patternId);
+
+        if (pattern == nint.Zero)
+        {
+            return false;
+        }
+
+        UiaCom.Release(pattern);
+
+        return true;
+    }
+
+    /// <summary>Selects a list or tree item, or a tab. The third pattern an action may use.</summary>
+    public static void SelectItem(nint element)
+    {
+        var pattern = Pattern(element, SelectionItemPatternId);
+
+        if (pattern == nint.Zero)
+        {
+            throw new CliException(
+                "ElementNotActionable",
+                "The element exposes no selection-item pattern, so it cannot be chosen.",
+                DialogModel.RefusalExitCode);
+        }
+
+        try
+        {
+            Check(UiaCom.CallVoid(pattern, SelectionItemSelect), nameof(SelectItem));
+        }
+        finally
+        {
+            UiaCom.Release(pattern);
+        }
+    }
+
+    /// <summary>Expands or collapses an element, which is how a tree item or a split button is opened.</summary>
+    public static void Expand(nint element, bool open)
+    {
+        var pattern = Pattern(element, ExpandCollapsePatternId);
+
+        if (pattern == nint.Zero)
+        {
+            throw new CliException(
+                "ElementNotActionable",
+                "The element exposes no expand-collapse pattern, so it cannot be opened or closed.",
+                DialogModel.RefusalExitCode);
+        }
+
+        try
+        {
+            Check(UiaCom.CallVoid(pattern, open ? ExpandCollapseExpand : ExpandCollapseCollapse), nameof(Expand));
+        }
+        finally
+        {
+            UiaCom.Release(pattern);
+        }
     }
 
     /// <summary>Pressing a button: the first of the three patterns that this build will use.</summary>

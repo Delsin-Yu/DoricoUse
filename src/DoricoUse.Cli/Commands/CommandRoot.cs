@@ -126,7 +126,10 @@ internal static class CommandRoot
         {
             var payload = action().GetAwaiter().GetResult();
 
-            return ResponseWriter.Success(command, payload, DialogSurface.Extras(payload.ContainsKey("dialog")));
+            return ResponseWriter.Success(
+                command,
+                payload,
+                DialogSurface.Extras(payload.ContainsKey("dialog"), payload.ContainsKey("panels")));
         }
         catch (Exception ex)
         {

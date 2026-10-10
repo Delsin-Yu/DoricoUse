@@ -64,14 +64,19 @@ internal static class DialogSurface
     }
 
     /// <summary>
-    /// What this invocation has to say about Dorico's dialogs and its command queue, ready to be merged into the
-    /// payload. Always carries <c>dialog</c>, null when nothing is modal.
+    /// What this invocation has to say about Dorico's dialogs, its panels and its command queue, ready to be merged
+    /// into the payload. Always carries <c>dialog</c> and <c>panels</c>; <c>dialog</c> is null when nothing is modal,
+    /// and a panel is never reported there.
     /// </summary>
     /// <param name="dialogOwned">
     /// True when the command's own payload already carries <c>dialog</c> — <c>ui dialog</c> and <c>ui press</c> do,
     /// and theirs is the better answer, so the probe is not repeated here.
     /// </param>
-    public static JsonObject Extras(bool dialogOwned = false)
+    /// <param name="panelsOwned">
+    /// True when the payload already carries <c>panels</c>: <c>ui panels</c> reads UI Automation behind them, which
+    /// is the better answer, and this one costs only Win32.
+    /// </param>
+    public static JsonObject Extras(bool dialogOwned = false, bool panelsOwned = false)
     {
         var extras = new JsonObject();
         var execution = LogQueue.Verdict(LogQueue.DefaultBudget);
@@ -81,9 +86,27 @@ internal static class DialogSurface
             extras["execution"] = execution;
         }
 
+        if (dialogOwned && panelsOwned)
+        {
+            return extras;
+        }
+
+        // One probe serves both fields: it is the cheap Win32 fact, and calling it twice would report two different
+        // moments of a window list that a dialog can change between them.
+        var presence = DialogProbe.Probe();
+
         if (!dialogOwned)
         {
-            extras["dialog"] = Current();
+            extras["dialog"] = Describe(presence, raw: false, out _);
+        }
+
+        if (!panelsOwned)
+        {
+            extras["panels"] = PanelModel.Windows(
+                presence.All ?? [],
+                presence.DocumentEnabled,
+                presence.Document,
+                presence.Dialog?.Handle ?? nint.Zero);
         }
 
         return extras;
@@ -218,7 +241,7 @@ internal static class DialogSurface
 
         try
         {
-            var description = DialogModel.Describe(read.Input);
+            var description = DialogModel.Describe(read.Input, presence.DocumentEnabled);
 
             if (!string.Equals(description.Id, dialogId, StringComparison.Ordinal))
             {
@@ -373,7 +396,7 @@ internal static class DialogSurface
 
             try
             {
-                var description = DialogModel.Describe(read.Input);
+                var description = DialogModel.Describe(read.Input, presence.DocumentEnabled);
                 var probe = new DialogProbeInfo(
                     How: "win32+uia",
                     Milliseconds: presence.Milliseconds + (long)Stopwatch.GetElapsedTime(started).TotalMilliseconds,
@@ -402,7 +425,9 @@ internal static class DialogSurface
         {
             // The window is modal, so it is reported with what Win32 knows and no buttons. Everything that could
             // not be read is named in probe.error rather than hidden behind an empty dialog.
-            var description = DialogModel.Describe(DialogReader.Empty(window.Title, window.WindowClass, owner));
+            var description = DialogModel.Describe(
+                DialogReader.Empty(window.Title, window.WindowClass, owner),
+                presence.DocumentEnabled);
             var probe = new DialogProbeInfo(
                 How: presence.How,
                 Milliseconds: presence.Milliseconds + (long)Stopwatch.GetElapsedTime(started).TotalMilliseconds,

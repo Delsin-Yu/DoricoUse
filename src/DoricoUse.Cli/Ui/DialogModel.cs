@@ -139,7 +139,15 @@ internal static class DialogModel
     private const int MaxDerivedIdLength = 64;
 
     /// <summary>Describes one dialog: its identity, its buttons and the one press an agent should reach for.</summary>
-    public static DialogDescription Describe(DialogInput input)
+    /// <param name="input">What the Windows side measured.</param>
+    /// <param name="documentEnabled">
+    /// Whether Dorico's document window was enabled when the dialog was found. False is the fact that decides this
+    /// one: a window that is up while the document window is disabled is holding the queue, whatever its class says.
+    /// Measured, and measured against the class hint: Dorico's crash reporter is a <c>Qt6101QWindowIcon</c> — the
+    /// class this build reads as modeless, because the library manager has it — and while it was up it had disabled
+    /// the document window <i>and</i> the library manager. Null falls back to the class hint alone.
+    /// </param>
+    public static DialogDescription Describe(DialogInput input, bool? documentEnabled = null)
     {
         ArgumentNullException.ThrowIfNull(input);
 
@@ -155,7 +163,7 @@ internal static class DialogModel
             Shape: shape,
             WindowClass: input.WindowClass,
             Owner: input.Owner,
-            BlocksQueue: BlocksQueueHint(input.WindowClass),
+            BlocksQueue: documentEnabled == false || BlocksQueueHint(input.WindowClass),
             Title: input.Title,
             Description: lines.Length == 0 ? null : string.Join('\n', lines),
             TextSource: lines.Length == 0 ? "none" : input.TextSource,
