@@ -1,0 +1,138 @@
+name: release
+
+# A release is a tag: `git tag v0.1.0 && git push origin v0.1.0`. The tag is the trigger rather than a manual
+# dispatch, so the commit that is released is the commit that was tagged - there is nothing to pick wrongly.
+on:
+  push:
+    tags: ['v*']
+
+# One release at a time. Unlike ci.yml this never cancels: a tag is pushed once, and a re-run here is a repair
+# (a failed step, a wrong note), not a newer answer.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+
+# Creating a release writes to the repository, so the default read-only token is not enough.
+permissions:
+  contents: write
+
+jobs:
+  release:
+    # Windows and win-x64 only, for the same reason as ci.yml: that is the combination the tool was tested on.
+    runs-on: windows-latest
+
+    env:
+      # What was tagged. `github.ref_name` is the tag on a tag push; the environment is where a ref belongs,
+      # because splicing it into a command line is how a tag with a space becomes somebody else's command.
+      TAG: ${{ github.ref_name }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: build
+        # The solution names all three projects, so one build covers the CLI and both checks.
+        run: dotnet build DoricoUse.slnx -c Release --nologo
+
+      - name: run the checks
+        # Both checks exit non-zero on a failure, and a release is the last place a failure is still cheap. The
+        # checks that need the maintainer's own scores report `skip` and exit 0 - those files are deliberately not
+        # in the repository (see NOTICE), so this run is expected to be narrower than the maintainer's own.
+        run: |
+          ./tests/ProjectFileCheck/bin/Release/net10.0/project-file-check.exe
+          ./tests/VocabularyCheck/bin/Release/net10.0/vocabulary-check.exe
+
+      - name: publish (Native AOT, win-x64)
+        # No -p:ExposeUnsafeScriptRunApi=true and no -p:NeverPersistSession=true, deliberately: those switches
+        # exist for development builds, and leaving them off here is the entire reason the assertion below can
+        # pass. Adding one to this line would be caught rather than shipped.
+        run: dotnet publish src/DoricoUse.Cli/DoricoUse.Cli.csproj -c Release -r win-x64 --nologo
+
+      - name: the version this release is
+        # Read once, from the published binary, because the artifact is what the name and the notes have to
+        # describe: the tag and the csproj are both just claims about it.
+        shell: pwsh
+        working-directory: src/DoricoUse.Cli/bin/Release/net10.0/win-x64/publish
+        run: |
+          $v = & .\dorico-use.exe version | ConvertFrom-Json
+          # `informational` is `<Version>+<commit sha>` once the SDK stamps the source revision. The zip name uses
+          # the part before the `+`: a build-metadata suffix in a file name is noise, and SemVer says it may be
+          # ignored anyway.
+          $version = ($v.version.informational -split '\+')[0]
+          if ([string]::IsNullOrWhiteSpace($version)) { throw "the published binary reports no version" }
+          "RELEASE_VERSION=$version" >> $env:GITHUB_ENV
+          Write-Host "release version: $version (tag $env:TAG)"
+
+      - name: assert the published binary is not an unsafe build
+        # The point of B1/B3: the development switches are never passed to the publish above, and this proves it on
+        # the artifact itself instead of trusting the command line. If a default ever flips, the release stops
+        # here rather than handing out a binary with the scripting surface on.
+        shell: pwsh
+        working-directory: src/DoricoUse.Cli/bin/Release/net10.0/win-x64/publish
+        run: |
+          $v = & .\dorico-use.exe version | ConvertFrom-Json
+          # A missing group would make the check below vacuously false and pass, which is the one way this step
+          # could lie; so the group has to be there before its flags mean anything.
+          if ($null -eq $v.version.build) { throw "the published binary does not report its build flags" }
+          if ($v.version.build.exposeUnsafeScriptRunApi -or $v.version.build.neverPersistSession) {
+            throw "this build exposes a surface a release must not have"
+          }
+
+      - name: zip (the exe and the user-facing files)
+        # One zip, because there is no installer: the five files are what a user of a release gets, and the
+        # licences and the changelog travel with the binary they describe.
+        shell: pwsh
+        run: |
+          $publish = 'src/DoricoUse.Cli/bin/Release/net10.0/win-x64/publish'
+          $files = @("$publish/dorico-use.exe", 'README.md', 'LICENSE', 'NOTICE', 'CHANGELOG.md')
+
+          # `if-no-files-found: error` in ci.yml's upload is the model: a zip that quietly lacks the licence is
+          # worse than a release that failed. Compress-Archive only tolerates what a wildcard can match.
+          foreach ($file in $files) {
+            if (-not (Test-Path -LiteralPath $file -PathType Leaf)) { throw "missing from the release: $file" }
+          }
+
+          $zip = "dorico-use-$env:RELEASE_VERSION-win-x64.zip"
+          # -Path with plain file paths puts the files at the root of the archive, with no directory to dig into.
+          Compress-Archive -Path $files -DestinationPath $zip -Force
+          "RELEASE_ZIP=$zip" >> $env:GITHUB_ENV
+          Get-Item -LiteralPath $zip | Select-Object Name, Length
+
+      - name: extract this version's CHANGELOG section
+        # The notes are what CHANGELOG.md already says, from the `## [<version>]` heading to the next `## `
+        # heading, so the release page and the file cannot drift. No section (a tag with no entry - the changelog
+        # is the maintainer's to write) leaves the file empty for the fallback below.
+        shell: pwsh
+        run: |
+          $section = [regex]::Match(
+            (Get-Content -Raw CHANGELOG.md),
+            "(?ms)^##\s+\[$([regex]::Escape($env:RELEASE_VERSION))\][^\r\n]*\r?\n(?<body>.*?)(?=^##\s|\z)"
+          )
+          $notes = if ($section.Success) { $section.Value.Trim() } else { '' }
+          Set-Content -Path release-notes.md -Value $notes -NoNewline
+          Write-Host "extracted $($notes.Length) characters of notes"
+
+      - name: create the release
+        # GH_TOKEN is `github.token` with the contents: write above - the workflow's own token, so there is no PAT
+        # to rotate and no secret that can outlive the run.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: |
+          if (-not (Test-Path -LiteralPath $env:RELEASE_ZIP -PathType Leaf) -or
+              (Get-Item -LiteralPath $env:RELEASE_ZIP).Length -eq 0) {
+            throw "nothing to upload: $env:RELEASE_ZIP"
+          }
+
+          $arguments = @('release', 'create', $env:TAG, '--title', $env:TAG)
+          if ((Get-Item -LiteralPath release-notes.md).Length -gt 0) {
+            $arguments += @('--notes-file', 'release-notes.md')
+          } else {
+            Write-Host "no CHANGELOG section for $env:RELEASE_VERSION - using GitHub's generated notes"
+            $arguments += '--generate-notes'
+          }
+          $arguments += $env:RELEASE_ZIP
+
+          gh @arguments
