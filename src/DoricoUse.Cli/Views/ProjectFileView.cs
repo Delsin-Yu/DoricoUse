@@ -34,6 +34,13 @@ internal static class ProjectFileView
             + "it uses sharps only and reads Bb5 as A#5. Read 'midi' when the exact pitch matters, and 'spelling' for "
             + "the letter the score actually notated."),
         (JsonNode?)JsonValue.Create(
+            "accidental/accidentalSteps: derived from the spelling letter and the sounding MIDI number, which together "
+            + "pin it for a concert-pitch instrument (letter B at MIDI 82 is a B flat; the file stores no accidental of "
+            + "its own). It is null where the two cannot agree on a written pitch: on a transposing instrument, whose "
+            + "written and sounding pitches differ by the interval the file states at "
+            + "instrument/transposition/intervalForTransposingScores, and on unpitched percussion, where the MIDI value "
+            + "is a drum-map position. The file's own transposition flag decides that, not a guess."),
+        (JsonNode?)JsonValue.Create(
             "spelling: the letter the score itself spells the note with, read from the note event's kNoteSpelling "
             + "property (the file writes it as a variant string, e.g. string: \"B\" -> \"B\"). It is a *letter only*: "
             + "the project stores no accidental for the note, so 'spelling' plus 'midi' is what pins the written "
@@ -486,6 +493,8 @@ internal static class ProjectFileView
                 ["pitch"] = note.Pitch,
                 ["midi"] = note.Midi,
                 ["spelling"] = note.Spelling,
+            ["accidental"] = note.Accidental,
+            ["accidentalSteps"] = note.AccidentalSteps,
                 ["player"] = note.Player,
                 ["instrument"] = note.Instrument,
                 ["stave"] = note.Stave,

@@ -1091,17 +1091,41 @@ internal static class ProjectFileScoreReader
 
                         return true;
                     },
-                    (key, childCount, _) => NameAt(key) == "nameData"
-                        ? WalkNameData(childCount, instrument)
-                        : SkipChildren(childCount));
+                    (key, childCount, _) => NameAt(key) switch
+                    {
+                        "nameData" => WalkNameData(childCount, instrument),
+                        "transposition" => WalkTransposition(childCount, instrument),
+                        _ => SkipChildren(childCount),
+                    });
 
                 player.Instruments.Add(instrument);
 
                 return ok;
             });
 
-        private bool WalkNameData(long count, InstrumentDraft instrument)
+        /// <summary>
+        /// The instrument's transposition, which the file states as
+        /// <c>intervalForTransposingScores = "steamVariantList:list: {int: 2}, {string: "kIntervalMajorOrPerfect"}"</c>
+        /// — a major-or-perfect interval of two (a major second), five (a perfect fifth) and so on. Only its
+        /// presence matters here: with it, a note's written pitch and its sounding pitch differ, so the note's MIDI
+        /// number says nothing about the accidental its spelling implies.
+        /// </summary>
+        private bool WalkTransposition(long count, InstrumentDraft instrument)
             => WalkChildren(
+                count,
+                (key, value) =>
+                {
+                    if (NameAt(key) == "intervalForTransposingScores")
+                    {
+                        instrument.Transposing = true;
+                        instrument.Transposition = Value(value);
+                    }
+
+                    return true;
+                },
+                (_, childCount, _) => SkipChildren(childCount));
+
+        private bool WalkNameData(long count, InstrumentDraft instrument)            => WalkChildren(
                 count,
                 (key, value) =>
                 {
@@ -2070,12 +2094,18 @@ internal static class ProjectFileScoreReader
             var names = _players.ToDictionary(player => player.Id, player => DisplayName(player.Name));
 
             var instruments = new Dictionary<(long Player, long Instrument), string?>();
+            var transposing = new HashSet<(long Player, long Instrument)>();
 
             foreach (var player in _players)
             {
                 foreach (var instrument in player.Instruments)
                 {
                     instruments[(player.Id, instrument.Id)] = DisplayName(instrument.Name);
+
+                    if (instrument.Transposing)
+                    {
+                        transposing.Add((player.Id, instrument.Id));
+                    }
                 }
             }
 
@@ -2121,6 +2151,19 @@ internal static class ProjectFileScoreReader
                     lastMeasure = (int)measure;
                 }
 
+                var spelling = Spelling(note.Properties);
+
+                // Only a concert-pitch instrument lets the sounding MIDI number and the written letter agree: on a
+                // transposing instrument the two differ by the instrument's interval, so any accidental derived from
+                // them would look plausible and be wrong. The file says which instruments transpose, so those notes
+                // get null instead of a guess.
+                var concertPitch = stave is null
+                    || stave.PlayerId is null
+                    || stave.InstrumentId is null
+                    || !transposing.Contains((stave.PlayerId.Value, stave.InstrumentId.Value));
+
+                var accidental = concertPitch ? AccidentalOf(midi, spelling) : null;
+
                 notes.Add(new ProjectFileNote(
                     note.EventId,
                     (int)measure,
@@ -2136,7 +2179,9 @@ internal static class ProjectFileScoreReader
                         : instruments.GetValueOrDefault((stave.PlayerId.Value, stave.InstrumentId.Value)),
                     stave?.Stave,
                     stave?.Voice,
-                    Spelling(note.Properties)));
+                    spelling,
+                    accidental?.Name,
+                    accidental?.Steps));
             }
 
             var staves = _streamStaves.Values
@@ -2401,6 +2446,57 @@ internal static class ProjectFileScoreReader
         /// </summary>
         private static string? Spelling(List<PropertyDraft> properties)
             => VariantText(Property(properties, "kNoteSpelling"));
+
+        /// <summary>
+        /// The accidental a spelling implies, derived from the letter and the sounding pitch: the file stores
+        /// none, but the two together pin it. Natural semitone offsets are C=0 D=2 E=4 F=5 G=7 A=9 B=11, the octave
+        /// follows from Dorico's C4 = middle C, and the difference between the note's MIDI number and that natural
+        /// is the accidental (0 natural, +1 sharp, -1 flat, and so on). Anything beyond a triple accidental is not a
+        /// written pitch at all - unpitched percussion keeps a drum-map position in the same field - so those notes
+        /// get null rather than a guess.
+        /// </summary>
+        private static (string Name, int Steps)? AccidentalOf(int? midi, string? spelling)
+        {
+            if (midi is not { } value || string.IsNullOrWhiteSpace(spelling))
+            {
+                return null;
+            }
+
+            var naturalOffset = char.ToUpperInvariant(spelling.Trim()[0]) switch
+            {
+                'C' => 0,
+                'D' => 2,
+                'E' => 4,
+                'F' => 5,
+                'G' => 7,
+                'A' => 9,
+                'B' => 11,
+                _ => -1,
+            };
+
+            if (naturalOffset < 0)
+            {
+                return null;
+            }
+
+            var octave = (int)Math.Round((value - naturalOffset - 12) / 12.0, MidpointRounding.AwayFromZero);
+            var naturalMidi = (octave * 12) + 12 + naturalOffset;
+            var steps = value - naturalMidi;
+
+            var name = steps switch
+            {
+                0 => "kNatural",
+                1 => "kSharp",
+                2 => "kDoubleSharp",
+                3 => "kTripleSharp",
+                -1 => "kFlat",
+                -2 => "kDoubleFlat",
+                -3 => "kTripleFlat",
+                _ => null,
+            };
+
+            return name is null ? null : (name, steps);
+        }
 
         /// <summary>A property of an event, by the file's own name for it.</summary>
         private static string? Property(List<PropertyDraft> properties, string name)
@@ -2791,6 +2887,14 @@ internal static class ProjectFileScoreReader
         public string? Name;
         public int Staves;
         public string? Range;
+
+        /// <summary>
+        /// True when the instrument node states a transposition (<c>transposition → intervalForTransposingScores</c>),
+        /// which is what makes a written pitch and a sounding pitch differ. The reader keeps the raw text for a
+        /// later pass that wants the interval itself; for the note spelling all that matters is that it is there.
+        /// </summary>
+        public bool Transposing;
+        public string? Transposition;
     }
 
     private sealed class LayoutDraft

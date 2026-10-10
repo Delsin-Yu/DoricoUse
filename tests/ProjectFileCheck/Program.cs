@@ -511,6 +511,47 @@ else
         + $"{ProjectFileTreeReader.Subtree(data, "LyricEventDefinition", 1, -1).Matched} events");
 }
 
+// ---------------------------------------------------------------- the derived accidental
+
+Head($"accidentals: {Corpus}");
+
+if (!File.Exists(Corpus))
+{
+    Skip("the accidental checks (corpus file not on this machine)");
+}
+else
+{
+    var score = ProjectFileReader.Open(Corpus).Score!;
+
+    // Derived from two things the file writes (the MIDI number and the kNoteSpelling letter) and refused where the
+    // two cannot agree - on a transposing instrument, and on unpitched percussion. The external check of the
+    // derivation is tools/verify_accidentals.py against Dorico's own MusicXML export: 6968 notes in the 13
+    // concert-pitch parts of 無限城への誘い, <alter> against accidentalSteps, 0 differences. These are the corpus
+    // totals, so a change in the derivation shows up here.
+    var derived = score.Notes.Count(note => note.Accidental is not null);
+    var withheld = score.Notes.Count(note => note.Accidental is null);
+
+    Check("notes with a derived accidental", derived == 11387, derived.ToString());
+    Check("notes where the letter and the pitch cannot agree", withheld == 4615, withheld.ToString());
+    Check(
+        "the flats a sharps-only name cannot express are there",
+        score.Notes.Count(note => note.Accidental == "kFlat") == 1171,
+        score.Notes.Count(note => note.Accidental == "kFlat").ToString());
+    Check(
+        "a name and a step count always travel together",
+        score.Notes.All(note => (note.Accidental is null) == (note.AccidentalSteps is null)));
+    Check(
+        "a transposing instrument gets null rather than a plausible wrong value",
+        score.Notes
+            .Where(note => (note.Player ?? string.Empty).Contains("Horn", StringComparison.Ordinal))
+            .All(note => note.Accidental is null));
+    Check(
+        "and the sounding pitch is still reported for those notes",
+        score.Notes
+            .Where(note => (note.Player ?? string.Empty).Contains("Horn", StringComparison.Ordinal))
+            .All(note => note.Midi is not null && note.Spelling is not null));
+}
+
 Head($"dynamics against a second file: {FourthCorpus}");
 
 if (!File.Exists(FourthCorpus))

@@ -192,14 +192,17 @@ The other blocks read the same way, and each states in its own `caveats` what it
 Verified against independent MusicXML exports and against 20 project files from Dorico 6.0.0 through 6.2.30.
 Limits, reported as `caveats`:
 
-- **Pitch spelling is a letter, and it is now a field.** The project stores a MIDI number plus a per-note spelling
-  *letter* (`kNoteSpelling`) and no accidental, so each note carries `spelling` beside `pitch`/`midi`: MIDI 82 is
-  spelled `B` (a B♭5 that the sharp-only derived `pitch` can only call `A#5`). Checked against Dorico's own
-  MusicXML export note onset by note onset: 8476 notes compared for letter *and* sounding MIDI, **0 differences**
-  — after applying the export's own `<transpose>` table, because MusicXML writes the *written* pitch and the file
-  the *sounding* one (a horn in F reading B4 stores E4). 129 events have no counterpart at all: unpitched
-  percussion, where the export writes only a display step, so those letters are unverified and the caveat says so.
-  Grace notes carry a spelling letter too but are a separate event kind this reader does not list.
+- **Pitch spelling is a letter, and it is now a field — and the accidental is derived from it.** The project
+  stores a MIDI number plus a per-note spelling *letter* (`kNoteSpelling`) and no accidental, so each note carries
+  `spelling`, `accidental` and `accidentalSteps`: MIDI 82 spelled `B` is a B flat. The derivation is checked
+  against Dorico's own MusicXML export — its `<alter>` against `accidentalSteps`, note for note, **6968 of 6968**
+  in the 13 concert-pitch parts of the reference project, with `tools/verify_accidentals.py` — and it is
+  **withheld where the two inputs cannot agree**: on a transposing instrument, whose written and sounding pitches
+  differ by the interval the file states at `instrument/transposition/intervalForTransposingScores` (13
+  instruments in the reference score), and on unpitched percussion, where the MIDI value is a drum-map position.
+  11387 of the reference score's 16002 notes get a derived accidental, 4615 get null, and the flats (1171 of them)
+  are exactly what the sharp-only `pitch` name cannot express. Grace notes carry a spelling letter too but are a
+  separate event kind this reader does not list.
 - **Ties and beams are not events**: a tie chain is one note event with the sounding duration, the beaming a score
   is printed with is computed at layout time, and no corpus file has both beam properties and an export.
 - **A click in the window is the only way to address a point**, so anything about where music sits on a page
@@ -416,11 +419,16 @@ nor Dorico; a check that cannot run reports `skip` instead of passing.
    command, a proven Native AOT publish, and slurs/articulations/ties/beams/techniques/layout in `file read`.
 7. **Done** — the vocabulary extractor with enum validation, the unpublished-command diff (`docs/hidden-commands.md`)
    and the scripting-layer analysis (`docs/scripting.md`), plus lyric *modelling* from the binary's own vocabulary.
-8. **Next, and mostly waiting on data only you can produce** — the scripting write methods' argument types (their
-   signatures are known and in `docs/scripting.md` §8; every probe run needs Dorico running), one command to test
-   whether an unpublished name like `File.New` executes when sent, a phrase that spans calls without restarting at
-   the top, positional entry if Dorico ever exposes it, `session read` gaining the same block options `file read`
-   has, and the accidental that `spelling` + `midi` would let the reader derive.
+8. **Next** — a `script read` command built on what §8 of `docs/scripting.md` proved (a Lua script can read the
+   live document, and write to it, which is a channel the Remote Control API does not have; the remaining work is
+   parsing `dump()` into the same JSON `file read` prints), a phrase that spans calls without restarting at the
+   top, positional entry if Dorico ever exposes it, and `session read` gaining the same block options `file read`
+   has.
+
+Tested and settled, so no longer "next": the **unpublished commands** are blocked on the remote channel and usable
+from inside (`File.New` answers `kError` with no log entry over the API, and executes through a script's
+`doCommand` — 1599 ms, and a new project really opens), and the **scripting write path** works end to end
+(`docs/scripting.md` §8).
 
 Deliberately **not** planned: a cached command catalogue, on disk or otherwise. Dorico answers `getcommands` in
 4 ms (98 KB, 1090 commands) and a `command list` call costs about 86 ms end to end, nearly all of it process

@@ -262,7 +262,10 @@ internal sealed record ProjectFileMeter(
 /// <remarks>
 /// <see cref="Pitch"/> is derived from <see cref="Midi"/>. <see cref="Spelling"/> is not derived: it is the letter
 /// the file's own <c>kNoteSpelling</c> property states for this note, and it is null when the event states none.
-/// The project stores no accidental beside it, so the letter alone does not pin the written pitch either.
+/// <see cref="Accidental"/> is derived from those two together — the file stores no accidental, but the letter and
+/// the sounding pitch leave exactly one, and that derivation was checked against Dorico's own MusicXML export
+/// (its <c>&lt;alter&gt;</c>) on a project that has one. It is null when the two do not agree on a written pitch,
+/// which is what happens to unpitched percussion: there the MIDI value is a drum-map position, not a pitch.
 /// </remarks>
 internal sealed record ProjectFileNote(
     long EventId,
@@ -277,7 +280,9 @@ internal sealed record ProjectFileNote(
     string? Instrument,
     int? Stave,
     int? Voice,
-    string? Spelling);
+    string? Spelling,
+    string? Accidental,
+    int? AccidentalSteps);
 
 /// <summary>
 /// One dynamic marking placed in the music: the events carry <i>where</i> (and which group), the group definition
