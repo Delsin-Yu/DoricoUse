@@ -91,9 +91,10 @@ internal static class LogQueue
     /// </summary>
     /// <remarks>
     /// This overload exists so the wait can be measured without Dorico: the check project points it at a fixture
-    /// log and appends lines to that file while <see cref="Verdict"/> waits, which is the one way to assert the
-    /// retry and the offset rule — the two things that were wrong — without a live modal dialog (no check can raise
-    /// one). The CLI itself only ever calls the parameterless overload.
+    /// log and hands <see cref="Verdict(TimeSpan, Action{TimeSpan})"/> a wait of its own, so the check decides on
+    /// which poll the log gains a line — which is the one way to assert the retry and the offset rule, the two
+    /// things that were wrong, without a live modal dialog (no check can raise one). The CLI itself only ever calls
+    /// the parameterless overload.
     /// </remarks>
     /// <param name="path">The file to watch, or null when there is none.</param>
     public static void Begin(string? path)
@@ -152,7 +153,34 @@ internal static class LogQueue
     /// which case the payload carries no <c>execution</c> field at all.
     /// </summary>
     /// <param name="budget">How long to wait for the <c>Posting</c> line before reporting what is on disk.</param>
-    public static JsonObject? Verdict(TimeSpan budget)
+    public static JsonObject? Verdict(TimeSpan budget) => Verdict(budget, Thread.Sleep);
+
+    /// <summary>
+    /// The same verdict with the poll's wait supplied by the caller. This is the seam the check drives; the CLI
+    /// always calls <see cref="Verdict(TimeSpan)"/> and therefore waits exactly as it did before.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A check has to be able to see a line arrive <b>while</b> the verdict waits. That re-read is the retry this
+    /// class exists for (the first version of this code dropped the delta's first line, which is the command's own
+    /// <c>Posting</c> line, and reported <c>unknown</c> about a command the log had queued), and the second phase's
+    /// watch for <c>Executing</c> is what singles out the good answer. Without this parameter the only way a check
+    /// can produce that arrival is by racing a writer thread against a bounded wait — and it loses: measured, the
+    /// fixture-log section of the vocabulary check failed 3 runs in 60 that way, always at its one case whose
+    /// append overlapped another's, because <c>File.AppendAllText</c> opens with <c>FileShare.Read</c>, so two
+    /// appends that meet leave one of them throwing <c>IOException … being used by another process</c> into a task
+    /// nobody observes. Reproduced: of 1920 overlapping append pairs, 368 lost their line, while 1920 single
+    /// appends all landed before a 400 ms read.
+    /// </para>
+    /// <para>
+    /// Handing the wait over turns that arrival into an ordering the check names instead of a hope: the callback is
+    /// spent once per poll, so it can append the line on the poll it chooses, and the verdict's own budgets and
+    /// classification are untouched.
+    /// </para>
+    /// </remarks>
+    /// <param name="budget">How long to wait for the <c>Posting</c> line before reporting what is on disk.</param>
+    /// <param name="wait">How to spend one <see cref="PollInterval"/> between two reads of the log.</param>
+    public static JsonObject? Verdict(TimeSpan budget, Action<TimeSpan> wait)
     {
         if (!started)
         {
@@ -173,7 +201,7 @@ internal static class LogQueue
 
         try
         {
-            lines = ReadDelta(passive && budget > PassiveBudget ? PassiveBudget : budget, passive);
+            lines = ReadDelta(passive && budget > PassiveBudget ? PassiveBudget : budget, passive, wait);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
@@ -299,20 +327,25 @@ internal static class LogQueue
     /// nothing to watch an <c>Executing</c> line for, and an invocation that posted nothing by name has no posting
     /// of its own to wait for at all.
     /// </remarks>
-    private static string[] ReadDelta(TimeSpan budget, bool passive)
+    private static string[] ReadDelta(TimeSpan budget, bool passive, Action<TimeSpan> wait)
     {
-        var lines = Poll(budget, seen => Settled(seen, passive));
+        var lines = Poll(budget, seen => Settled(seen, passive), wait);
 
         if (passive || !Posted.All(posted => WasPosted(lines, posted.Name)))
         {
             return lines;
         }
 
-        return Poll(ExecutingBudget, seen => Posted.All(posted => WasExecuted(seen, posted.Name)));
+        return Poll(ExecutingBudget, seen => Posted.All(posted => WasExecuted(seen, posted.Name)), wait);
     }
 
-    /// <summary>Reads the delta every <see cref="PollInterval"/> until it satisfies <paramref name="settled"/> or the budget runs out.</summary>
-    private static string[] Poll(TimeSpan budget, Func<string[], bool> settled)
+    /// <summary>
+    /// Reads the delta every <see cref="PollInterval"/> until it satisfies <paramref name="settled"/> or the budget
+    /// runs out. The wait between two reads is <paramref name="wait"/> rather than <see cref="Thread.Sleep(TimeSpan)"/>
+    /// so that the check can decide which poll the log gains a line on; see
+    /// <see cref="Verdict(TimeSpan, Action{TimeSpan})"/>.
+    /// </summary>
+    private static string[] Poll(TimeSpan budget, Func<string[], bool> settled, Action<TimeSpan> wait)
     {
         var deadline = DateTime.UtcNow + budget;
 
@@ -325,7 +358,7 @@ internal static class LogQueue
                 return lines;
             }
 
-            Thread.Sleep(PollInterval);
+            wait(PollInterval);
         }
     }
 

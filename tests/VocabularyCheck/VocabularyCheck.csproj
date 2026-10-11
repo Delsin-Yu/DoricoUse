@@ -54,9 +54,10 @@
     <Compile Include="../../src/DoricoUse.Cli/Ui/PanelCatalogue.cs" />
     <!--
       The execution verdict is not pure in the same way - it reads a file and waits for it - but it needs no Dorico
-      and no Windows: the check points it at a fixture log and appends Dorico's lines to it while the verdict waits.
-      That is the only way to measure the retry and the offset rule without a live modal dialog, which no check can
-      raise.
+      and no Windows: the check points it at a fixture log, hands the verdict a wait of its own, and gains Dorico's
+      lines on the polls it names. That is the only way to measure the retry and the offset rule without a live
+      modal dialog, which no check can raise - and writing those lines from another thread instead, against a fixed
+      sleep, is a race that was measured losing.
     -->
     <Compile Include="../../src/DoricoUse.Cli/Ui/LogQueue.cs" />
   </ItemGroup>

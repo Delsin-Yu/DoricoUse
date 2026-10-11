@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text.Json.Nodes;
 using DoricoUse.Cli;
 using DoricoUse.Cli.Dorico;
@@ -605,19 +606,57 @@ Console.WriteLine();
 Console.WriteLine("== the execution verdict, from a fixture log (no Dorico: a check cannot raise a modal dialog)");
 
 // Both defects this section guards were found by running the tool against a real Dorico dialog, which no check can
-// raise. What a check can do is write Dorico's lines into a file from another thread while the verdict waits -
-// which is what Dorico does while the CLI waits - and that is what these cases do. The measured shape of the real
-// thing is what makes them worth writing: the offset is taken at a line boundary, and the command's own Posting
-// line is then the first line the log gains, which is the line the verdict is made of.
+// raise. What a check can do is put Dorico's lines into a file between the offset and the read - which is what
+// Dorico does while the CLI waits - and the measured shape of the real thing is what makes that worth writing: the
+// offset is taken at a line boundary, and the command's own Posting line is then the first line the log gains,
+// which is the line the verdict is made of.
+//
+// Nothing here is written from another thread any more. It used to be: the lines were appended by a Task on a
+// timer and the check then slept 400 ms for them, and that lost 3 runs in 60, always at this section's one case
+// whose append overlapped the append before it. `File.AppendAllText` opens with FileShare.Read, so two appends
+// that meet leave one of them throwing `IOException ... being used by another process` into a task nobody
+// observes, and the line simply never appears. Measured in a reproduction of the pair: of 1920 overlapping pairs,
+// 368 lost their line, while 1920 single appends all landed before a 400 ms read - so it was the overlap and not
+// a slow machine. A line that has to arrive while the verdict is waiting now arrives through the verdict's own
+// wait, which the seam below hands to this check: the append happens on the poll this check names, so the arrival
+// is an ordering rather than a race against the clock.
 var fixture = Path.Combine(Path.GetTempPath(), $"dorico-use-logqueue-check-{Environment.ProcessId}.log");
 
-void WriteLater(string text, int delayMs) => _ = Task.Run(async () =>
+// The state every case below starts from: Dorico's log truncated to what was already in it, with the offset taken
+// where a real invocation would take it.
+void ResetLog(string logSoFar)
 {
-    await Task.Delay(delayMs).ConfigureAwait(false);
-    File.AppendAllText(fixture, text);
-});
+    File.WriteAllText(fixture, logSoFar);
+    LogQueue.Begin(fixture);
+}
 
-File.WriteAllText(fixture, "2026-10-11 05:42:42.463 [info] ping response received in ipc://Dorico6.lic\n");
+// The log gains this line, which is the delta the verdict is made of. Appended from this thread, so there is no
+// second writer to fight over the file.
+void GainLine(string line) => File.AppendAllText(fixture, line);
+
+// One poll of the verdict: it reads, and it waits only when what it read did not settle the question. This stands
+// in for that wait and appends the line named for the wait it is, so "the log gained this line after the verdict
+// had already looked once" is a fact about the ordering. A wait that has no line to gain sleeps as the CLI does,
+// so a case that really has to wait out a budget still costs what it costs there.
+static Action<TimeSpan> LogGainsOnWait(string path, params (int Wait, string Line)[] gains)
+{
+    var waits = 0;
+
+    return interval =>
+    {
+        waits++;
+        var line = gains.Where(gain => gain.Wait == waits).Select(gain => gain.Line).FirstOrDefault();
+
+        if (line is null)
+        {
+            Thread.Sleep(interval);
+            return;
+        }
+
+        File.AppendAllText(path, line);
+    };
+}
+
 // ---------------------------------------------------------------- the panel layer
 
 // Measured, live, on the library manager while it was up: five actionable elements, the three collection check
@@ -1025,14 +1064,19 @@ Check(
     "the library manager's note carries this round's reading",
     PanelCatalogue.Entries.First(entry => entry.Id == "dorico.library-manager").Note.Contains("27 nodes", StringComparison.Ordinal));
 
-LogQueue.Begin(fixture);
+// The command's own Posting line is not in the log when the verdict first looks and is there when it looks again:
+// that second read is the retry this class exists for, and without it a command Dorico had queued reads `unknown`,
+// which is the defect the fixture is shaped after. Dorico's own queue line is gained in the same write, because a
+// real log has it there.
+ResetLog("2026-10-11 05:42:42.463 [info] ping response received in ipc://Dorico6.lic\n");
 LogQueue.Mark("NoteInput.Enter");
-WriteLater(
-    "2026-10-11 05:42:49.593 [info] Posting command (requested): NoteInput.Enter\n"
-    + "2026-10-11 05:42:49.593 [info] Queue after push: {NoteInput.Enter} \n",
-    150);
 
-var onTheQueue = LogQueue.Verdict(TimeSpan.FromMilliseconds(600));
+var queuedGain = LogGainsOnWait(
+    fixture,
+    (1, "2026-10-11 05:42:49.593 [info] Posting command (requested): NoteInput.Enter\n"
+        + "2026-10-11 05:42:49.593 [info] Queue after push: {NoteInput.Enter} \n"));
+
+var onTheQueue = LogQueue.Verdict(LogQueue.DefaultBudget, queuedGain);
 
 Check(
     "a command whose first log line is its own Posting line is queued, not unknown",
@@ -1052,61 +1096,59 @@ Check("and the payload still carries the log it read", NodeRead.Str(onTheQueue, 
 // What a live read needs while it waits for its own file: is the queue still busy, and therefore is the output late
 // rather than never? Measured twice on 2026-10-11 - the players script was posted and executed 30.1 s later, behind
 // a long command, while the read gave up after 20 s. The live read posts through the host and never names its own
-// command to this class, which is why an unmarked posting is the shape that matters here.
-File.WriteAllText(fixture, "2026-10-11 10:04:34.619 [info] Sync complete\n");
-LogQueue.Begin(fixture);
-WriteLater(
-    "2026-10-11 10:04:50.116 [info] Posting command (requested): Script.RunScript ScriptPath=x.lua\n",
-    150);
-
-Thread.Sleep(400);
+// command to this class, which is why an unmarked posting is the shape that matters here. Nothing waits for a
+// writer thread here either: the scan reads the delta it is given.
+ResetLog("2026-10-11 10:04:34.619 [info] Sync complete\n");
+GainLine("2026-10-11 10:04:50.116 [info] Posting command (requested): Script.RunScript ScriptPath=x.lua\n");
 
 var pending = LogQueue.PendingSinceStart();
 
 Check("work the log shows posted with no execution is reported as pending", pending.Contains("Script.RunScript", StringComparer.Ordinal), string.Join(',', pending));
 
-File.AppendAllText(fixture, "2026-10-11 10:05:20.180 [info] Executing command: Script.RunScript?ScriptPath=x.lua\n");
+GainLine("2026-10-11 10:05:20.180 [info] Executing command: Script.RunScript?ScriptPath=x.lua\n");
 
 Check("and once it executes, nothing is pending any more", LogQueue.PendingSinceStart().Count == 0, string.Join(',', LogQueue.PendingSinceStart()));
 
-File.WriteAllText(fixture, "2026-10-11 05:15:50.603 [info] Sync complete\n");
-LogQueue.Begin(fixture);
+// The measured pair, in the delta at the read rather than expected to arrive before it: a posting the log also
+// shows executing is not pending.
+ResetLog("2026-10-11 05:15:50.603 [info] Sync complete\n");
 LogQueue.Mark("NoteInput.Enter");
-WriteLater(
-    "2026-10-11 05:15:50.603 [info] Posting command (requested): NoteInput.Enter\n"
-    + "2026-10-11 05:15:50.603 [info] Executing command: NoteInput.Enter\n",
-    150);
+GainLine("2026-10-11 05:15:50.603 [info] Posting command (requested): NoteInput.Enter\n");
+GainLine("2026-10-11 05:15:50.603 [info] Executing command: NoteInput.Enter\n");
 
 Check("a command this invocation posted by name and nothing executed is pending too", LogQueue.PendingSinceStart().Count == 0, string.Join(',', LogQueue.PendingSinceStart()));
 
 // A live read posts its own Script.RunScript by name, and that posting is exactly what it is waiting behind - so the
-// pending scan must count it, which Unmatched (the verdict's orphan scan) deliberately does not.
-File.WriteAllText(fixture, "2026-10-11 10:04:34.619 [info] Sync complete\n");
-LogQueue.Begin(fixture);
+// pending scan must count it, which Unmatched (the verdict's orphan scan) deliberately does not. This is the case
+// that failed: measured, 3 runs in 60 reported `pending: (none)` here, because the line it waited for was appended
+// from another thread and lost a race with the append before it.
+ResetLog("2026-10-11 10:04:34.619 [info] Sync complete\n");
 LogQueue.Mark("Script.RunScript");
-WriteLater("2026-10-11 10:04:50.116 [info] Posting command (requested): Script.RunScript ScriptPath=x.lua\n", 150);
-
-Thread.Sleep(400);
+GainLine("2026-10-11 10:04:50.116 [info] Posting command (requested): Script.RunScript ScriptPath=x.lua\n");
 
 Check("and the read's own named posting counts as pending while it has not executed", LogQueue.PendingSinceStart().Contains("Script.RunScript", StringComparer.Ordinal), string.Join(',', LogQueue.PendingSinceStart()));
 
-File.WriteAllText(fixture, "2026-10-11 05:15:50.603 [info] Sync complete\n");
-LogQueue.Begin(fixture);
+// A command that really runs executes in the same millisecond it is posted (measured: Posting 05:15:50.603,
+// Executing 05:15:50.603), and the two lines are separate writes: the verdict's second phase has to look again
+// after the Posting line to see the Executing one. This gains them on two polls, so the gap is the ordering rather
+// than a race. It fails if the retry goes (the first read sees nothing, so the verdict would be `unknown`) and if
+// the second phase goes (`queued`, the Posting line having been read and stopped at).
+ResetLog("2026-10-11 05:15:50.603 [info] Sync complete\n");
 LogQueue.Mark("NoteInput.Enter");
-WriteLater(
-    "2026-10-11 05:15:50.603 [info] Posting command (requested): NoteInput.Enter\n"
-    + "2026-10-11 05:15:50.603 [info] Executing command: NoteInput.Enter\n",
-    150);
 
-var executed = LogQueue.Verdict(TimeSpan.FromMilliseconds(600));
+var ranGain = LogGainsOnWait(
+    fixture,
+    (1, "2026-10-11 05:15:50.603 [info] Posting command (requested): NoteInput.Enter\n"),
+    (2, "2026-10-11 05:15:50.603 [info] Executing command: NoteInput.Enter\n"));
+
+var executed = LogQueue.Verdict(LogQueue.DefaultBudget, ranGain);
 
 Check(
     "an Executing line right after the Posting line makes it ran",
     NodeRead.Str(executed, "state") == "ran",
     NodeRead.Str(executed, "state"));
 
-File.WriteAllText(fixture, "2026-10-11 05:44:09.452 [info] Auto-save skipped\n");
-LogQueue.Begin(fixture);
+ResetLog("2026-10-11 05:44:09.452 [info] Auto-save skipped\n");
 LogQueue.Mark("Play.StopScrubPlayback");
 LogQueue.Acknowledge("Play.StopScrubPlayback", "kError kCommandNotAllowed");
 
@@ -1121,8 +1163,7 @@ Check(
     NodeRead.Str(refusedByApi, "evidence")?.Contains("never queued", StringComparison.Ordinal) == true,
     NodeRead.Str(refusedByApi, "evidence"));
 
-File.WriteAllText(fixture, "2026-10-11 05:44:09.452 [info] Auto-save skipped\n");
-LogQueue.Begin(fixture);
+ResetLog("2026-10-11 05:44:09.452 [info] Auto-save skipped\n");
 LogQueue.Mark("NoteInput.Enter");
 LogQueue.Acknowledge("NoteInput.Enter", "kOK");
 
@@ -1134,34 +1175,46 @@ Check(
     NodeRead.Str(nothing, "state"));
 
 // The other half of the offset rule: the fragment of a line Dorico was still writing when the offset was taken must
-// not be read as a line. The fix above must not have turned the drop off, only made it conditional.
-File.WriteAllText(fixture, "2026-10-11 05:44:09.452 [info] Auto-save ski");
-LogQueue.Begin(fixture);
+// not be read as a line. The fix above must not have turned the drop off, only made it conditional - and the count
+// of lines the delta holds is what says the fragment is gone rather than merely ignored: dropping it leaves the two
+// real lines, and a reader that kept it would report three.
+ResetLog("2026-10-11 05:44:09.452 [info] Auto-save ski");
 LogQueue.Mark("File.Open");
-WriteLater(
+GainLine(
     "pped\n2026-10-11 05:45:01.100 [info] Posting command (requested): File.Open File=C:\\scores\\a.dorico\n"
-    + "2026-10-11 05:45:01.101 [info] Executing command: File.Open?File=C:\\scores\\a.dorico\n",
-    150);
+    + "2026-10-11 05:45:01.101 [info] Executing command: File.Open?File=C:\\scores\\a.dorico\n");
 
-var afterPartial = LogQueue.Verdict(TimeSpan.FromMilliseconds(600));
+var afterPartial = LogQueue.Verdict(LogQueue.DefaultBudget);
 
 Check(
     "a half-written line at the offset is still dropped rather than read as a Posting line",
     NodeRead.Str(afterPartial, "state") == "ran",
     NodeRead.Str(afterPartial, "state"));
+Check(
+    "and the fragment is gone from the delta rather than merely ignored",
+    NodeRead.Int(afterPartial, "postings") == 2,
+    NodeRead.Int(afterPartial, "postings")?.ToString());
 
-File.WriteAllText(fixture, "2026-10-11 05:44:09.452 [info] Auto-save skipped\n");
-LogQueue.Begin(fixture);
+// The passive wait - what `ui press`, `ui dialog` and the live read come through, since none of them names a command
+// to this class - stops as soon as the log shows anything, and its budget is capped at PassiveBudget. The null below
+// is the answer with an empty delta; the clock is a bound, not an expectation of a fast machine, and the budget asked
+// for is deliberately longer than the ceiling so that a wait that stopped honouring the cap would be caught here.
+ResetLog("2026-10-11 05:44:09.452 [info] Auto-save skipped\n");
+var cappedFrom = Stopwatch.GetTimestamp();
 
 Check(
     "an invocation that posted nothing by name carries no execution field at all, instead of an unknown about nothing",
-    LogQueue.Verdict(TimeSpan.FromMilliseconds(200)) is null);
+    LogQueue.Verdict(TimeSpan.FromSeconds(5)) is null);
+Check(
+    "and its wait is the capped one, not the five seconds the budget asked for",
+    Stopwatch.GetElapsedTime(cappedFrom) < TimeSpan.FromSeconds(3),
+    Stopwatch.GetElapsedTime(cappedFrom).ToString());
 
-File.WriteAllText(fixture, "2026-10-11 05:44:09.452 [info] Auto-save skipped\n");
-LogQueue.Begin(fixture);
-WriteLater("2026-10-11 05:46:00.000 [info] Posting command (requested): NoteInput.Enter\n", 100);
+ResetLog("2026-10-11 05:44:09.452 [info] Auto-save skipped\n");
 
-var someoneElses = LogQueue.Verdict(LogQueue.PassiveBudget);
+var someoneElsesGain = LogGainsOnWait(fixture, (1, "2026-10-11 05:46:00.000 [info] Posting command (requested): NoteInput.Enter\n"));
+
+var someoneElses = LogQueue.Verdict(LogQueue.PassiveBudget, someoneElsesGain);
 
 Check(
     "a posting the host sent on its own is still reported as queued when nothing executed it",
