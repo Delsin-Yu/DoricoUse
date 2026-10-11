@@ -36,7 +36,8 @@ internal static class PanelSurface
 
         foreach (var window in presence.All ?? [])
         {
-            var id = PanelModel.PanelId(window.Title, window.WindowClass, PanelModel.KindUnknown);
+            var isDocument = presence.Document != nint.Zero && window.Handle == presence.Document;
+            var id = PanelModel.PanelId(window.Title, window.WindowClass, PanelModel.KindUnknown, isDocument);
             var wanted = panelId is null
                 || string.Equals(id, panelId, StringComparison.Ordinal)
                 || window.Handle.ToString(CultureInfo.InvariantCulture) == panelId
@@ -111,7 +112,11 @@ internal static class PanelSurface
         var presence = DialogProbe.Probe();
         var window = (presence.All ?? [])
             .FirstOrDefault(candidate => string.Equals(
-                PanelModel.PanelId(candidate.Title, candidate.WindowClass, PanelModel.KindUnknown),
+                PanelModel.PanelId(
+                    candidate.Title,
+                    candidate.WindowClass,
+                    PanelModel.KindUnknown,
+                    presence.Document != nint.Zero && candidate.Handle == presence.Document),
                 panelId,
                 StringComparison.Ordinal));
 
@@ -120,7 +125,8 @@ internal static class PanelSurface
             throw new CliException(
                 "PanelNotFound",
                 $"No visible window of Dorico has the id '{panelId}'. `ui panels` lists the ones it has, each with its "
-                + "own id and with the elements of the one you name.",
+                + "own id and with the elements of the one you name. Dorico's document window - the one holding the "
+                + "Setup player, flow and layout lists - is `" + PanelModel.DocumentWindowId + "`.",
                 DialogModel.RefusalExitCode)
             {
                 Details = new JsonObject
@@ -131,9 +137,12 @@ internal static class PanelSurface
             };
         }
 
+        var isDocument = presence.Document != nint.Zero && window.Handle == presence.Document;
         var known = PanelCatalogue.Match(window.Title, window.WindowClass);
 
-        if (known is null && !allowUnknownDialog)
+        // The document window is not in the panel catalogue - its caption is the document's name, which changes -
+        // but it is measured, so working an element inside it needs no --allow-unknown-dialog.
+        if (known is null && !isDocument && !allowUnknownDialog)
         {
             throw new CliException(
                 "UnknownDialog",
@@ -144,7 +153,7 @@ internal static class PanelSurface
             {
                 Details = new JsonObject
                 {
-                    ["panel"] = PanelModel.PanelId(window.Title, window.WindowClass, PanelModel.KindUnknown),
+                    ["panel"] = PanelModel.PanelId(window.Title, window.WindowClass, PanelModel.KindUnknown, isDocument),
                     ["title"] = window.Title,
                     ["class"] = window.WindowClass,
                 },
@@ -179,15 +188,6 @@ internal static class PanelSurface
             var element = described[index];
             var input = read.Elements[index];
             var action = PanelModel.Action(input);
-            var performed = new JsonObject
-            {
-                ["panel"] = panelId,
-                ["element"] = element.Id,
-                ["role"] = element.Role,
-                ["name"] = element.Name,
-                ["action"] = action.ToString().ToLowerInvariant(),
-                ["stateBefore"] = element.State,
-            };
 
             if (action == PanelAction.None)
             {
@@ -208,70 +208,10 @@ internal static class PanelSurface
                 };
             }
 
-            var handle = read.Handles[index];
-
-            switch (action)
-            {
-                case PanelAction.Value:
-                    if (value is null)
-                    {
-                        throw new CliException(
-                            "ValueRequired",
-                            $"Element '{element.Id}' ('{element.Name}') is a text field: it needs --value to be written "
-                            + "into, because pressing a text field does nothing this build can verify.",
-                            DialogModel.RefusalExitCode)
-                        {
-                            Details = new JsonObject { ["panel"] = panelId, ["element"] = element.Id },
-                        };
-                    }
-
-                    if (!UiaCalls.TrySetValue(handle, value, out var problem))
-                    {
-                        throw new CliException(
-                            "ElementNotSettable",
-                            $"Element '{element.Id}' ('{element.Name}') exposes no value pattern, so '{value}' was not "
-                            + "written anywhere.",
-                            DialogModel.RefusalExitCode)
-                        {
-                            Details = new JsonObject { ["panel"] = panelId, ["element"] = element.Id },
-                        };
-                    }
-
-                    if (problem is not null)
-                    {
-                        throw new CliException(
-                            "ElementNotSettable",
-                            $"Element '{element.Id}' ('{element.Name}') refused the value: {problem}.",
-                            DialogModel.RefusalExitCode)
-                        {
-                            Details = new JsonObject { ["panel"] = panelId, ["element"] = element.Id, ["value"] = value },
-                        };
-                    }
-
-                    performed["value"] = value;
-
-                    break;
-
-                case PanelAction.Toggle:
-                    UiaCalls.ToggleButton(handle);
-                    break;
-
-                case PanelAction.Select:
-                    UiaCalls.SelectItem(handle);
-                    break;
-
-                case PanelAction.Expand:
-                    UiaCalls.Expand(handle, open: true);
-                    break;
-
-                case PanelAction.Collapse:
-                    UiaCalls.Expand(handle, open: false);
-                    break;
-
-                default:
-                    UiaCalls.InvokeButton(handle);
-                    break;
-            }
+            // The action itself is the dialog surface's action too: one implementation, so an element behaves the
+            // same wherever it lives. What is added here is what a panel's payload says around it.
+            var performed = ElementActions.Perform(read.Handles[index], action, element, value, panelId);
+            performed["panel"] = panelId;
 
             performed["ms"] = (long)Stopwatch.GetElapsedTime(started).TotalMilliseconds;
             performed["note"] = "The action's own answer is not evidence — measured, a press that destroys its own "
@@ -437,7 +377,11 @@ internal static class PanelSurface
 
         foreach (var window in presence.All ?? [])
         {
-            JsonArr.AddText(ids, PanelModel.PanelId(window.Title, window.WindowClass, PanelModel.KindUnknown));
+            JsonArr.AddText(ids, PanelModel.PanelId(
+                window.Title,
+                window.WindowClass,
+                PanelModel.KindUnknown,
+                presence.Document != nint.Zero && window.Handle == presence.Document));
         }
 
         return ids;

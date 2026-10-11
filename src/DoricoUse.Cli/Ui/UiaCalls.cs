@@ -77,29 +77,6 @@ internal static class UiaCalls
 
     public const int LegacyIAccessiblePatternId = 10018;
 
-    /// <summary>Control type ids this build distinguishes.</summary>
-    public const int ControlTypeButton = 50000;
-
-    public const int ControlTypeCheckBox = 50002;
-
-    public const int ControlTypeComboBox = 50003;
-
-    public const int ControlTypeEdit = 50004;
-
-    public const int ControlTypeMenuItem = 50011;
-
-    public const int ControlTypeRadioButton = 50013;
-
-    public const int ControlTypeTabItem = 50019;
-
-    public const int ControlTypeTreeItem = 50024;
-
-    public const int ControlTypeListItem = 50029;
-
-    public const int ControlTypeSplitButton = 50031;
-
-    public const int ControlTypeText = 50020;
-
     /// <summary>Selection item pattern id.</summary>
     public const int SelectionItemPatternId = 10010;
 
@@ -187,24 +164,30 @@ internal static class UiaCalls
         string? value = null;
         var invokable = false;
 
-        if (controlType is ControlTypeButton or ControlTypeSplitButton or ControlTypeMenuItem)
+        if (controlType is ControlTypes.Button or ControlTypes.SplitButton or ControlTypes.MenuItem)
         {
             invokable = HasPattern(element, InvokePatternId);
         }
-        else if (controlType is ControlTypeCheckBox or ControlTypeRadioButton)
+        else if (controlType is ControlTypes.CheckBox or ControlTypes.RadioButton)
         {
             toggleState = ReadToggle(element);
             invokable = HasPattern(element, InvokePatternId);
         }
-        else if (controlType is ControlTypeEdit or ControlTypeComboBox)
+        else if (controlType is ControlTypes.Edit or ControlTypes.ComboBox)
         {
             if (TryValue(element, out var text, out _))
             {
                 value = text;
             }
         }
-        else if (controlType is ControlTypeTabItem or ControlTypeListItem or ControlTypeTreeItem)
+        else if (controlType is ControlTypes.TabItem or ControlTypes.ListItem or ControlTypes.TreeItem
+            or ControlTypes.DataItem)
         {
+            // A row of a list is where the selection lives, and it is how this build can make one: measured, a row
+            // of Dorico's Setup player list exposes the selection-item pattern, and the reader reports which row is
+            // selected today. AddToSelection and RemoveFromSelection are deliberately not used - a list that
+            // supports several selections would need a rule about deselecting first, and no measured window needs
+            // one.
             selected = ReadSelected(element);
             expanded = ReadExpanded(element);
             invokable = HasPattern(element, InvokePatternId);

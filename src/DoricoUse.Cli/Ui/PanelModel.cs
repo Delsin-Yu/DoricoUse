@@ -125,6 +125,19 @@ internal static class PanelModel
 
     public const string KindUnknown = "unknown";
 
+    /// <summary>
+    /// The id of Dorico's document window.
+    /// </summary>
+    /// <remarks>
+    /// A constant rather than a derived id, and that is a correction: the id used to be the same
+    /// <c>unknown.&lt;hash&gt;</c> every other unnamed window gets, with the <b>caption</b> in the hash — so the
+    /// document window's id changed with the document's name and with the unsaved marker Dorico appends to the
+    /// title, and no invocation could name the window the previous one had read. Measured: the same window answered
+    /// to <c>unknown.3d5b24e60c7f</c> while the title read <c>… 内</c> and to <c>unknown.a91b50b9a382</c> once it
+    /// read <c>… 内*</c>.
+    /// </remarks>
+    public const string DocumentWindowId = "dorico.document-window";
+
     /// <summary>The longest automation-id tail or label slug that will be used as an element id.</summary>
     private const int MaxDerivedIdLength = 64;
 
@@ -152,11 +165,24 @@ internal static class PanelModel
     }
 
     /// <summary>
-    /// The id of a panel: the panel catalogue's own id when it recognises this window, else a deterministic hash of
-    /// the caption and the class, so the same panel keeps the same id in any later invocation.
+    /// The id of a panel: <see cref="DocumentWindowId"/> for Dorico's document window, the panel catalogue's own
+    /// id when it recognises this window, else a deterministic hash of the caption and the class, so the same
+    /// panel keeps the same id in any later invocation.
     /// </summary>
-    public static string PanelId(string title, string windowClass, string kind)
+    /// <param name="title">The window caption, verbatim.</param>
+    /// <param name="windowClass">The Win32 window class, verbatim.</param>
+    /// <param name="kind">The panel catalogue's id, or <see cref="KindUnknown"/>.</param>
+    /// <param name="document">
+    /// True for the window the probe resolved as Dorico's document window. Measured, dorico's own Setup work
+    /// (players, groups, layouts) is inside that window, so it is the one window an agent has to be able to name.
+    /// </param>
+    public static string PanelId(string title, string windowClass, string kind, bool document)
     {
+        if (document)
+        {
+            return DocumentWindowId;
+        }
+
         var entry = PanelCatalogue.Match(title, windowClass);
 
         if (entry is not null)
@@ -217,29 +243,7 @@ internal static class PanelModel
     {
         ArgumentNullException.ThrowIfNull(element);
 
-        return element.ControlType switch
-        {
-            50000 => "button",
-            50002 => "checkBox",
-            50003 => "comboBox",
-            50004 => "edit",
-            50005 => "hyperlink",
-            50008 => "list",
-            50011 => "menuItem",
-            50013 => "radioButton",
-            50015 => "slider",
-            50018 => "tab",
-            50019 => "tabItem",
-            50023 => "tree",
-            50024 => "treeItem",
-            50026 => "group",
-            50029 => "listItem",
-            50031 => "splitButton",
-            50033 => "pane",
-            50037 => "titleBar",
-            50038 => "separator",
-            _ => "controlType-" + element.ControlType.ToString(CultureInfo.InvariantCulture),
-        };
+        return ControlTypes.Role(element.ControlType);
     }
 
     /// <summary>The measurable state of one element, or null when it offers none of the state patterns.</summary>
@@ -290,6 +294,7 @@ internal static class PanelModel
             var element = elements[index];
             var role = Role(element);
             var id = UniqueOrNull(tails, index, tails[index])
+                ?? ClassicTail(tails, index, role)
                 ?? UniqueOrNull(slugs, index, slugs[index])
                 ?? role + "-" + ranks[index].ToString(CultureInfo.InvariantCulture);
 
@@ -350,7 +355,6 @@ internal static class PanelModel
         var owner = window.Owner == nint.Zero ? null : "0x" + ((long)window.Owner).ToString("X8", CultureInfo.InvariantCulture);
         var isDocument = documentHandle != nint.Zero && window.Handle == documentHandle;
         var isDialog = dialogHandle != nint.Zero && window.Handle == dialogHandle;
-
         // Whether this window is one of the ones holding the queue. The rule is the document window's enabled state
         // and this window's own claim to the foreground or to a window as its owner, and every clause of it is a
         // measurement:
@@ -367,7 +371,7 @@ internal static class PanelModel
         var payload = new JsonObject
         {
             ["hwnd"] = "0x" + ((long)window.Handle).ToString("X8", CultureInfo.InvariantCulture),
-            ["id"] = PanelId(window.Title, window.WindowClass, kind?.Id ?? KindUnknown),
+            ["id"] = PanelId(window.Title, window.WindowClass, kind?.Id ?? KindUnknown, isDocument),
             ["kind"] = kind is null ? KindUnknown : KindKnown,
             ["shape"] = shape,
             ["class"] = window.WindowClass,
@@ -380,7 +384,19 @@ internal static class PanelModel
             ["blocksQueue"] = blocks,
         };
 
-        if (kind is not null)
+        if (isDocument)
+        {
+            // Dorico's Setup work - the player, flow and layout lists - lives inside this window, so it is the one
+            // "panel" an agent has to be able to name. It is not in the panel catalogue because its caption is the
+            // document's name, which changes; the id is a constant instead.
+            payload["description"] = "Dorico's own document window. Read it with `ui panels --panel "
+                + DocumentWindowId + "` to reach the Setup lists inside it (players, flows, layouts) and the panels "
+                + "of the current window mode, with the same element ids, states and actions every other panel "
+                + "reports. Measured: its UIA tree carries the player/flow/layout list views and their rows.";
+            payload["pressWith"] = "dorico-use ui panels --panel " + DocumentWindowId
+                + "  (then: dorico-use ui press --panel " + DocumentWindowId + " --element <element id>)";
+        }
+        else if (kind is not null)
         {
             payload["description"] = kind.Note;
             payload["pressWith"] = "dorico-use ui panels --panel " + kind.Id
@@ -394,6 +410,47 @@ internal static class PanelModel
         }
 
         return payload;
+    }
+
+    /// <summary>
+    /// The <c>elements</c> array of the payload: one object per element an action could target, in read order,
+    /// capped at <see cref="MaxElements"/>.
+    /// </summary>
+    /// <param name="elements">The elements <see cref="Describe"/> produced.</param>
+    /// <param name="returned">How many of them were written, so a caller can say whether the cap was hit.</param>
+    /// <remarks>
+    /// One function for both windows an element can live in, because the id an agent pastes back must mean the
+    /// same thing in a panel and in a dialog. A dialog's edit fields and list rows are reported through this, which
+    /// is what makes <c>ui press --dialog … --element … --value …</c> possible at all.
+    /// </remarks>
+    public static JsonArray ElementPayload(IReadOnlyList<PanelElementDescription> elements, out int returned)
+    {
+        ArgumentNullException.ThrowIfNull(elements);
+
+        var array = new JsonArray();
+
+        foreach (var element in elements)
+        {
+            if (array.Count >= MaxElements)
+            {
+                break;
+            }
+
+            JsonArr.AddNode(array, new JsonObject
+            {
+                ["id"] = element.Id,
+                ["role"] = element.Role,
+                ["name"] = element.Name,
+                ["automationId"] = element.AutomationId,
+                ["index"] = element.Index,
+                ["state"] = element.State,
+                ["action"] = element.Action,
+            });
+        }
+
+        returned = array.Count;
+
+        return array;
     }
 
     /// <summary>The <c>ui panels</c> payload for one panel: its window facts plus the elements a UI Automation read found.</summary>
@@ -415,36 +472,14 @@ internal static class PanelModel
     {
         var payload = Describe(window, documentEnabled, documentHandle, dialogHandle);
 
-        var array = new JsonArray();
         var described = Describe(elements ?? []);
-        var kept = 0;
-
-        foreach (var element in described)
-        {
-            if (kept >= MaxElements)
-            {
-                break;
-            }
-
-            JsonArr.AddNode(array, new JsonObject
-            {
-                ["id"] = element.Id,
-                ["role"] = element.Role,
-                ["name"] = element.Name,
-                ["automationId"] = element.AutomationId,
-                ["index"] = element.Index,
-                ["state"] = element.State,
-                ["action"] = element.Action,
-            });
-
-            kept++;
-        }
+        var array = ElementPayload(described, out var returned);
 
         payload["textSource"] = error is null ? "uia" : "none";
         payload["elements"] = array;
         payload["elementCount"] = described.Count;
-        payload["returned"] = array.Count;
-        payload["truncated"] = truncated || described.Count > array.Count;
+        payload["returned"] = returned;
+        payload["truncated"] = truncated || described.Count > returned;
         payload["readMs"] = readMs;
 
         if (error is not null)
@@ -520,8 +555,30 @@ internal static class PanelModel
         return slug.Length is 0 or > MaxDerivedIdLength ? string.Empty : slug;
     }
 
-    private static string? UniqueOrNull(string[] values, int index, string candidate)
+    /// <summary>
+    /// The classic Win32 control id of an element, qualified by its role, or null.
+    /// </summary>
+    /// <remarks>
+    /// A native Windows dialog numbers its controls, and those numbers do not change with the UI language — measured
+    /// on the Open picker, the file-name box is <c>1148</c> and the file filter <c>1136</c>. They are not unique
+    /// inside one window there (the <c>ComboBoxEx32</c> pane, the <c>ComboBox</c> and the <c>Edit</c> inside it all
+    /// answer <c>1148</c>), so an unqualified number would fall through to the position rule and an agent would get
+    /// an id it cannot recognise. Qualifying it with the role — <c>edit-1148</c>, <c>comboBox-1136</c> — keeps the
+    /// number, keeps it stable across invocations, and says what it is.
+    /// </remarks>
+    private static string? ClassicTail(string[] tails, int index, string role)
     {
+        var tail = tails[index];
+
+        if (tail.Length == 0 || !tail.All(char.IsAsciiDigit))
+        {
+            return null;
+        }
+
+        return role + "-" + tail;
+    }
+
+    private static string? UniqueOrNull(string[] values, int index, string candidate)    {
         if (string.IsNullOrEmpty(candidate))
         {
             return null;

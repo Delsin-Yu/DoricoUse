@@ -132,7 +132,7 @@ internal static class FilePicker
 
         var controlType = UiaCalls.ControlType(element);
 
-        if (controlType is UiaCalls.ControlTypeEdit or UiaCalls.ControlTypeComboBox)
+        if (controlType is ControlTypes.Edit or ControlTypes.ComboBox)
         {
             var automationId = UiaCalls.AutomationId(element);
             var className = UiaCalls.CurrentClassName(element);
@@ -155,8 +155,8 @@ internal static class FilePicker
 
                 var classic = string.Equals(automationId, ClassicFileNameControlId, StringComparison.Ordinal);
                 var wanted = state.ClassicOnly ? classic
-                    : state.EditOnly ? controlType == UiaCalls.ControlTypeEdit
-                    : state.ComboOnly ? controlType == UiaCalls.ControlTypeComboBox
+                    : state.EditOnly ? controlType == ControlTypes.Edit
+                    : state.ComboOnly ? controlType == ControlTypes.ComboBox
                     : false;
 
                 if (wanted && !readOnly)

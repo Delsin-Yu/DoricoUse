@@ -139,20 +139,11 @@ internal static class PanelReader
     }
 
     /// <summary>
-    /// Whether an element is one an action could target. A text label, a group and a pane are not: they are what the
-    /// panel is made of rather than what an agent operates.
+    /// Whether an element is one an action could target. The rule lives in <see cref="ControlTypes.IsActionable"/>
+    /// so that the check projects can assert it: this build once filtered list rows out by writing
+    /// <c>ListItem</c> as 50029, and a rule inside a Win32 file is a rule nobody can test.
     /// </summary>
-    private static bool IsTarget(int controlType) => controlType is
-        UiaCalls.ControlTypeButton or     // 50000
-        UiaCalls.ControlTypeCheckBox or   // 50002
-        UiaCalls.ControlTypeComboBox or   // 50003
-        UiaCalls.ControlTypeEdit or       // 50004
-        UiaCalls.ControlTypeMenuItem or   // 50011
-        UiaCalls.ControlTypeRadioButton or // 50013
-        UiaCalls.ControlTypeTabItem or    // 50019
-        UiaCalls.ControlTypeTreeItem or   // 50024
-        UiaCalls.ControlTypeListItem or   // 50029
-        UiaCalls.ControlTypeSplitButton;  // 50031
+    private static bool IsTarget(int controlType) => ControlTypes.IsActionable(controlType);
 
     /// <summary>
     /// Releases every element a read kept, when the read is not going to hand them over.
