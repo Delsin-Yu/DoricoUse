@@ -116,6 +116,10 @@ Check("a refused typo throws", refused);
 // call over a collection that already has one; this keeps the "nothing to suggest reads as null" behaviour.
 static string? FirstOrNull(IReadOnlyList<string> values) => values.Count > 0 ? values[0] : null;
 
+// The control types an action may target, spelled out so the list is visible in one place rather than implied by
+// IsActionable's own body.
+int[] actionableControlTypes = [50000, 50002, 50003, 50004, 50007, 50011, 50013, 50019, 50024, 50029, 50031];
+
 // The CLI error a call threw, or null when it threw nothing: every refusal in this section is asserted by its
 // code and its exit code, not by the sentence it carries.
 static CliException? Refusal(Action action)
@@ -719,6 +723,105 @@ Check("every catalogued panel has a note, an id and a matcher", PanelCatalogue.E
 Check("a panel catalogue entry only matches the class it was measured in", PanelCatalogue.Match("库管理", "#32770") is null);
 Check("an empty caption does not match a catalogued panel", PanelCatalogue.Match("", "Qt6101QWindowIcon") is null);
 
+Console.WriteLine("== the control type table: one wrong number is a capability that disappears");
+
+// Measured, and the reason this section exists: `ListItem` was 50029 for a whole release, which is `DataItem`, so
+// every list row of Dorico's Setup lists and of the 繁衍声部格式 dialog was filtered out of the read. Dorico answers
+// 50007 for a row - read with an independent walker and again through this build's own reader.
+Check("a list row is control type 50007", ControlTypes.ListItem == 50007, ControlTypes.ListItem.ToString());
+Check("and 50029 is something else entirely", ControlTypes.DataItem == 50029 && ControlTypes.DataItem != ControlTypes.ListItem);
+Check("a list row is something an agent may act on", ControlTypes.IsActionable(ControlTypes.ListItem));
+Check("a text label is not", !ControlTypes.IsActionable(ControlTypes.Text));
+Check("a group is not", !ControlTypes.IsActionable(ControlTypes.Group));
+Check("and neither is a pane", !ControlTypes.IsActionable(ControlTypes.Pane));
+Check("a row is named as one", ControlTypes.Name(ControlTypes.ListItem) == "ListItem", ControlTypes.Name(ControlTypes.ListItem));
+Check("and its role is how an agent sees it", ControlTypes.Role(ControlTypes.ListItem) == "listItem", ControlTypes.Role(ControlTypes.ListItem));
+Check("an unnamed control type still reports its number", ControlTypes.Role(50999) == "controlType-50999", ControlTypes.Role(50999));
+Check("every actionable control type has a role of its own", Array.TrueForAll(actionableControlTypes, id => ControlTypes.IsActionable(id) && !ControlTypes.Role(id).StartsWith("controlType-", StringComparison.Ordinal)));
+
+var row = new PanelElementInput(ControlTypes.ListItem, "Piccolo", null, null, null, true, null, false, 0, 0);
+
+Check("a selected list row reports its state", PanelModel.State(row) == "selected", PanelModel.State(row));
+Check("and the action on it is a selection", PanelModel.Action(row) == PanelAction.Select, PanelModel.Action(row).ToString());
+
+var rowDescription = PanelModel.Describe([row]);
+
+Check("a row with no automation id falls back to its position and still gets an id", rowDescription[0].Id.Length > 0 && rowDescription[0].Role == "listItem", rowDescription[0].Id);
+
+Console.WriteLine("== the classic Win32 control id, kept where it is shared");
+
+// Measured on the Open picker: the file-name box, the ComboBox inside it and the ComboBoxEx32 pane around that all
+// answer automation id 1148, so an unqualified number is not unique and would fall through to a position id.
+var classic = PanelModel.Describe(
+[
+    new PanelElementInput(ControlTypes.ComboBox, "文件名(N):", "1148", "", null, null, null, false, 0, 0),
+    new PanelElementInput(ControlTypes.Edit, "文件名(N):", "1148", "", null, null, null, false, 0, 0),
+    new PanelElementInput(ControlTypes.ComboBox, "文件类型(T):", "1136", "", null, null, null, false, 0, 0),
+]);
+
+Check("a shared classic id is qualified by the role", classic[0].Id == "comboBox-1148" && classic[1].Id == "edit-1148", string.Join(',', classic.Select(entry => entry.Id)));
+Check("and an id that is not shared is left as it is", classic[2].Id == "1136", classic[2].Id);
+
+Console.WriteLine("== the document window: the one window an agent has to be able to name");
+
+Check(
+    "the document window has a constant id, not a hash of its caption",
+    PanelModel.PanelId("「狸猫的五十种变化」… 内*", "Qt6101QWindowIcon", PanelModel.KindUnknown, document: true) == PanelModel.DocumentWindowId,
+    PanelModel.DocumentWindowId);
+Check(
+    "so the same window keeps that id when the document is renamed or unsaved",
+    PanelModel.PanelId("A", "Qt6101QWindowIcon", PanelModel.KindUnknown, document: true)
+        == PanelModel.PanelId("B*", "Qt6101QWindowIcon", PanelModel.KindUnknown, document: true));
+Check(
+    "a window that is not the document still gets a derived id",
+    PanelModel.PanelId("库管理", "Qt6101QWindowIcon", PanelModel.KindUnknown, document: false) == "dorico.library-manager");
+Check(
+    "and a window nothing knows stays unknown",
+    PanelModel.PanelId("something else", "Qt6101QWindowIcon", PanelModel.KindUnknown, document: false).StartsWith("unknown.", StringComparison.Ordinal));
+
+var documentPanel = PanelModel.Describe(
+    new WindowFacts(0x1000, 1, nint.Zero, false, true, "Qt6101QWindowIcon", "A score"),
+    documentEnabled: true,
+    documentHandle: 0x1000);
+
+Check("the document window's entry carries that id", NodeRead.Str(documentPanel, "id") == PanelModel.DocumentWindowId, NodeRead.Str(documentPanel, "id"));
+Check("and says what can be reached inside it", NodeRead.Str(documentPanel, "description")?.Contains("Setupless", StringComparison.Ordinal) == false && NodeRead.Str(documentPanel, "pressWith")?.Contains(PanelModel.DocumentWindowId, StringComparison.Ordinal) == true, NodeRead.Str(documentPanel, "pressWith"));
+
+var elementsArray = PanelModel.ElementPayload(PanelModel.Describe([row]), out var returned);
+
+Check("the elements array is the shape an agent pastes an id back from", returned == 1 && NodeRead.Str(elementsArray[0], "role") == "listItem" && NodeRead.Str(elementsArray[0], "action") == "select", elementsArray.ToJsonString());
+
+Console.WriteLine("== the Open picker: measured, catalogued, and its name box is a control");
+
+var picker = DialogCatalogue.Entries.FirstOrDefault(entry => entry.Id == "dorico.open-picker");
+
+Check("the file picker is catalogued now that it has been read", picker is not null && picker.Measured);
+Check("and it is no longer only a reserved id", !DialogCatalogue.Reserved.Contains("dorico.open-picker"));
+Check("its caption is the one the window showed", picker is not null && DialogCatalogue.Glob("打开", picker.TitleGlobs[0]));
+Check("its accept button is not safe, because accepting an import changes the document", picker!.Buttons[0].Id == "accept" && !picker.Buttons[0].Safe);
+Check("and its cancel button is", picker.Buttons[1].Id == "cancel" && picker.Buttons[1].Safe);
+Check("and every criterion it declares is one all of its buttons carry", picker.Buttons.All(button => button.MatchLabels.Count == 1 && button.MatchClassicIds.Count == 1), string.Join('|', picker.Buttons.Select(button => string.Join(',', button.MatchClassicIds))));
+
+// The measurement this rule comes from: the live Open picker has two `DropDown` buttons whose label is also 打开,
+// so a label-only matcher handed them the accept id and `--button accept` would press a combo box's arrow.
+var pickerLookalike = DialogModel.Describe(new DialogInput(
+    Title: "打开",
+    WindowClass: "#32770",
+    Owner: "0x00C91106",
+    TextSource: "uia",
+    TextLines: [],
+    Buttons:
+    [
+        new DialogButtonInput("打开", "DropDown", true),
+        new DialogButtonInput("打开", "1", true),
+        new DialogButtonInput("取消", "2", true),
+    ]));
+
+Check("the picker is recognised by its caption and its labels", pickerLookalike.Id == "dorico.open-picker", pickerLookalike.Id);
+Check("a button that carries the accept label and no classic id is not the accept button", pickerLookalike.Buttons[0].Id != "accept", pickerLookalike.Buttons[0].Id);
+Check("the one that carries the classic id is", pickerLookalike.Buttons[1].Id == "accept" && pickerLookalike.Buttons[1].Alias == "ok", pickerLookalike.Buttons[1].Id);
+Check("and its pressWith offers the safe cancel line", pickerLookalike.PressWith == "dorico-use ui press --dialog dorico.open-picker --button cancel", pickerLookalike.PressWith);
+
 LogQueue.Begin(fixture);
 LogQueue.Mark("NoteInput.Enter");
 WriteLater(
@@ -742,6 +845,47 @@ Check(
     NodeRead.Str(onTheQueue, "evidence")?.Contains("Queue after push", StringComparison.Ordinal) == true,
     NodeRead.Str(onTheQueue, "evidence"));
 Check("and the payload still carries the log it read", NodeRead.Str(onTheQueue, "log") == fixture);
+
+// What a live read needs while it waits for its own file: is the queue still busy, and therefore is the output late
+// rather than never? Measured twice on 2026-10-11 - the players script was posted and executed 30.1 s later, behind
+// a long command, while the read gave up after 20 s. The live read posts through the host and never names its own
+// command to this class, which is why an unmarked posting is the shape that matters here.
+File.WriteAllText(fixture, "2026-10-11 10:04:34.619 [info] Sync complete\n");
+LogQueue.Begin(fixture);
+WriteLater(
+    "2026-10-11 10:04:50.116 [info] Posting command (requested): Script.RunScript ScriptPath=x.lua\n",
+    150);
+
+Thread.Sleep(400);
+
+var pending = LogQueue.PendingSinceStart();
+
+Check("work the log shows posted with no execution is reported as pending", pending.Contains("Script.RunScript", StringComparer.Ordinal), string.Join(',', pending));
+
+File.AppendAllText(fixture, "2026-10-11 10:05:20.180 [info] Executing command: Script.RunScript?ScriptPath=x.lua\n");
+
+Check("and once it executes, nothing is pending any more", LogQueue.PendingSinceStart().Count == 0, string.Join(',', LogQueue.PendingSinceStart()));
+
+File.WriteAllText(fixture, "2026-10-11 05:15:50.603 [info] Sync complete\n");
+LogQueue.Begin(fixture);
+LogQueue.Mark("NoteInput.Enter");
+WriteLater(
+    "2026-10-11 05:15:50.603 [info] Posting command (requested): NoteInput.Enter\n"
+    + "2026-10-11 05:15:50.603 [info] Executing command: NoteInput.Enter\n",
+    150);
+
+Check("a command this invocation posted by name and nothing executed is pending too", LogQueue.PendingSinceStart().Count == 0, string.Join(',', LogQueue.PendingSinceStart()));
+
+// A live read posts its own Script.RunScript by name, and that posting is exactly what it is waiting behind - so the
+// pending scan must count it, which Unmatched (the verdict's orphan scan) deliberately does not.
+File.WriteAllText(fixture, "2026-10-11 10:04:34.619 [info] Sync complete\n");
+LogQueue.Begin(fixture);
+LogQueue.Mark("Script.RunScript");
+WriteLater("2026-10-11 10:04:50.116 [info] Posting command (requested): Script.RunScript ScriptPath=x.lua\n", 150);
+
+Thread.Sleep(400);
+
+Check("and the read's own named posting counts as pending while it has not executed", LogQueue.PendingSinceStart().Contains("Script.RunScript", StringComparer.Ordinal), string.Join(',', LogQueue.PendingSinceStart()));
 
 File.WriteAllText(fixture, "2026-10-11 05:15:50.603 [info] Sync complete\n");
 LogQueue.Begin(fixture);

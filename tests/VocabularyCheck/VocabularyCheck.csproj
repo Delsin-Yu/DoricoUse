@@ -42,6 +42,14 @@
       choice. The Windows side of it (the probe, the reader, the surface) stays under Ui/ in files only the CLI
       project compiles.
     -->
+    <!--
+      The control type table is what every element read filters on, and one number in it was wrong for a whole
+      release without anybody noticing: `ListItem` was written as 50029, which is `DataItem`, so no list row of
+      Dorico's Setup lists or of the 繁衍声部格式 dialog ever reached a payload. It is pure data and pure rules, so it
+      is asserted here - that the ids are the client interface definitions' and that the actionable set is the one
+      that was measured.
+    -->
+    <Compile Include="../../src/DoricoUse.Cli/Ui/ControlTypes.cs" />
     <Compile Include="../../src/DoricoUse.Cli/Ui/PanelModel.cs" />
     <Compile Include="../../src/DoricoUse.Cli/Ui/PanelCatalogue.cs" />
     <!--
