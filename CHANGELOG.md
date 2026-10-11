@@ -75,6 +75,15 @@ Control API — see `README.md`.
   "enable the transposing view" and "enable the optimised score" checklist items. Measured both ways: a project's
   full score wrote `kScoreInC` and its part layout `kTransposingScore`, and toggling each setting in Dorico and
   saving a copy changed exactly those fields on that layout.
+- **`score.players[].soloPlayer`** and the derived **`playerType`** (`solo` / `section`) on every `file read`: the
+  player's *kind*, which is a different flag from `isSoloist` and the one a Sibelius import gets wrong. Measured on
+  a 44-player orchestral import: 40 solo players and 4 section players — Violin I, Viola, Violoncello and
+  Contrabass — while Violin II came in as a solo player and every one of the 44 wrote `isSoloist: false`. The two
+  names come from the pair of commands the application's own catalogue publishes, `Project.SoloPlayer.New` and
+  `Project.SectionPlayer.New`; the mapping is an inference from that name and from the measured distribution, so
+  the payload carries the raw leaf and a caveat says which half is inferred. Cross-checked against two finished
+  projects (34 players: all five strings sections; 35 players: Violin 1 section against Violin 2 solo, the same
+  defect in a finished score) and against the committed fixture (one solo player, `isSoloist` false).
 - **`session status` reports `condensingEnabled`**, which is the live half of the same item.
 - **Rehearsal marks in the live read.** `session read` (and `note insert --read`) now walks the flow's **timebase**
   stream as well as its voice streams, so `counts.rehearsals`, `counts.timebaseStreams`, `timebaseKinds` and a

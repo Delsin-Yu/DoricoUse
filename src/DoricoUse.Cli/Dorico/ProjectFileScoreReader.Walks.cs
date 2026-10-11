@@ -507,6 +507,7 @@ internal static partial class ProjectFileScoreReader
                             case "displayShortName": player.ShortName = Value(value); break;
                             case "baseShortName": player.ShortName ??= Value(value); break;
                             case "isSoloist": player.IsSoloist = Value(value) == "true"; break;
+                            case "soloPlayer": player.SoloPlayer = Value(value) == "true"; break;
                         }
 
                         return true;

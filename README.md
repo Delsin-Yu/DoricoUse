@@ -447,6 +447,16 @@ checklist's group item needs, and it is the only one there is — `Project.Playe
 refused outright by Dorico 6.2.30 (`kError kCommandNotAllowed`, and no `Posting` line in its log), so a group's name
 and abbreviation cannot be set through the API at all; `file read` is what verifies them.
 
+**`score.players[].soloPlayer`** is the other half of a player's identity, and the one a Sibelius import gets wrong:
+each player carries the file's own `soloPlayer` leaf (read raw) beside **`playerType`**, this build's name for its two
+values — `solo` for a solo (single) player and `section` for a section player, derived from the pair of commands
+Dorico's own catalogue publishes (`Project.SoloPlayer.New` against `Project.SectionPlayer.New`). Measured on a
+44-player orchestral import: 40 solo players and 4 section players, and the four are Violin I, Viola, Violoncello and
+Contrabass — so Violin II, which came in as a solo player, is the one that stands out. It is **not** `isSoloist`:
+that flag (`Project.Player.SetAsSoloist`) is the soloist-in-front-of-a-section mark, and all 44 players of that file
+wrote it `false`. The mapping is an inference from the leaf's name and from that distribution rather than a
+certificate, so both the raw leaf and the name are reported, and the caveat says so.
+
 The other blocks read the same way. Each one states in its own `caveats` what it rests on:
 
 | Option | What it reads | Verification |

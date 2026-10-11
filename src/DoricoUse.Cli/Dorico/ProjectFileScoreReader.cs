@@ -875,6 +875,7 @@ internal static partial class ProjectFileScoreReader
                     DisplayName(player.Name),
                     DisplayName(player.ShortName),
                     player.IsSoloist,
+                    player.SoloPlayer,
                     [.. player.Instruments.Select(instrument => new ProjectFileInstrument(
                         (int)instrument.Id,
                         instrument.EntityId,
@@ -1406,6 +1407,12 @@ internal static partial class ProjectFileScoreReader
         public string? Name;
         public string? ShortName;
         public bool? IsSoloist;
+
+        /// <summary>
+        /// The player's kind, as the file's own <c>soloPlayer</c> leaf states it: true for a solo (single) player,
+        /// false for a section player. Kept raw here — what the report calls it is the report's business.
+        /// </summary>
+        public bool? SoloPlayer;
         public List<InstrumentDraft> Instruments { get; } = [];
     }
 

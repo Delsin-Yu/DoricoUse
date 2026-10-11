@@ -67,6 +67,17 @@ internal static partial class ProjectFileView
             "stave: notes are attributed to the player and instrument their stream belongs to; the sounding pitch is "
             + "the note event's, and a part layout applies its own transposition when it is printed."),
         (JsonNode?)JsonValue.Create(
+            "soloPlayer/playerType: a player's kind — a solo (single) player against a section player — is the file's "
+            + "own soloPlayer leaf on the scorePlayer node, read raw; 'playerType' is this build's name for its two "
+            + "values and is null where the file states none. The two names come from the pair of commands Dorico's own "
+            + "catalogue publishes, Project.SoloPlayer.New and Project.SectionPlayer.New, and the mapping is an "
+            + "inference from the name and from a measured distribution rather than a certificate: in a 44-player "
+            + "orchestral import every single-instrument wind, brass, percussion and keyboard player wrote true and the "
+            + "four string section players (Violin I, Viola, Violoncello, Contrabass) wrote false, so the one string "
+            + "player that wrote true is the one that stands out — which is the fact this read exists for. It is not "
+            + "isSoloist: that is a separate flag (Project.Player.SetAsSoloist), and all 44 players of that file wrote "
+            + "it false."),
+        (JsonNode?)JsonValue.Create(
             "marks: what the score stores about a note that is not a note — its articulations, its tie's engraving, a "
             + "beam break, the playing technique attached to it — is a *property of the event*, not an event of its "
             + "own. --articulations, --ties, --beams and --techniques report those properties; 'name' is derived from "
@@ -397,6 +408,15 @@ internal static partial class ProjectFileView
                 ["name"] = player.Name,
                 ["shortName"] = player.ShortName,
                 ["isSoloist"] = player.IsSoloist,
+                // Both: the raw leaf, and the name this build gives its two values. The leaf is what a reader can
+                // check against the file; the name is what an agent can act on without knowing what a Dorico leaf is.
+                ["soloPlayer"] = player.SoloPlayer,
+                ["playerType"] = player.SoloPlayer switch
+                {
+                    true => "solo",
+                    false => "section",
+                    null => null,
+                },
                 ["instruments"] = instruments,
             });
         }

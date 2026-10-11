@@ -155,6 +155,40 @@ else
         fixtureScore.PlayerGroups.Count == 1 && fixtureScore.PlayerGroups[0].Id == -1 && fixtureScore.PlayerGroups[0].Name is null,
         string.Join(',', fixtureScore.PlayerGroups.Select(group => group.Id.ToString())));
 
+    // The player's kind is the third read the checklist needs: a Sibelius import can bring a section player in as a
+    // solo player, and only the file's own `soloPlayer` leaf says which kind a player is. The fixture is a solo
+    // player, and — measured — its `isSoloist` is false, so this check fails if a later change reads one leaf for the
+    // other: they are two different flags, and the whole point of the read is telling them apart.
+    Check(
+        "the fixture's player is a solo player, and isSoloist is a different flag",
+        fixtureScore.Players[0].SoloPlayer == true && fixtureScore.Players[0].IsSoloist == false,
+        $"soloPlayer={fixtureScore.Players[0].SoloPlayer}, isSoloist={fixtureScore.Players[0].IsSoloist}");
+
+    // And the report has to carry it in a shape an agent can use without knowing what a Dorico leaf is: the raw leaf
+    // beside the name this build derives from it.
+    try
+    {
+        var report = JsonNode.Parse(ProjectFileView.Report(manifest, new ProjectFileView.Options { NoteLimit = 0 }).ToJsonString())!;
+        var players = report["score"]!["players"]!.AsArray();
+        var caveats = string.Join("\n", report["score"]!["caveats"]!.AsArray().Select(caveat => caveat!.GetValue<string>()));
+
+        Check(
+            "the report gives every player the raw leaf and the derived kind",
+            players.All(player => player!["soloPlayer"] is not null && player["playerType"] is not null)
+                && players[0]!["soloPlayer"]!.GetValue<bool>()
+                && players[0]!["playerType"]!.GetValue<string>() == "solo",
+            string.Join(", ", players.Select(player => $"{player!["soloPlayer"]}/{player["playerType"]}")));
+        Check(
+            "and the caveats say the mapping is an inference from the leaf's name and a measured distribution",
+            caveats.Contains("soloPlayer/playerType") && caveats.Contains("Project.SoloPlayer.New")
+                && caveats.Contains("Project.SectionPlayer.New") && caveats.Contains("inference"));
+    }
+    catch (Exception ex)
+    {
+        Check("the report gives every player the raw leaf and the derived kind", false, ex.Message);
+        Check("and the caveats say the mapping is an inference from the leaf's name and a measured distribution", false, ex.Message);
+    }
+
     // The two layout view-state fields are the stored half of the transposition and condensing checklist items.
     // They are read from the layout, and the fixture's own two layouts disagree about the transposition — which is
     // the point of the field: measured, a full score is kScoreInC and its part layout kTransposingScore.

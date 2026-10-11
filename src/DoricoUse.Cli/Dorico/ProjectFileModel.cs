@@ -217,17 +217,28 @@ internal sealed record ProjectFileScoreInfo(
 
 /// <summary>A player (an instrumentalist) and the instruments it holds.</summary>
 /// <param name="IsSoloist">
-/// The file's own <c>isSoloist</c> on the <c>scorePlayer</c> node, which is what "the second violins must not be a
-/// soloist" (checklist item 3) is about. Measured: a section string player wrote <c>false</c>, and
-/// <c>Project.Player.SetAsSoloist?PlayerID=&amp;Set=true</c> turned it into <c>true</c> and renamed the player to
-/// <c>Solo Violin</c> in the saved file; the same command with <c>Set=false</c> left it <c>true</c>. Null when the
-/// file states none.
+/// The file's own <c>isSoloist</c> on the <c>scorePlayer</c> node: the flag that marks a player as a *soloist* in
+/// front of its section, which is a different thing from the player's kind. Measured: a section string player wrote
+/// <c>false</c>, and <c>Project.Player.SetAsSoloist?PlayerID=&amp;Set=true</c> turned it into <c>true</c> and renamed
+/// the player to <c>Solo Violin</c> in the saved file; the same command with <c>Set=false</c> left it <c>true</c>.
+/// Null when the file states none.
+/// </param>
+/// <param name="SoloPlayer">
+/// The file's own <c>soloPlayer</c> on the same node, which is the leaf that separates the two kinds of player
+/// Dorico's API names in its own catalogue (<c>Project.SoloPlayer.New</c> against <c>Project.SectionPlayer.New</c>):
+/// measured, a 44-player orchestral import writes <c>true</c> for every single-instrument wind, brass, percussion
+/// and keyboard player and <c>false</c> for the four string section players, so a player that came in as the wrong
+/// kind is exactly a player whose <c>soloPlayer</c> disagrees with its neighbours. It is <em>not</em> the same flag
+/// as <c>isSoloist</c>: in that same file every one of the 44 players wrote <c>isSoloist: false</c>, including the
+/// one that is a solo player where a section belongs. Null when the file states none. The report derives
+/// <c>playerType</c> from this leaf; see its caveat for what that derivation rests on.
 /// </param>
 internal sealed record ProjectFilePlayer(
     int Id,
     string? Name,
     string? ShortName,
     bool? IsSoloist,
+    bool? SoloPlayer,
     IReadOnlyList<ProjectFileInstrument> Instruments);
 
 internal sealed record ProjectFileInstrument(
