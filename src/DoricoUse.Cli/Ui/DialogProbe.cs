@@ -83,30 +83,6 @@ internal static class DialogProbe
             var document = DocumentWindow(windows, dorico);
             var enabled = document is null ? (bool?)null : IsWindowEnabled(document.Handle);
 
-            // Measured correction: while a modal that owns nothing is up — the crash reporter is one, and it
-            // disables every other window of the process — Windows still calls one of those disabled windows the
-            // process's main window, and it is not always the document. The document window is the <b>largest</b>
-            // window that a modal disabled, which is a fact about how a score window fills a screen: measured with
-            // the crash reporter up, the resolution named the 1768x1077 library manager and the 3286x1841 document
-            // window beside it. When the resolved window is enabled, or is the largest disabled one already, nothing
-            // changes.
-            if (document is not null && enabled == false)
-            {
-                var largest = windows
-                    .Where(window => dorico.Contains(window.ProcessId)
-                        && window.Handle != document.Handle
-                        && window.Owner == nint.Zero
-                        && !window.Enabled
-                        && Area(window.Handle) > Area(document.Handle))
-                    .OrderByDescending(window => Area(window.Handle))
-                    .FirstOrDefault();
-
-                if (largest is not null)
-                {
-                    document = largest;
-                }
-            }
-
             var documentHandle = document?.Handle ?? nint.Zero;
             var all = mine.ToArray();
 
@@ -213,41 +189,74 @@ internal static class DialogProbe
     }
 
     /// <summary>
-    /// Dorico's document window: the window the taskbar knows as the process's main one when it is on screen, else
-    /// the largest visible window of the process that owns nothing. The fallback exists because MainWindowHandle can
-    /// answer zero while a modal dialog is up.
+    /// Dorico's document window: the visible window of the process that owns nothing and has the largest
+    /// <b>restored</b> rectangle.
     /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Size, and not <c>Process.MainWindowHandle</c>, and that is a correction with a measurement behind it. With
+    /// the modeless library manager up, .NET's "main window" is whichever visible unowned window <c>EnumWindows</c>
+    /// hands out first, and measured on 2026-10-11 that was the 库管理 window (0x038A0A34, restored 816187 pixels)
+    /// rather than the document window beside it (0x00C91106, restored 2688357) — so the library manager was
+    /// reported as <c>document: true</c> and the real document window as <c>false</c>, twice measured. A document
+    /// window is the largest thing a score application puts on screen, and this holds in every measured case: only
+    /// the document up; the library manager up; the MusicXML export dialog and the folder picker (both owned, so
+    /// excluded); and the crash reporter, which owns nothing but is 1768x1077 beside a 3286x1841 document window.
+    /// </para>
+    /// <para>
+    /// The rectangle must be the <b>restored</b> one, <c>WINDOWPLACEMENT.rcNormalPosition</c>, because a minimized
+    /// window answers <c>GetWindowRect</c> with its icon rectangle: measured, the document window read
+    /// <c>-21333,-21333, 158x26</c> while its restored rectangle was 2191x1227. Ranking by the on-screen rectangle
+    /// would have handed the title to every other window the moment the user minimized Dorico.
+    /// </para>
+    /// <para>
+    /// An inference, not a certainty: a future modeless window larger than the document window, owning nothing,
+    /// would be mistaken for it. Every window that has been measured is smaller, and the alternative — a UI
+    /// Automation read on every invocation — costs a COM round trip on a probe that is meant to be cheap Win32.
+    /// </para>
+    /// </remarks>
     private static WindowFacts? DocumentWindow(List<WindowFacts> windows, List<uint> dorico)
     {
-        foreach (var processId in dorico)
+        WindowFacts? best = null;
+        var bestArea = -1L;
+
+        foreach (var window in windows)
         {
-            nint main;
-
-            try
+            if (!dorico.Contains(window.ProcessId) || window.Owner != nint.Zero)
             {
-                using var process = Process.GetProcessById((int)processId);
-                main = process.MainWindowHandle;
-            }
-            catch (Exception ex) when (ex is ArgumentException or InvalidOperationException or System.ComponentModel.Win32Exception)
-            {
-                main = nint.Zero;
+                continue;
             }
 
-            if (main != nint.Zero)
-            {
-                var match = windows.FirstOrDefault(window => window.Handle == main);
+            var area = RestoredArea(window.Handle);
 
-                if (match is not null)
-                {
-                    return match;
-                }
+            if (area > bestArea)
+            {
+                best = window;
+                bestArea = area;
             }
         }
 
-        return windows
-            .Where(window => dorico.Contains(window.ProcessId) && window.Owner == nint.Zero)
-            .OrderByDescending(window => Area(window.Handle))
-            .FirstOrDefault();
+        return best;
+    }
+
+    /// <summary>
+    /// How big a window is when it is not minimized, in pixels of its restored rectangle.
+    /// </summary>
+    /// <remarks>
+    /// <c>rcNormalPosition</c> is the placement the window returns to, and it is valid while the window is
+    /// minimized — which is exactly when <c>GetWindowRect</c> is not. The fallback is for a window whose placement
+    /// cannot be read: ranking it below a window that answered is better than treating "unknown" as "huge".
+    /// </remarks>
+    private static long RestoredArea(nint handle)
+    {
+        if (GetWindowPlacement(handle, ref placement))
+        {
+            var restored = placement.NormalPosition;
+
+            return (long)Math.Max(0, restored.Right - restored.Left) * Math.Max(0, restored.Bottom - restored.Top);
+        }
+
+        return Area(handle);
     }
 
     /// <summary>
@@ -339,6 +348,10 @@ internal static class DialogProbe
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool GetWindowRect(nint handle, out Rect rect);
 
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetWindowPlacement(nint handle, ref WindowPlacement placement);
+
     [StructLayout(LayoutKind.Sequential)]
     private struct Rect
     {
@@ -347,4 +360,36 @@ internal static class DialogProbe
         public int Right;
         public int Bottom;
     }
+
+    /// <summary>
+    /// <c>WINDOWPLACEMENT</c>. <c>rcNormalPosition</c> is the member this build reads, and it is the one that is
+    /// still meaningful while the window is minimized.
+    /// </summary>
+    [StructLayout(LayoutKind.Sequential)]
+    private struct WindowPlacement
+    {
+        public int Length;
+        public int Flags;
+        public int ShowCommand;
+        public Point MinPosition;
+        public Point MaxPosition;
+        public Rect NormalPosition;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct Point
+    {
+        public int X;
+        public int Y;
+    }
+
+    /// <summary>
+    /// One reusable <c>WINDOWPLACEMENT</c> with its length filled in, because the struct's first member is its own
+    /// size and <c>GetWindowPlacement</c> refuses a zero there. The probe runs on every invocation and reads one
+    /// window's placement once, so reusing it is enough and allocating per call would not be.
+    /// </summary>
+    private static WindowPlacement placement = new()
+    {
+        Length = Marshal.SizeOf<WindowPlacement>(),
+    };
 }
