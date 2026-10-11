@@ -186,6 +186,10 @@ internal static class DoricoProtocol
                 JsonArr.AddNumber(ids, id);
             }
 
+            // Measured on Dorico 6.2.30: the protocol's setoptions ignores this key, and the singular key the
+            // matching getoptions uses as well, and writes to the layout that is current. The executed command in
+            // application.log carries LayoutIDArray=<current layout> whatever id was asked for. So a layout option
+            // write has to be aimed by making the layout current first (Window.SwitchToLayout); see the README.
             message[IdKey(optionsType, plural: true)] = ids;
         }
 

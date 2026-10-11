@@ -115,6 +115,18 @@ internal sealed record PanelElementDescription(
     bool? ValueReadOnly = null,
     string? Container = null);
 
+/// <summary>One node of a panel's accessibility tree, kept or not, for <c>ui panels --raw</c>.</summary>
+/// <remarks>
+/// It lives in <c>PanelModel.cs</c> rather than beside the reader that fills it because that file is the pure half
+/// the check projects compile, and <see cref="PanelModel.NodePayload"/> is a rule about what a payload claims.
+/// </remarks>
+/// <param name="ControlType">The UI Automation control type id.</param>
+/// <param name="Name">The name the node carries, verbatim. Empty for most of a Qt/QML tree.</param>
+/// <param name="AutomationId">The node's own automation id, verbatim.</param>
+/// <param name="Depth">How deep the node sits below the window.</param>
+/// <param name="Kept">True when this node is one of the elements the read reports and an action can target.</param>
+internal sealed record PanelNodeInput(int ControlType, string Name, string? AutomationId, int Depth, bool Kept);
+
 /// <summary>How one element would be acted on: the pattern, and what it would change.</summary>
 public enum PanelAction
 {
@@ -537,6 +549,52 @@ internal static class PanelModel
     }
 
     /// <summary>
+    /// The whole tree a read walked, for <c>ui panels --raw</c>: every node, kept or not, in read order.
+    /// </summary>
+    /// <param name="nodes">The nodes the walk visited.</param>
+    /// <param name="returned">How many were written, so a caller can see whether a cap applied.</param>
+    /// <remarks>
+    /// This is the answer to a mistake this build has made twice: a read that returned a short element list was read
+    /// as "there is no such control in that window". Measured, the library manager's 27 nodes are 13 unnamed
+    /// <c>CollectionListDelegate</c> groups, 2 labels, 4 panes and 2 scroll bars around the 5 elements that reach a
+    /// payload — and the window draws more than the tree holds. <c>kept</c> on each node says which side of that
+    /// line it fell on, so the gap is visible instead of implied. Values are deliberately not read here: a raw walk
+    /// exists to show the shape, and asking every node for a value pattern would turn a cheap read into a slow one.
+    /// </remarks>
+    public static JsonArray NodePayload(IReadOnlyList<PanelNodeInput> nodes, out int returned)
+    {
+        ArgumentNullException.ThrowIfNull(nodes);
+
+        var array = new JsonArray();
+
+        foreach (var node in nodes)
+        {
+            if (array.Count >= MaxNodes)
+            {
+                break;
+            }
+
+            JsonArr.AddNode(array, new JsonObject
+            {
+                ["index"] = array.Count,
+                ["depth"] = node.Depth,
+                ["role"] = ControlTypes.Role(node.ControlType),
+                ["controlType"] = ControlTypes.Name(node.ControlType),
+                ["name"] = node.Name,
+                ["automationId"] = node.AutomationId,
+                ["kept"] = node.Kept,
+            });
+        }
+
+        returned = array.Count;
+
+        return array;
+    }
+
+    /// <summary>How many nodes one raw walk may report, so that a payload stays readable.</summary>
+    public const int MaxNodes = 4000;
+
+    /// <summary>
     /// The <c>panels</c> array of the payload, built from the window facts with no UI Automation read at all.
     /// </summary>
     /// <param name="windows">Every visible top-level window of Dorico's own process, topmost first.</param>
@@ -702,6 +760,11 @@ internal static class PanelModel
     /// <param name="truncated">True when the read stopped before the tree ended.</param>
     /// <param name="readMs">What the read cost, in milliseconds.</param>
     /// <param name="error">Why the read failed, when it did.</param>
+    /// <param name="nodesVisited">
+    /// How many nodes the walk visited, kept or not, or null when nothing was walked. Reported so that a short
+    /// <c>elements</c> array cannot be mistaken for a small window: the two numbers together are the difference
+    /// between "this window holds five controls" and "UI Automation exposes five controls of this window".
+    /// </param>
     public static JsonObject Elements(
         WindowFacts window,
         bool? documentEnabled,
@@ -710,7 +773,8 @@ internal static class PanelModel
         long readMs,
         string? error = null,
         nint documentHandle = default,
-        nint dialogHandle = default)
+        nint dialogHandle = default,
+        int? nodesVisited = null)
     {
         var payload = Describe(window, documentEnabled, documentHandle, dialogHandle);
 
@@ -723,6 +787,25 @@ internal static class PanelModel
         payload["returned"] = returned;
         payload["truncated"] = truncated || described.Count > returned;
         payload["readMs"] = readMs;
+
+        if (nodesVisited is not null)
+        {
+            payload["visited"] = nodesVisited.Value;
+
+            if (nodesVisited.Value > described.Count)
+            {
+                // The honest version of a short element list. Measured, and this is why the field exists: the
+                // library manager draws an 选项 column, a 集合 column, a 此工程 list, a filter, a search field and a
+                // .dorico drop target, and UI Automation exposes five elements of it - so "elementCount: 5" would
+                // otherwise read as "there is nothing in that dialog".
+                payload["walkNote"] = $"The walk visited {nodesVisited.Value} elements of this window and kept "
+                    + $"{described.Count}: a button, a check box, a field, a combo box, a tab and a list row are "
+                    + "elements an action can target, while a pane, a group, a label and a scroll bar are what a "
+                    + "window is made of. A short list here is not proof that the window is small — measured, the "
+                    + "library manager draws rows, a filter, a search field and a drop target that have no UI "
+                    + "Automation node at all, so this build can list only what the accessibility tree carries.";
+            }
+        }
 
         var lists = Lists(elements ?? [], out var rows);
 

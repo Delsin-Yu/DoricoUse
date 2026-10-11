@@ -10,11 +10,16 @@ namespace DoricoUse.Cli.Ui;
 /// </param>
 /// <param name="Nodes">How many elements the walk visited, kept or not.</param>
 /// <param name="Truncated">True when a limit stopped the walk before the tree ended.</param>
+/// <param name="Every">
+/// Every node the walk visited, in read order, when the caller asked for them — or null, which is the cheap path
+/// every read but <c>--raw</c> takes.
+/// </param>
 internal sealed record PanelRead(
     IReadOnlyList<PanelElementInput> Elements,
     IReadOnlyList<nint> Handles,
     int Nodes,
-    bool Truncated);
+    bool Truncated,
+    IReadOnlyList<PanelNodeInput>? Every = null);
 
 /// <summary>
 /// Reads a panel's elements through UI Automation.
@@ -43,7 +48,13 @@ internal static class PanelReader
 
     /// <summary>Reads the window behind one handle.</summary>
     /// <param name="handle">The window's handle, from the presence probe.</param>
-    public static PanelRead Read(nint handle)
+    /// <param name="every">
+    /// True to keep every node the walk visited, for <c>ui panels --raw</c>: the difference between "this window
+    /// holds five controls" and "UI Automation exposes five controls of this window" is exactly the nodes a read
+    /// drops, and a reader who concluded "there is no such control" from a short element list is the mistake this
+    /// makes visible.
+    /// </param>
+    public static PanelRead Read(nint handle, bool every = false)
     {
         var automation = UiaCom.CreateAutomation();
         nint root = nint.Zero;
@@ -56,12 +67,13 @@ internal static class PanelReader
 
             var elements = new List<PanelElementInput>();
             var handles = new List<nint>();
+            var nodes = every ? new List<PanelNodeInput>() : null;
             var visited = 0;
             var truncated = false;
 
-            Visit(root, walker, 0, elements, handles, ref visited, ref truncated);
+            Visit(root, walker, 0, elements, handles, nodes, ref visited, ref truncated);
 
-            return new PanelRead(elements, handles, visited, truncated);
+            return new PanelRead(elements, handles, visited, truncated, nodes);
         }
         catch
         {
@@ -85,6 +97,7 @@ internal static class PanelReader
         int depth,
         List<PanelElementInput> elements,
         List<nint> handles,
+        List<PanelNodeInput>? nodes,
         ref int visited,
         ref bool truncated,
         string? container = null,
@@ -141,13 +154,15 @@ internal static class PanelReader
             kept = true;
         }
 
+        nodes?.Add(new PanelNodeInput(controlType, name, automationId, depth, kept));
+
         var child = UiaCalls.FirstChild(walker, element);
 
         while (child != nint.Zero)
         {
             var next = UiaCalls.NextSibling(walker, child);
 
-            if (!Visit(child, walker, depth + 1, elements, handles, ref visited, ref truncated, here, scrollable))
+            if (!Visit(child, walker, depth + 1, elements, handles, nodes, ref visited, ref truncated, here, scrollable))
             {
                 UiaCom.Release(child);
             }

@@ -41,8 +41,34 @@ internal static class PanelCatalogue
             Note: "Measured: the library manager, raised by Project.ShowLibraryImportExportDialog, is the modeless "
                 + "class Qt6101QWindowIcon with no owner, and it leaves the document window enabled while Dorico's "
                 + "command queue keeps moving. Its own UIA tree exposes a titlebar, text, groups, the check boxes "
-                + "出厂设置 / 用户库 / Dorico 工程, a tablist and the buttons 关闭 and 应用.",
+                + "出厂设置 / 用户库 / Dorico 工程, a tablist and the buttons 关闭 and 应用. What the walk visits is "
+                + "27 nodes, and only those five are an element this build can act on; the window draws much more "
+                + "than that (an 选项 column of five rows, a 集合 column, a 此工程 list whose rows read \"… 所有选项都"
+                + "匹配\", the 显示: 全部 / 不同 / 不在此工程内 filter, a 搜索 field and the drop target 将 .dorico "
+                + "工程文件放在这里), and every one of those is either absent from the tree or a Group with an empty "
+                + "name and an empty value. The 13 CollectionListDelegate groups that are there (5 for the 选项 rows, "
+                + "8 for the 集合 rows, which are themselves fewer than the window draws) expose an invoke pattern "
+                + "that does nothing: measured twice, invoking one changed neither the row nor the rest of the "
+                + "window. Nothing in the tree raises a file picker. The dialog's content is readable elsewhere: the "
+                + "protocol's `library collections` lists the same 50 collections the 集合 rows stand for, and "
+                + "`library entities` names their entries.",
             TitleGlobs: ["库管理"],
+            ClassPrefixes: ["Qt"]),
+        new PanelCatalogueEntry(
+            Id: "dorico.layout-options",
+            Note: "Measured: the layout options dialog, raised by Project.Layout.AllPartOptions (全部声部布局选项…, "
+                + "every part layout selected) or by Project.Layout.Options?LayoutIDArray=<id> (that layout alone). "
+                + "It is a modeless Qt6101QWindowIcon titled \"<document> - 布局选项\" and it is fully driveable: 162 "
+                + "elements, of which 64 are rows (the option pages, and the layout list whose rows carry each "
+                + "layout's own name), 74 are option controls, and the buttons include 保存为默认 (saveAsDefault), "
+                + "重置到保存的默认值 (resetToSavedDefaults), 重置到出厂值 (resetToFactory), 移除保存的默认值 "
+                + "(removeSavedDefaults), 选择全部 (playersSelectAllButton, selectAllLayoutsButton) and three glyph "
+                + "buttons that select layouts by kind. Its changes reach the document at once — measured, one press "
+                + "of resetToSavedDefaults restored two dirtied part layouts in the live document, before 应用 was "
+                + "pressed — while the close and apply buttons have no unique automation id in Qt, so their element "
+                + "ids are derived from their position and move when the dialog's page changes. The four default "
+                + "buttons have stable ids.",
+            TitleGlobs: ["*布局选项"],
             ClassPrefixes: ["Qt"]),
     ];
 
