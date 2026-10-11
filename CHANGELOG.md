@@ -133,6 +133,15 @@ Control API — see `README.md`.
 - **`Project.Layout.Rename?LayoutID=&Name=` is refused** in Write mode and in Setup mode, for both kinds of layout,
   with and without a `Name`: `kError kCommandNotAllowed`, never posted. Renaming a layout is therefore a manual step,
   and `Project.Layouts.Renumber` (which answers `kOK` and runs) is the only layout bookkeeping the API offers.
+- **A tremolo is a note property, not an event, and the import that raised the question lost none of them.** The
+  live read reports no tremolo event kind because there is none to report: the mark is an entry in the note event's
+  `propertyTable` (`propertyType: kNoteSingleStemTremolo`, value the variant list `list: {int: N}, {bool: false}`
+  where N is the slash count). Measured against the export that was imported: its 150 `<tremolo type="single">`
+  markings in 79 measures sit on 120 tie chains, the file writes one entry per chain (120 note events, over the 72
+  measures those chains start in), and the count agrees with the export's slash count. The 7 measures with no entry
+  are measures the export marks only on a tied continuation, and a tie continuation is not an event of its own.
+  13 of the 120 events carry a second entry: 11 read a count of 0, which this build does not name, and two in one
+  measure repeat their own count. The `--beams` caveat now says all of that.
 
 ## [0.1.0] - 2026-10-11
 

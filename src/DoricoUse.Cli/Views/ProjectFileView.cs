@@ -689,8 +689,13 @@ internal static partial class ProjectFileView
         (JsonNode?)JsonValue.Create(
             "a tremolo is a property too (kNoteSingleStemTremolo, whose value is a variant list: a count and a flag) "
             + "and is reported raw: the export of 無限城への誘い writes 34 <tremolo> elements against this file's 36 "
-            + "properties, so the count does not stand on its own, and nothing in the corpus fixes what the count "
-            + "means when it is 0."),
+            + "properties, so the count does not stand on its own. What the count is, measured against a 44-player "
+            + "Sibelius import: its 150 <tremolo type=\"single\"> markings sit on 120 tie chains, and the file writes "
+            + "exactly one entry per chain — 120 note events, over the 72 measures those chains start in, the count "
+            + "agreeing with the export's slash count (a 3-slash marking writes 3). A tie continuation is not an event "
+            + "of its own, so a measure whose tremolo the export marks only on the tied note has no entry at all, and "
+            + "that is not a lost tremolo. 13 of the 120 events carry a second entry: 11 of them read a count of 0, "
+            + "which this build does not name, and two in one measure repeat their own count."),
         (JsonNode?)JsonValue.Create(
             "marks are read from the note events the notes list reports. A grace note is its own event kind "
             + "(GraceNoteEventDefinition: 22 in Bad Apple!!, 145 in another corpus file), is not part of the notes "
