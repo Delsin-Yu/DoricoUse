@@ -9,12 +9,21 @@ namespace DoricoUse.Cli.Ui;
 /// One UI Automation element pointer per entry of <see cref="DialogInput.Buttons"/>, in the same order, each an
 /// owned reference the caller must release once it is done with them.
 /// </param>
+/// <param name="Elements">
+/// The <b>actionable</b> elements that are not buttons — an edit field, a check box, a list row, a tab — as plain
+/// data, in tree order. Measured, they were in the tree and nowhere in the payload: the 重命名演奏者 dialog exposes
+/// <c>fullNameLineEdit</c> and <c>shortNameLineEdit</c> as <c>Edit</c> elements and the read kept only its two
+/// buttons, so an agent could see the fields in <c>--raw</c> and had no id to act on.
+/// </param>
+/// <param name="ElementHandles">One element pointer per entry of <see cref="Elements"/>, in the same order, owned by the caller.</param>
 /// <param name="Raw">Every element the read walked, when the caller asked for <c>--raw</c>; otherwise null.</param>
 /// <param name="Nodes">How many elements were walked.</param>
 /// <param name="Truncated">True when a limit stopped the walk before the tree ended.</param>
 internal sealed record DialogRead(
     DialogInput Input,
     IReadOnlyList<nint> ButtonElements,
+    IReadOnlyList<PanelElementInput> Elements,
+    IReadOnlyList<nint> ElementHandles,
     JsonArray? Raw,
     int Nodes,
     bool Truncated);
@@ -86,11 +95,11 @@ internal static class DialogReader
                 TextLines: lines,
                 Buttons: buttons);
 
-            return new DialogRead(input, elements, state.Raw, state.Nodes, state.Truncated);
+            return new DialogRead(input, elements, state.Elements, state.ElementHandles, state.Raw, state.Nodes, state.Truncated);
         }
         catch
         {
-            state.ReleaseButtons();
+            state.ReleaseKept();
             throw;
         }
         finally
@@ -138,7 +147,7 @@ internal static class DialogReader
                 bounds);
         }
 
-        if (controlType == UiaCalls.ControlTypeButton)
+        if (controlType == ControlTypes.Button)
         {
             state.Buttons.Add(new ButtonCandidate(
                 new DialogButtonInput(name, automationId, IsInvokable(element), bounds.Left, bounds.Top),
@@ -148,7 +157,35 @@ internal static class DialogReader
             return true;
         }
 
-        if (controlType == UiaCalls.ControlTypeText)
+        var kept = false;
+
+        if (ControlTypes.IsActionable(controlType))
+        {
+            // Everything else an action could target: an edit field, a check box, a list row, a tab. Kept beside the
+            // buttons rather than among them, so a dialog's `buttons` array keeps exactly the meaning it had.
+            var elementState = UiaCalls.State(element, controlType);
+
+            state.Elements.Add(new PanelElementInput(
+                ControlType: controlType,
+                Name: name,
+                AutomationId: automationId,
+                Value: elementState.Value,
+                ToggleState: elementState.Toggle,
+                Selected: elementState.Selected,
+                Expanded: elementState.Expanded,
+                Invokable: elementState.Invokable,
+                Left: bounds.Left,
+                Top: bounds.Top));
+
+            state.ElementHandles.Add(element);
+            kept = true;
+
+            // ...and its children are still walked. Measured on the Open picker: the file-name box is an `Edit`
+            // nested inside a `ComboBox`, so a walk that stopped at the combo box would keep the wrapper and never
+            // reach the control the value actually goes into.
+        }
+
+        if (controlType == ControlTypes.Text)
         {
             if (!string.IsNullOrWhiteSpace(name))
             {
@@ -191,7 +228,7 @@ internal static class DialogReader
             }
         }
 
-        return false;
+        return kept;
     }
 
     /// <summary>
@@ -251,40 +288,7 @@ internal static class DialogReader
     }
 
     /// <summary>The handful of control type ids this build names, and the number for everything else.</summary>
-    public static string ControlTypeName(int controlType) => controlType switch
-    {
-        50000 => "Button",
-        50002 => "CheckBox",
-        50003 => "ComboBox",
-        50004 => "Edit",
-        50005 => "Hyperlink",
-        50006 => "Image",
-        50008 => "List",
-        50009 => "Menu",
-        50011 => "MenuItem",
-        50012 => "ProgressBar",
-        50013 => "RadioButton",
-        50015 => "Slider",
-        50016 => "Spinner",
-        50018 => "Tab",
-        50019 => "TabItem",
-        50020 => "Text",
-        50021 => "ToolBar",
-        50023 => "Tree",
-        50024 => "TreeItem",
-        50025 => "Custom",
-        50026 => "Group",
-        50030 => "Document",
-        50031 => "SplitButton",
-        50032 => "Window",
-        50033 => "Pane",
-        50034 => "Header",
-        50035 => "HeaderItem",
-        50036 => "Table",
-        50037 => "TitleBar",
-        50038 => "Separator",
-        _ => $"controlType({controlType})",
-    };
+    public static string ControlTypeName(int controlType) => ControlTypes.Name(controlType);
 
     private sealed record ButtonCandidate(DialogButtonInput Input, nint Element);
 
@@ -296,14 +300,18 @@ internal static class DialogReader
 
         public List<ButtonCandidate> Buttons { get; } = [];
 
+        public List<PanelElementInput> Elements { get; } = [];
+
+        public List<nint> ElementHandles { get; } = [];
+
         public JsonArray? Raw { get; } = raw ? [] : null;
 
         public int Nodes { get; set; }
 
         public bool Truncated { get; set; }
 
-        /// <summary>Drops the button elements a read kept, when the read is not going to hand them over.</summary>
-        public void ReleaseButtons()
+        /// <summary>Drops every element this read kept, when the read is not going to hand them over.</summary>
+        public void ReleaseKept()
         {
             foreach (var button in Buttons)
             {
@@ -311,6 +319,13 @@ internal static class DialogReader
             }
 
             Buttons.Clear();
+
+            foreach (var element in ElementHandles)
+            {
+                UiaCom.Release(element);
+            }
+
+            ElementHandles.Clear();
         }
     }
 }

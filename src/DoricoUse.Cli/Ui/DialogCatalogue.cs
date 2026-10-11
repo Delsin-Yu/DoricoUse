@@ -72,9 +72,8 @@ internal static class DialogCatalogue
     /// <item><description><c>dorico.allow-remote-client</c> — raised by <c>session connect --reset</c>; observed to
     /// disable the Hub window, never read.</description></item>
     /// <item><description><c>dorico.import-musicxml</c> — only a real MusicXML import raises it.</description></item>
-    /// <item><description><c>dorico.open-picker</c> / <c>dorico.save-picker</c> — measured to be a native
-    /// <c>#32770</c> window for a folder, but no <b>file</b> picker has been read, so its file-name control and its
-    /// caption are unknown.</description></item>
+    /// <item><description><c>dorico.save-picker</c> — the Open picker is measured and catalogued, but no <b>save</b>
+    /// picker has been read, so its caption and its accept button are unknown.</description></item>
     /// <item><description><c>dorico.overwrite-file</c> — never seen.</description></item>
     /// </list>
     /// </remarks>
@@ -82,7 +81,6 @@ internal static class DialogCatalogue
     [
         "dorico.allow-remote-client",
         "dorico.import-musicxml",
-        "dorico.open-picker",
         "dorico.save-picker",
         "dorico.overwrite-file",
     ];
@@ -90,6 +88,27 @@ internal static class DialogCatalogue
     /// <summary>Every catalogued dialog. One test per entry exists in the vocabulary check.</summary>
     public static IReadOnlyList<DialogCatalogueEntry> Entries { get; } =
     [
+        new DialogCatalogueEntry(
+            Id: "dorico.open-picker",
+            Measured: true,
+            Note: "Measured: raised by Project.ImportLibrary and by File.Import.OtherProjectFlow, caption 打开, "
+                + "class #32770, owned by the document window, and it disables that window while it is up. Its "
+                + "accept button is 打开 with the classic control id 1 and its cancel button is 取消 with classic "
+                + "control id 2; its file-name box is an Edit carrying automation id 1148 and its file filter is a "
+                + "comboBox with 1136. Accepting an import changes the document, so it is not safe; cancel is.",
+            TitleGlobs: ["打开"],
+            RequiredButtonLabels: ["打开", "取消"],
+            Buttons:
+            [
+                // Both criteria, not either: matched by the label 打开 alone, this entry also claimed the two
+                // `DropDown` buttons of the file-name and file-type combo boxes, which carry the same label, so
+                // `--button accept` would have pressed a combo box's arrow. Measured on the live window: the accept
+                // button is the one with automation id "1", the combo boxes are at index 15 and 16 with no classic id
+                // at all. That is what made every criterion in the table an "and" rather than an "or".
+                Button("accept", DialogModel.RoleDefault, safe: false, alias: AliasOk, labels: ["打开"], classicIds: ["1"]),
+                Button("cancel", DialogModel.RoleDismiss, safe: true, alias: AliasCancel, labels: ["取消"], classicIds: ["2"]),
+            ]),
+
         new DialogCatalogueEntry(
             Id: "dorico.export-musicxml",
             Measured: true,

@@ -403,15 +403,47 @@ internal static class DialogModel
 
         foreach (var candidate in entry.Buttons)
         {
-            if (candidate.MatchAutomationIdTails.Contains(tail, StringComparer.OrdinalIgnoreCase)
-                || candidate.MatchClassicIds.Contains(button.AutomationId ?? string.Empty, StringComparer.Ordinal)
-                || candidate.MatchLabels.Contains(button.Name, StringComparer.Ordinal))
+            // Every criterion the entry declares has to hold; a criterion it does not declare is not checked. That
+            // is a correction with a measurement behind it: matched by the label alone, the Open picker's accept
+            // entry also claimed the two `DropDown` buttons of its combo boxes, which carry the same 打开 label, so
+            // `--button accept` would have pressed a combo box's arrow. Declaring the classic id as well keeps them
+            // apart, and tightening every other entry the same way is what makes the table mean what it says.
+            if (!Matches(candidate, button, tail))
             {
-                return candidate;
+                continue;
             }
+
+            return candidate;
         }
 
         return null;
+    }
+
+    private static bool Matches(DialogCatalogueButton candidate, DialogButtonInput button, string tail)
+    {
+        if (candidate.MatchLabels.Count == 0
+            && candidate.MatchAutomationIdTails.Count == 0
+            && candidate.MatchClassicIds.Count == 0)
+        {
+            // A button the table names but cannot recognise would claim every button of every dialog that reaches
+            // this entry. There is no such button, and this keeps one from being added by accident.
+            return false;
+        }
+
+        if (candidate.MatchLabels.Count > 0
+            && !candidate.MatchLabels.Contains(button.Name, StringComparer.Ordinal))
+        {
+            return false;
+        }
+
+        if (candidate.MatchAutomationIdTails.Count > 0
+            && !candidate.MatchAutomationIdTails.Contains(tail, StringComparer.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        return candidate.MatchClassicIds.Count == 0
+            || candidate.MatchClassicIds.Contains(button.AutomationId ?? string.Empty, StringComparer.Ordinal);
     }
 
     private static string? UniqueOrNull(string[] values, int index, string candidate)

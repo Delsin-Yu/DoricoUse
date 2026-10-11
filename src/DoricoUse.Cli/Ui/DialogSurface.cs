@@ -262,6 +262,16 @@ internal static class DialogSurface
                 };
             }
 
+            // A button id presses a button, exactly as it always has; any other id is one of the dialog's controls
+            // - the edit field, the check box, the list row - and is worked through the same pattern rules a panel
+            // element goes through. The two id sets are disjoint, so this is decided by lookup, not by guesswork.
+            var describedControls = PanelModel.Describe(read.Elements);
+
+            if (description.Buttons.All(candidate => !string.Equals(candidate.Id, buttonId, StringComparison.Ordinal)))
+            {
+                return PressControl(window, description, read, buttonId, path, allowUnknownDialog, started);
+            }
+
             var button = DialogModel.Authorize(description, buttonId, allowUnknownDialog, allowDestructive);
             var index = IndexOf(description, button.Id);
             var picker = path is null ? null : FilePicker.Fill(window.Handle, path);
@@ -307,7 +317,113 @@ internal static class DialogSurface
         finally
         {
             DialogPresser.ReleaseAll(read.ButtonElements);
+            PanelReader.ReleaseAll(read.ElementHandles);
         }
+    }
+
+    /// <summary>
+    /// Works one of a dialog's controls — an edit field, a check box, a list row, a tab — through its own pattern.
+    /// </summary>
+    /// <remarks>
+    /// The guard is the same one a panel element gets: an uncatalogued dialog needs <c>--allow-unknown-dialog</c>,
+    /// an element with no usable pattern is refused, and a text field needs <c>--value</c>. The difference from a
+    /// button is only that the ids come from the element read. Measured, this is what makes a rename field fillable
+    /// and the classic file picker's <c>1148</c> name box settable, neither of which needs a coordinate or a
+    /// keystroke.
+    /// </remarks>
+    private static JsonObject PressControl(
+        WindowFacts window,
+        DialogDescription description,
+        DialogRead read,
+        string controlId,
+        string? value,
+        bool allowUnknownDialog,
+        long started)
+    {
+        var controls = PanelModel.Describe(read.Elements);
+        var index = -1;
+
+        for (var candidate = 0; candidate < controls.Count; candidate++)
+        {
+            if (string.Equals(controls[candidate].Id, controlId, StringComparison.Ordinal))
+            {
+                index = candidate;
+
+                break;
+            }
+        }
+
+        if (index < 0)
+        {
+            var ids = new List<string>();
+
+            foreach (var button in description.Buttons)
+            {
+                ids.Add(button.Id);
+            }
+
+            foreach (var control in controls)
+            {
+                ids.Add(control.Id);
+            }
+
+            throw ElementActions.NotFound(description.Id, controlId, ids, "The dialog");
+        }
+
+        if (description.Kind == DialogModel.KindUnknown && !allowUnknownDialog)
+        {
+            throw new CliException(
+                "UnknownDialog",
+                $"The dialog '{description.Title}' is not in this build's catalogue, so working one of its controls is "
+                + "refused. It is reported in full above, with the control ids. Pass --allow-unknown-dialog to work a "
+                + "control of an unmeasured dialog anyway.",
+                DialogModel.RefusalExitCode)
+            {
+                Details = new JsonObject
+                {
+                    ["dialog"] = description.Id,
+                    ["title"] = description.Title,
+                    ["control"] = controlId,
+                },
+            };
+        }
+
+        var target = controls[index];
+        var action = PanelModel.Action(read.Elements[index]);
+
+        if (action == PanelAction.None)
+        {
+            throw new CliException(
+                "ElementNotActionable",
+                $"Control '{target.Id}' ('{target.Name}') of '{description.Id}' exposes no pattern this build can "
+                + "use: no invoke, no toggle, no selection, no expand-collapse and no value. Its role is '"
+                + target.Role + "'. This build never clicks a coordinate and never types at random.",
+                DialogModel.RefusalExitCode)
+            {
+                Details = new JsonObject
+                {
+                    ["dialog"] = description.Id,
+                    ["control"] = target.Id,
+                    ["name"] = target.Name,
+                    ["role"] = target.Role,
+                },
+            };
+        }
+
+        var worked = ElementActions.Perform(read.ElementHandles[index], action, target, value, description.Id);
+
+        // The same evidence rule as a button press: the action's own answer is not the proof, the re-probe is.
+        var after = Describe(SettledAfterPress(window.Handle), raw: false, out _);
+
+        worked["ms"] = (long)Stopwatch.GetElapsedTime(started).TotalMilliseconds;
+        worked["note"] = "The action's own answer is not evidence. The `dialog` field below is a second read of the "
+            + "same window, in the same invocation, and that is what proves it happened.";
+
+        return new JsonObject
+        {
+            ["worked"] = worked,
+            ["dialog"] = after,
+        };
     }
 
     /// <summary><c>UIA_E_ELEMENTNOTAVAILABLE</c> as a string, because the caller switches on it, not on English.</summary>
@@ -408,6 +524,25 @@ internal static class DialogSurface
                     DocumentEnabled: presence.DocumentEnabled);
 
                 var payload = DialogModel.Payload(description, probe);
+                var elements = PanelModel.Describe(read.Elements);
+
+                // A dialog's actionable elements beside its buttons, additively. They are called `controls` and not
+                // `elements` because `--raw` already publishes the whole tree it walked under `elements`, and this
+                // build never repurposes a field. Measured: the 重命名演奏者 dialog's fullNameLineEdit and
+                // shortNameLineEdit were in `elements` (the raw walk) and in no shaped field, so they could be seen
+                // and not used.
+                var array = PanelModel.ElementPayload(elements, out var returned);
+                payload["controls"] = array;
+                payload["controlCount"] = elements.Count;
+                payload["controlsReturned"] = returned;
+
+                if (elements.Count > 0)
+                {
+                    payload["controlsNote"] = "Everything actionable here that is not a button: a text field, a check "
+                        + "box, a list row, a tab. Act on one with `dorico-use ui press --dialog " + description.Id
+                        + " --element <control id>` and `--value <text>` for a field. These ids never collide with the "
+                        + "`buttons` ids.";
+                }
 
                 if (raw && read.Raw is not null)
                 {
@@ -419,6 +554,7 @@ internal static class DialogSurface
             finally
             {
                 DialogPresser.ReleaseAll(read.ButtonElements);
+                PanelReader.ReleaseAll(read.ElementHandles);
             }
         }
         catch (Exception ex)

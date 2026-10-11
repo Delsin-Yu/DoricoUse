@@ -49,8 +49,10 @@ internal static class UiCommands
 
         var command = new Command(
             "panels",
-            "Every window Dorico has up besides its document window, with the elements of the one you name. A panel "
-            + "is modeless: it does not stall Dorico's command queue, so it is reported here and never as `dialog`.")
+            "Every window Dorico has up, with the elements of the one you name - including Dorico's own document "
+            + "window (`dorico.document-window`), which is the one holding the Setup player, flow and layout lists. A "
+            + "panel is modeless: it does not stall Dorico's command queue, so it is reported here and never as "
+            + "`dialog`.")
         {
             panel,
             raw,
@@ -121,19 +123,23 @@ internal static class UiCommands
         var button = new Option<string?>("--button")
         {
             Description = "The button id to press, e.g. cancel or accept. `dialog.buttons[].id` lists them; "
-                + "`dialog.pressWith` is a ready-to-paste line for the safest one. Alias of --element for a dialog.",
+                + "`dialog.pressWith` is a ready-to-paste line for the safest one. Alias of --element for a button.",
         };
 
         var element = new Option<string?>("--element")
         {
-            Description = "The element id to work: a button, a check box, a tab, a list or tree item, an edit field. "
-                + "`ui panels --panel <id>` lists them with the action each one takes.",
+            Description = "The id to work: a button of a dialog (`dialog.buttons[].id`), or any other element a "
+                + "window exposes - an edit field, a check box, a tab, a list or tree row. `ui panels --panel <id>` "
+                + "reports a panel's elements and `ui dialog` reports a dialog's under `controls`; both say which "
+                + "action each one takes.",
         };
 
         var value = new Option<string?>("--value")
         {
-            Description = "Text to write into a text field through the UI Automation value pattern, e.g. a path in a "
-                + "file picker's name box. Refused with ElementNotSettable when the element will not take it.",
+            Description = "Text to write into a text field through the UI Automation value pattern, e.g. a player's "
+                + "name in the rename dialog or a path in a file picker's `1148` name box. The element must expose "
+                + "the value pattern; otherwise the press is refused with ElementNotSettable, and this build never "
+                + "types at random.",
         };
 
         var allowDestructive = new Option<bool>("--allow-destructive")
