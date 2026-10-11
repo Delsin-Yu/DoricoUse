@@ -690,7 +690,11 @@ internal static partial class ProjectFileScoreReader
                     stave?.Voice,
                     spelling,
                     accidental?.Name,
-                    accidental?.Steps));
+                    accidental?.Steps,
+                    // The note's own logical-stave override, straight out of the event: -1 in the file means "none",
+                    // and a note that never stated the leaf is -1 here too (NoteDraft's default), so nothing is
+                    // reported for either case.
+                    note.Stave < 0 ? null : note.Stave));
             }
 
             var staves = _streamStaves.Values
@@ -1649,7 +1653,22 @@ internal static partial class ProjectFileScoreReader
         public ScoreRational Position;
         public string Duration = string.Empty;
         public string? Pitch;
-        public int Stave;
+
+        /// <summary>
+        /// The note event's own <c>logicalStaveIDOverride</c>: <c>-1</c> when the file states none, and the logical
+        /// stave id the note is put on otherwise.
+        /// </summary>
+        /// <remarks>
+        /// Measured on the corpus fixture, whose Piano part has two staves: all three notes read <c>-1</c>; with a
+        /// selection made by <c>Edit.SelectAll</c> in Write mode (<c>status.hasSelection</c> became true),
+        /// <c>Edit.CrossStaffBelow</c> turned the two notes that were on the upper stave into <c>1</c>,
+        /// <c>Edit.CrossStaffAbove</c> turned all three into <c>0</c>, and <c>Edit.CrossStaffReset</c> put all three
+        /// back to <c>-1</c>, with the events' own <c>stave</c>/voice streams untouched. So this leaf is what the
+        /// file stores about cross-staff notation, and the default here is the file's own "none" rather than zero,
+        /// so a note that never stated the leaf cannot look like a note on stave 0.
+        /// </remarks>
+        public int Stave = -1;
+
         public long Stream = -1;
         public List<PropertyDraft> Properties { get; } = [];
     }

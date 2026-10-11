@@ -67,6 +67,16 @@ internal static partial class ProjectFileView
             "stave: notes are attributed to the player and instrument their stream belongs to; the sounding pitch is "
             + "the note event's, and a part layout applies its own transposition when it is printed."),
         (JsonNode?)JsonValue.Create(
+            "staveOverride: cross-staff notation, and it is the file's own field — the note event's "
+            + "logicalStaveIDOverride, null when the file states none (-1). Measured on the corpus fixture, whose "
+            + "Piano part has two staves: every note read null; `Edit.SelectAll` in Write mode sets "
+            + "status.hasSelection, `Edit.CrossStaffBelow` then wrote 1 on the two notes that were on the upper "
+            + "stave, `Edit.CrossStaffAbove` wrote 0 on all three, and `Edit.CrossStaffReset` took them all back to "
+            + "null, while each event's own stave/voice/stream stayed as it was. That is the whole of checklist item "
+            + "12: it can be set by command and read back here, so 'staveOverride' is what a cross-staff check reads. "
+            + "The reading of 0 and 1 as the logical stave id (0-based) is an inference from those three commands on "
+            + "one two-stave instrument, not a certificate."),
+        (JsonNode?)JsonValue.Create(
             "soloPlayer/playerType: a player's kind — a solo (single) player against a section player — is the file's "
             + "own soloPlayer leaf on the scorePlayer node, read raw; 'playerType' is this build's name for its two "
             + "values and is null where the file states none. The two names come from the pair of commands Dorico's own "
@@ -556,6 +566,7 @@ internal static partial class ProjectFileView
                 ["player"] = note.Player,
                 ["instrument"] = note.Instrument,
                 ["stave"] = note.Stave,
+                ["staveOverride"] = note.StaveOverride,
                 ["voice"] = note.Voice,
                 ["stream"] = note.Stream,
             });

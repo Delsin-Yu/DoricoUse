@@ -144,6 +144,12 @@ else
     Check("a single concert-pitch player means every note gets a derived accidental", fixtureScore.Notes.All(note => note.Accidental is not null));
     Check("positions and durations are the exact rationals that were entered", fixtureScore.Notes.All(note => note.Duration == "1") && fixtureScore.Notes.Count(note => note.Position == "0") == 1);
 
+    // Cross-staff notation is a per-note field, and the fixture has none: measured, all three notes state the file's
+    // own "no override" (-1), so the reader reports null for each of them. The state that means "there is an
+    // override" was measured on a copy of this fixture with `Edit.SelectAll` + `Edit.CrossStaffBelow`/`Above`/
+    // `Reset`, which wrote 1, then 0, then back to -1 - see the caveat in ProjectFileView.
+    Check("no note carries a cross-staff override in this fixture", fixtureScore.Notes.All(note => note.StaveOverride is null), string.Join(',', fixtureScore.Notes.Select(note => note.StaveOverride?.ToString() ?? "null")));
+
     Check("the lyric table is there and empty", fixtureScore.Lyrics.Tables == 1 && fixtureScore.Lyrics.Elements == 0);
     Check("nothing else is decorated: no dynamics, no slurs", fixtureScore.Dynamics.Count == 0 && fixtureScore.Slurs.Count == 0);
 

@@ -328,7 +328,13 @@ internal sealed record ProjectFileNote(
     int? Voice,
     string? Spelling,
     string? Accidental,
-    int? AccidentalSteps);
+    int? AccidentalSteps,
+    /// <summary>
+    /// The file's own <c>logicalStaveIDOverride</c> for this note: null when the file states none (the leaf is
+    /// <c>-1</c>), and the logical stave id the note is drawn on otherwise. This is where cross-staff notation
+    /// lives — measured, and the reason the contract has grown a field rather than a note in the caveats.
+    /// </summary>
+    int? StaveOverride = null);
 
 /// <summary>
 /// One dynamic marking placed in the music: the events carry <i>where</i> (and which group), the group definition
