@@ -378,9 +378,58 @@ internal static class LogQueue
         return text.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
     }
 
-    private static bool WasPosted(string[] lines, string name) => lines.Any(line => Name(line, PostingMarker) == name);
+    /// <summary>
+    /// The commands this invocation has seen posted but not executed, read from the log <b>without waiting</b>.
+    /// </summary>
+    /// <remarks>
+    /// This is the one thing a read that is waiting for its own work needs to know: is Dorico's queue still busy,
+    /// and therefore is the file it is waiting for going to be late rather than never? Measured, that is the whole
+    /// of the defect this answers — a live read's script was posted and executed 30.1 s later, behind a long
+    /// command, while the read gave up after 20 s. An empty list is also the answer when the log cannot be read at
+    /// all: a caller that only wants to decide whether to keep waiting must not be told "busy" by a file it could
+    /// not open.
+    /// </remarks>
+    public static IReadOnlyList<string> PendingSinceStart()
+    {
+        if (!started || logPath is null || failure is not null)
+        {
+            return [];
+        }
 
-    private static bool WasExecuted(string[] lines, string name) => lines.Any(line => Name(line, ExecutingMarker) == name);
+        string[] lines;
+
+        try
+        {
+            lines = ReadFrom(logPath, startOffset);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return [];
+        }
+
+        // Unlike the verdict's own orphan scan, this counts the commands <b>this</b> invocation posted by name too:
+        // a live read that is waiting for its own script's file has exactly that posting on the queue, and skipping
+        // it was why the first version of this answered "nothing is pending" while the payload beside it said
+        // `execution.state: queued`.
+        var pending = new List<string>();
+
+        foreach (var line in lines)
+        {
+            var name = Name(line, PostingMarker);
+
+            if (name is null || string.IsNullOrEmpty(name) || WasExecuted(lines, name)
+                || pending.Contains(name, StringComparer.Ordinal))
+            {
+                continue;
+            }
+
+            pending.Add(name);
+        }
+
+        return pending;
+    }
+
+    private static bool WasPosted(string[] lines, string name) => lines.Any(line => Name(line, PostingMarker) == name);    private static bool WasExecuted(string[] lines, string name) => lines.Any(line => Name(line, ExecutingMarker) == name);
 
     /// <summary>
     /// True when Dorico's own log names the command in its queue (<c>Queue after push: {…}</c>).

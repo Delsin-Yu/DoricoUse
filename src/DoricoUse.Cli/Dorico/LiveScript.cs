@@ -24,7 +24,32 @@ namespace DoricoUse.Cli.Dorico;
 internal static class LiveScript
 {
     /// <summary>How long an output file is allowed to take, in total, after the script was sent.</summary>
+    /// <remarks>
+    /// This is the budget for a script that can run. Measured twice: a script behind a 45–55 s command was posted
+    /// and executed 30.1 s later, and <c>Instrument.MoveToPlayer</c> takes 54.8 s, so a fixed budget cannot cover
+    /// the case this bound exists for. That is what <see cref="QueuedBudget"/> is for — this one is the bound for a
+    /// script the log does not name at all.
+    /// </remarks>
     public static readonly TimeSpan DefaultWait = TimeSpan.FromSeconds(20);
+
+    /// <summary>
+    /// How long the wait may last once Dorico's own log says the queue is busy.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The measured lateness is a property of whatever holds the queue, not of this read: 30.1 s behind a file
+    /// picker that was answered late (measured, 2026-10-11, script posted 10:04:50.116, executed 10:05:20.180),
+    /// 54.8 s for <c>Instrument.MoveToPlayer</c> and 52.7 s for a transposition toggle, both from the earlier
+    /// session's log. The bound is an <b>inference</b> from those numbers with a wide margin, not a measurement of
+    /// its own, and it is only ever reached while the log shows a posting with no matching execution — a read whose
+    /// script is not queued never sees it.
+    /// </para>
+    /// <para>
+    /// It is bounded rather than open-ended on purpose: an agent that waits forever is worse off than one that gets
+    /// told the queue is stuck, so a read that hits this says which commands were still pending.
+    /// </para>
+    /// </remarks>
+    public static readonly TimeSpan QueuedBudget = TimeSpan.FromSeconds(180);
 
     /// <summary>Where these scripts live and write, under the system temporary directory. Never inside the repo.</summary>
     public static string Folder { get; } = Path.Combine(Path.GetTempPath(), "dorico-use");
@@ -72,7 +97,9 @@ internal static class LiveScript
         string what,
         CancellationToken cancellationToken)
     {
-        var deadline = DateTimeOffset.UtcNow + timeout;
+        var started = DateTimeOffset.UtcNow;
+        var deadline = started + timeout;
+        var queued = 0;
         var quiet = 0;
         long previous = -1;
         JsonObject? dialog = null;
@@ -80,6 +107,23 @@ internal static class LiveScript
         while (DateTimeOffset.UtcNow < deadline)
         {
             await Task.Delay(100, cancellationToken).ConfigureAwait(false);
+
+            // The script's output is late rather than missing when Dorico's own queue is busy, and the log is the
+            // only thing that says so: the command's ack came back long before it ran. The bound therefore moves
+            // out while the log shows a posting with no matching execution, instead of the read reporting a failure
+            // that is not one.
+            var pending = LogQueue.PendingSinceStart();
+            queued = pending.Count;
+
+            if (queued > 0)
+            {
+                var extended = started + QueuedBudget;
+
+                if (extended > deadline)
+                {
+                    deadline = extended;
+                }
+            }
 
             dialog ??= DialogSurface.Peek();
 
@@ -114,14 +158,27 @@ internal static class LiveScript
             previous = size;
         }
 
+        var waited = DateTimeOffset.UtcNow - started;
+        var stillPending = LogQueue.PendingSinceStart();
+
         throw new CliException(
             "LiveReadWroteNothing",
-            $"The {what} script produced no output at '{outputPath}' within {timeout.TotalSeconds:0.#} s. Dorico "
+            $"The {what} script produced no output at '{outputPath}' within {waited.TotalSeconds:0.#} s. Dorico "
             + "answers kOK to Script.RunScript whether the script runs, dies or sits behind a dialog, and with "
-            + "ShowConsole=false a Lua error has nowhere to go, so this is all that can be reported. Check that a "
-            + "document with at least one player is open (`session status`), that nothing modal is holding Dorico's "
-            + "command queue (see %APPDATA%\\Steinberg\\Dorico 6\\application.log), and see docs/scripting.md before "
-            + "probing the scripting layer further.",
+            + "ShowConsole=false a Lua error has nowhere to go, so this is all that can be reported. "
+            + (stillPending.Count == 0
+                ? "Dorico's log shows nothing of this read's own posted work waiting on the queue"
+                    + (queued > 0 ? ", though it did while this read waited" : string.Empty)
+                    + ", so the wait itself is what ran out"
+                : "Dorico's log shows work still posted with no matching Executing line: "
+                    + string.Join(", ", stillPending.Take(4))
+                    + (stillPending.Count > 4 ? ", …" : string.Empty)
+                    + ". Dorico's command queue is busy - a modal dialog, or a command that has not finished - and "
+                    + "this read is queued behind it. Answer the dialog or wait for the command, then run the read "
+                    + "again: a retry costs one invocation.")
+            + " Check that a document with at least one player is open (`session status`), that nothing modal is "
+            + "holding Dorico's command queue (see %APPDATA%\\Steinberg\\Dorico 6\\application.log), and see "
+            + "docs/scripting.md before probing the scripting layer further.",
             2);
     }
 
