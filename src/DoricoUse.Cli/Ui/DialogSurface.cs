@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using System.Globalization;
 using System.Text.Json.Nodes;
 using DoricoUse.Cli.Dorico;
 
@@ -287,7 +286,7 @@ internal static class DialogSurface
                         ["requested"] = dialogId,
                         ["actual"] = description.Id,
                         ["title"] = description.Title,
-                        ["buttons"] = DialogModel.Payload(description, new DialogProbeInfo(presence.How, presence.Milliseconds))["buttons"]?.DeepClone(),
+                        ["buttons"] = DialogModel.Payload(description, new DialogProbeInfo(presence.How, presence.Milliseconds), window.Handle)["buttons"]?.DeepClone(),
                     },
                 };
             }
@@ -532,10 +531,16 @@ internal static class DialogSurface
 
         if (presence.Dialog is not { } window)
         {
+            // Nothing is up, so nothing the store remembers is up either: this is the observation that forgets a
+            // handle whose dialog has just been answered, and it is what makes a later dialog on a recycled handle
+            // count from 1 again. It costs one small file and no write when there is nothing to forget.
+            DialogInstances.Forget();
+
             return null;
         }
 
         var owner = Format(window.Owner);
+        var occurrence = DialogInstances.Observe(window.Handle, DialogProbe.IsWindowAlive, DateTimeOffset.UtcNow);
         var started = Stopwatch.GetTimestamp();
 
         try
@@ -556,7 +561,7 @@ internal static class DialogSurface
                     Windows: presence.Windows,
                     DocumentEnabled: presence.DocumentEnabled);
 
-                var payload = DialogModel.Payload(description, probe);
+                var payload = DialogModel.Payload(description, probe, window.Handle, occurrence);
                 var elements = PanelModel.Describe(read.Elements);
 
                 // A dialog's actionable elements beside its buttons, additively. They are called `controls` and not
@@ -605,10 +610,10 @@ internal static class DialogSurface
                 Windows: presence.Windows,
                 DocumentEnabled: presence.DocumentEnabled);
 
-            return DialogModel.Payload(description, probe);
+            return DialogModel.Payload(description, probe, window.Handle, occurrence);
         }
     }
 
     private static string? Format(nint handle)
-        => handle == nint.Zero ? null : "0x" + ((long)handle).ToString("X8", CultureInfo.InvariantCulture);
+        => handle == nint.Zero ? null : DialogModel.HandleText(handle);
 }

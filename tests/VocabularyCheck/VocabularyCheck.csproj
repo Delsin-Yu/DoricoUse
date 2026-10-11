@@ -38,6 +38,13 @@
     <Compile Include="../../src/DoricoUse.Cli/Ui/DialogModel.cs" />
     <Compile Include="../../src/DoricoUse.Cli/Ui/DialogCatalogue.cs" />
     <!--
+      The dialog memory is the same kind of file: a JSON file under %LOCALAPPDATA%\dorico-use, a clock, a predicate
+      the Windows side supplies as a function, and no Win32 anywhere. It is asserted here with a file of the check's
+      own and a clock the check passes in, because "the same handle keeps its firstSeen" is a rule about time and no
+      live dialog could be held still long enough to show it.
+    -->
+    <Compile Include="../../src/DoricoUse.Cli/Ui/DialogInstances.cs" />
+    <!--
       The panel layer's pure half: the window-to-panel classification and the element ids, roles, states and action
       choice. The Windows side of it (the probe, the reader, the surface) stays under Ui/ in files only the CLI
       project compiles.

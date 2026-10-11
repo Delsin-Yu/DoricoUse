@@ -630,7 +630,7 @@ internal static class PanelModel
 
         var shape = Shape(window.WindowClass);
         var kind = PanelCatalogue.Match(window.Title, window.WindowClass);
-        var owner = window.Owner == nint.Zero ? null : "0x" + ((long)window.Owner).ToString("X8", CultureInfo.InvariantCulture);
+        var owner = window.Owner == nint.Zero ? null : DialogModel.HandleText(window.Owner);
         var isDocument = documentHandle != nint.Zero && window.Handle == documentHandle;
         var isDialog = dialogHandle != nint.Zero && window.Handle == dialogHandle;
         // Whether this window is one of the ones holding the queue. The rule is the document window's enabled state
@@ -648,7 +648,7 @@ internal static class PanelModel
 
         var payload = new JsonObject
         {
-            ["hwnd"] = "0x" + ((long)window.Handle).ToString("X8", CultureInfo.InvariantCulture),
+            ["hwnd"] = DialogModel.HandleText(window.Handle),
             ["id"] = PanelId(window.Title, window.WindowClass, kind?.Id ?? KindUnknown, isDocument),
             ["kind"] = kind is null ? KindUnknown : KindKnown,
             ["shape"] = shape,

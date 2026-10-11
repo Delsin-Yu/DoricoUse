@@ -152,9 +152,15 @@ internal static class DialogModel
         ArgumentNullException.ThrowIfNull(input);
 
         var shape = IsNative(input.WindowClass) ? ShapeNative : ShapeQt;
-        var entry = DialogCatalogue.Match(input.Title, input.WindowClass, [.. input.Buttons.Select(button => button.Name)]);
+        var tails = input.Buttons.Select(button => Tail(button.AutomationId)).ToArray();
+        var entry = DialogCatalogue.Match(new DialogFingerprint(
+            Title: input.Title,
+            WindowClass: input.WindowClass,
+            BodyText: string.Join('\n', input.TextLines),
+            ButtonLabels: [.. input.Buttons.Select(button => button.Name)],
+            ButtonAutomationIds: [.. input.Buttons.Select(button => button.AutomationId ?? string.Empty)]));
         var id = entry?.Id ?? UnknownId(input);
-        var buttons = DeriveButtons(input, entry, shape);
+        var buttons = DeriveButtons(input, entry, shape, tails);
         var lines = input.TextLines.Where(line => !string.IsNullOrWhiteSpace(line)).ToArray();
 
         return new DialogDescription(
@@ -236,8 +242,37 @@ internal static class DialogModel
         return target is null ? null : $"dorico-use ui press --dialog {dialogId} --button {target.Id}";
     }
 
+    /// <summary>
+    /// A window handle as every payload spells it: <c>0x00C91106</c>.
+    /// </summary>
+    /// <remarks>
+    /// The same eight-digit form the panel payload prints, and one function rather than two copies of the format so
+    /// that a handle never has two spellings in one payload — an agent compares the <c>hwnd</c> of two invocations
+    /// as a string, so a difference in padding would read as a different window.
+    /// </remarks>
+    public static string HandleText(nint handle)
+        => "0x" + ((long)handle).ToString("X8", CultureInfo.InvariantCulture);
+
     /// <summary>The <c>dialog</c> object of the payload, exactly as section 11 of the handover specifies it.</summary>
-    public static JsonObject Payload(DialogDescription dialog, DialogProbeInfo probe, string? warning = null)
+    /// <param name="dialog">The dialog as it was read.</param>
+    /// <param name="probe">What the read cost and whether it was complete.</param>
+    /// <param name="hwnd">
+    /// The dialog's own window handle. Required and not optional, because the window is the one fact the rest of the
+    /// record cannot carry: the description is pure data and a handle is the thing that tells two raises of the same
+    /// dialog id apart.
+    /// </param>
+    /// <param name="occurrence">
+    /// How long that window has been up and which occurrence of the handle it is, or null when the state store could
+    /// not say — in which case <c>openMs</c> and <c>instance</c> are left out rather than reported as a zero, which
+    /// would read exactly like "this dialog appeared a moment ago".
+    /// </param>
+    /// <param name="warning">A warning to carry, or null.</param>
+    public static JsonObject Payload(
+        DialogDescription dialog,
+        DialogProbeInfo probe,
+        nint hwnd,
+        DialogOccurrence? occurrence = null,
+        string? warning = null)
     {
         ArgumentNullException.ThrowIfNull(dialog);
         ArgumentNullException.ThrowIfNull(probe);
@@ -270,6 +305,15 @@ internal static class DialogModel
             ["id"] = dialog.Id,
             ["kind"] = dialog.Kind,
             ["shape"] = dialog.Shape,
+            // The panel payload has carried `hwnd` from the start and the dialog one did not, which is the
+            // inconsistency this removes. The handle is the only fact that can answer the question an agent actually
+            // has after a press: the same dialog is still up and ignored it, or a new one was raised. `id` cannot
+            // answer it — the id is the same for every raise of the same dialog — and measured on Dorico's error box
+            // neither can the caption, because another window in the same session is titled `Dorico` too.
+            ["hwnd"] = HandleText(hwnd),
+            // Filled below from the store; removed again when the store had nothing to say.
+            ["openMs"] = null,
+            ["instance"] = null,
             ["class"] = dialog.WindowClass,
             ["owner"] = dialog.Owner,
             ["blocksQueue"] = dialog.BlocksQueue,
@@ -280,6 +324,17 @@ internal static class DialogModel
             ["pressWith"] = dialog.PressWith,
             ["probe"] = ProbePayload(probe),
         };
+
+        if (occurrence is not null)
+        {
+            payload["openMs"] = occurrence.OpenMs;
+            payload["instance"] = occurrence.Instance;
+        }
+        else
+        {
+            _ = payload.Remove("openMs");
+            _ = payload.Remove("instance");
+        }
 
         if (dialog.BlocksQueue)
         {
@@ -328,12 +383,17 @@ internal static class DialogModel
     /// Assigns every button its id, in the order section 7 of the handover fixes: the catalogue's own entry, then
     /// a unique automation-id tail, then the classic Win32 control id, then a unique label, then the position.
     /// </summary>
+    /// <param name="tails">
+    /// The last dot-separated segment of each button's automation id, computed by <see cref="Describe"/> and passed
+    /// in because the catalogue's matcher reads the buttons' automation ids as well and the two must not be allowed
+    /// to disagree about what a tail is.
+    /// </param>
     private static List<DialogButtonDescription> DeriveButtons(
         DialogInput input,
         DialogCatalogueEntry? entry,
-        string shape)
+        string shape,
+        string[] tails)
     {
-        var tails = input.Buttons.Select(button => Tail(button.AutomationId)).ToArray();
         var slugs = input.Buttons.Select(button => Slug(button.Name)).ToArray();
         var ranks = PositionRanks(input.Buttons);
         var taken = new HashSet<string>(StringComparer.Ordinal);

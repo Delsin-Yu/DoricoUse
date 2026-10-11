@@ -227,6 +227,10 @@ Check("so is any other catalogue command, Script. is the whole of it", !Throws((
 Console.WriteLine();
 Console.WriteLine("== a dialog the catalogue knows: the ids come from the automation id's tail");
 
+// One handle stands in for the window every fixture below is, so that the payload's `hwnd` is asserted against a
+// value the check wrote down rather than against whatever the formatter happened to produce.
+const nint DialogHandle = 0x006C1132;
+
 // A stand-in for what was measured on the MusicXML export dialog, one fact per line: two buttons share the label
 // 选择全部, one button's label is a private-use glyph, and every button carries a QML automation id whose last
 // segment is the meaningful part. This is the input the whole id scheme exists for.
@@ -382,7 +386,7 @@ Check(
     string.Join(',', byGlyph.Buttons.Select(button => button.Id)));
 
 Check("a modeless window class is not called blocking", !DialogModel.Describe(Stranger() with { WindowClass = "Qt6101QWindowIcon" }).BlocksQueue);
-Check("and it carries no queue sentence", NodeRead.Str(DialogModel.Payload(DialogModel.Describe(Stranger() with { WindowClass = "Qt6101QWindowIcon" }), new DialogProbeInfo("win32+uia", 3)), "note") is null);
+Check("and it carries no queue sentence", NodeRead.Str(DialogModel.Payload(DialogModel.Describe(Stranger() with { WindowClass = "Qt6101QWindowIcon" }), new DialogProbeInfo("win32+uia", 3), DialogHandle), "note") is null);
 
 Console.WriteLine();
 Console.WriteLine("== the policy: what may be pressed, and what it says when it may not");
@@ -453,7 +457,13 @@ Console.WriteLine("== the catalogue: one entry, one measurement, one policy");
 
 foreach (var entry in DialogCatalogue.Entries)
 {
-    Check($"{entry.Id} has a matcher", entry.TitleGlobs.Count > 0 || entry.RequiredButtonLabels.Count > 0);
+    Check(
+        $"{entry.Id} has a matcher",
+        entry.TitleGlobs.Count > 0
+            || entry.RequiredButtonLabels.Count > 0
+            || entry.WindowClasses is { Count: > 0 }
+            || entry.RequiredBodyText is { Count: > 0 }
+            || entry.RequiredAutomationIds is { Count: > 0 });
     Check($"{entry.Id} says what was measured", entry.Note.Length > 40);
     Check($"{entry.Id} is a measured entry", entry.Measured);
     Check($"{entry.Id} has buttons", entry.Buttons.Count > 0);
@@ -478,7 +488,9 @@ foreach (var entry in DialogCatalogue.Entries)
     }
 
     // A dialog built out of the entry itself must be recognised as that entry, which is what "the table and the
-    // matcher agree" means: the labels the entry requires are the labels its buttons carry.
+    // matcher agree" means: the labels the entry requires are the labels its buttons carry, and every other fact the
+    // entry claims — the class, the body text, the automation-id path — is a fact the dialog it describes therefore
+    // shows. A criterion the entry does not declare is not invented here either.
     var buttons = entry.Buttons
         .Select(button => new DialogButtonInput(
             button.MatchLabels.Count > 0 ? button.MatchLabels[0] : "unlabelled",
@@ -486,16 +498,20 @@ foreach (var entry in DialogCatalogue.Entries)
                 ? button.MatchClassicIds[0]
                 : button.MatchAutomationIdTails.Count > 0
                     ? "DoricoQApplication.root.QMLTYPE_1.Button_QMLTYPE_53." + button.MatchAutomationIdTails[0]
-                    : null,
+                    : button.MatchLabels.Count > 0 && entry.RequiredAutomationIds is { Count: > 0 } paths
+                        ? "DoricoQApplication.root.root." + paths[0]
+                        : null,
             true))
         .ToList();
 
     var matched = DialogModel.Describe(new DialogInput(
         Title: entry.TitleGlobs.Count > 0 ? entry.TitleGlobs[0].Replace("*", "x", StringComparison.Ordinal) : "a caption this entry does not constrain",
-        WindowClass: entry.Id == "dorico.folder-picker" ? "#32770" : "Qt6101QWindow",
+        WindowClass: entry.WindowClasses is { Count: > 0 } classes
+            ? classes[0]
+            : entry.Id == "dorico.folder-picker" ? "#32770" : "Qt6101QWindow",
         Owner: null,
         TextSource: "none",
-        TextLines: [],
+        TextLines: entry.RequiredBodyText is { Count: > 0 } body ? [.. body] : [],
         Buttons: buttons));
 
     Check($"{entry.Id} recognises the dialog it describes", matched.Id == entry.Id && matched.Kind == DialogModel.KindKnown, matched.Id);
@@ -537,9 +553,97 @@ Check("a leading wildcard anchors at the end", !DialogCatalogue.Glob("导出Musi
 Check("a trailing wildcard anchors at the start", DialogCatalogue.Glob("导出MusicXML 选项", "导出MusicXML*"));
 
 Console.WriteLine();
+Console.WriteLine("== the error box: a caption that is not an identity, and the three facts that are");
+
+// Measured, captured verbatim from a real payload: Dorico's error message box is class Qt6101QWindowIcon, its caption
+// is the bare word Dorico — which a second window of the same session carries too — its body says 错误发生, and its
+// two buttons 关闭 and 确定 share the automation id path buttonBox.QPushButton. The entry was written from those
+// facts and nothing else, so this is the fingerprint, and every case below takes one of its facts away again.
+DialogInput ErrorBox() => new(
+    Title: "Dorico",
+    WindowClass: "Qt6101QWindowIcon",
+    Owner: null,
+    TextSource: "uia",
+    TextLines: ["错误发生"],
+    Buttons:
+    [
+        new("关闭", "DoricoQApplication.root.buttonBox.QPushButton", true, 300, 320),
+        new("确定", "DoricoQApplication.root.buttonBox.QPushButton", true, 380, 320),
+    ]);
+
+// A window that shares the caption and nothing else: the one the entry must not claim.
+DialogInput Decoy() => ErrorBox() with
+{
+    WindowClass = "Qt6101QWindow",
+    TextLines = [],
+    Buttons =
+    [
+        new("关闭", "DoricoQApplication.root.closePushButton", true, 300, 320),
+        new("确定", "DoricoQApplication.root.okPushButton", true, 380, 320),
+    ],
+};
+
+var errorBox = DialogModel.Describe(ErrorBox());
+var errorEntry = DialogCatalogue.Entries.FirstOrDefault(entry => entry.Id == "dorico.error");
+
+Check("the error box is catalogued now that it has been read", errorEntry is not null && errorEntry.Measured);
+Check("and its entry declares each measured fact", errorEntry!.WindowClasses?.Contains("Qt6101QWindowIcon") == true
+    && errorEntry.RequiredBodyText?.Contains("错误发生") == true
+    && errorEntry.RequiredAutomationIds?.Contains("buttonBox.QPushButton") == true,
+    $"{string.Join(',', errorEntry.WindowClasses ?? [])} | {string.Join(',', errorEntry.RequiredBodyText ?? [])} | {string.Join(',', errorEntry.RequiredAutomationIds ?? [])}");
+Check("so it is no longer an unknown dialog", errorBox.Id == "dorico.error" && errorBox.Kind == DialogModel.KindKnown, errorBox.Id);
+Check(
+    "and its buttons get the catalogue's own ids rather than the positional ones the unmeasured read produced",
+    errorBox.Buttons.Select(button => button.Id).SequenceEqual(["dismiss", "ok"]),
+    string.Join(',', errorBox.Buttons.Select(button => button.Id)));
+Check("its body text is reported verbatim", errorBox.Description == "错误发生", errorBox.Description);
+Check("both buttons are safe: an error report's 关闭 and 确定 only close it", errorBox.Buttons.All(button => button.Safe));
+Check(
+    "and pressWith offers the dismiss line, which needs no flag at all",
+    errorBox.PressWith == "dorico-use ui press --dialog dorico.error --button dismiss",
+    errorBox.PressWith);
+
+// The measurement the entry exists for: another window of the same class in the same session is also called Dorico,
+// so a matcher that stopped at the caption would claim it, and pressing a button in the wrong window is the one
+// thing this table exists to prevent. Each of the other three facts is taken away in turn.
+var decoy = DialogModel.Describe(Decoy());
+
+Check("a window that only shares the caption Dorico is NOT the error box", decoy.Id != "dorico.error", decoy.Id);
+Check("it is reported as unknown, and every one of its buttons is unsafe", decoy.Kind == DialogModel.KindUnknown && decoy.Buttons.All(button => !button.Safe));
+Check("so answering it still needs both flags", Refusal(() => DialogModel.Authorize(decoy, decoy.Buttons[0].Id, false, false))?.Code == "UnknownDialog");
+Check(
+    "the class alone does not identify it either",
+    DialogModel.Describe(ErrorBox() with { TextLines = [] }).Id != "dorico.error");
+Check(
+    "nor does the caption plus the body text in another window class",
+    DialogModel.Describe(ErrorBox() with { WindowClass = "Qt6101QWindow" }).Id != "dorico.error");
+Check(
+    "nor a Dorico-titled QtIcon box whose body says something else",
+    DialogModel.Describe(ErrorBox() with { TextLines = ["保存失败"] }).Id != "dorico.error");
+Check(
+    "nor one whose 关闭 and 确定 carry no button-box path",
+    DialogModel.Describe(Decoy() with { WindowClass = "Qt6101QWindowIcon", TextLines = ["错误发生"] }).Id != "dorico.error");
+Check(
+    "and every fact counts, including the caption: all four hold or the entry lets go",
+    DialogModel.Describe(ErrorBox() with { Title = "另一个窗口" }).Id != "dorico.error");
+
+Console.WriteLine();
 Console.WriteLine("== the payload an agent reads");
 
-var exportPayload = DialogModel.Payload(export, new DialogProbeInfo("win32+uia", 12, Nodes: 41));
+var exportPayload = DialogModel.Payload(export, new DialogProbeInfo("win32+uia", 12, Nodes: 41), DialogHandle, new DialogOccurrence(OpenMs: 4210, Instance: 1));
+
+Check(
+    "the dialog's own handle is there, in the panel payload's own spelling",
+    NodeRead.Str(exportPayload, "hwnd") == "0x006C1132",
+    NodeRead.Str(exportPayload, "hwnd"));
+Check(
+    "and the three window fields sit together, right after kind and shape",
+    exportPayload.Select(pair => pair.Key).Take(6).SequenceEqual(["id", "kind", "shape", "hwnd", "openMs", "instance"]),
+    string.Join(',', exportPayload.Select(pair => pair.Key).Take(6)));
+Check(
+    "how long the window has been up, and which occurrence of its handle it is",
+    NodeRead.Long(exportPayload, "openMs") == 4210 && NodeRead.Int(exportPayload, "instance") == 1,
+    $"{NodeRead.Long(exportPayload, "openMs")} / {NodeRead.Int(exportPayload, "instance")}");
 
 Check(
     "id, kind, shape, class, owner and title are there",
@@ -578,15 +682,19 @@ Check(
 Check("and that it was neither degraded nor truncated", NodeRead.Bool(probe, "degraded") == false && NodeRead.Bool(probe, "truncated") == false);
 Check("a blocking dialog comes with the sentence about the queue", NodeRead.Str(exportPayload, "note")?.Contains("queued, not lost") == true, NodeRead.Str(exportPayload, "note"));
 
-var degraded = DialogModel.Payload(export, new DialogProbeInfo("win32", 9, Degraded: true, Error: "UI Automation refused"));
+var degraded = DialogModel.Payload(export, new DialogProbeInfo("win32", 9, Degraded: true, Error: "UI Automation refused"), DialogHandle);
 
 Check("a degraded probe carries its error", NodeRead.Str(NodeRead.Obj(degraded, "probe"), "error") == "UI Automation refused");
 Check("and says it was degraded", NodeRead.Bool(NodeRead.Obj(degraded, "probe"), "degraded") == true);
 
-var warned = DialogModel.Payload(stranger, new DialogProbeInfo("win32+uia", 4), "warning text");
+var warned = DialogModel.Payload(stranger, new DialogProbeInfo("win32+uia", 4), DialogHandle, warning: "warning text");
 
 Check("an allowed-unknown press carries its warning", NodeRead.Str(warned, "warning") == "warning text");
-Check("a dialog with no text reports no description", NodeRead.Str(DialogModel.Payload(stranger, new DialogProbeInfo("win32+uia", 4)), "description") is null);
+Check("a dialog with no text reports no description", NodeRead.Str(DialogModel.Payload(stranger, new DialogProbeInfo("win32+uia", 4), DialogHandle), "description") is null);
+Check(
+    "and a store that could not say leaves openMs and instance out rather than printing a zero that reads like `just opened`",
+    NodeRead.Long(warned, "openMs") is null && NodeRead.Int(warned, "instance") is null,
+    $"{NodeRead.Long(warned, "openMs")} / {NodeRead.Int(warned, "instance")}");
 
 // A null `dialog` has to be a measurement. Without these two numbers a payload cannot tell "nothing is modal" from
 // "Dorico was not found", which is the one way the field could lie.
@@ -601,6 +709,98 @@ Check(
 Check(
     "a document window that could not be found is reported as unknown, not as enabled",
     NodeRead.Bool(DialogModel.ProbePayload(new DialogProbeInfo("win32", 9, Windows: 2)), "documentEnabled") is null);
+
+Console.WriteLine();
+Console.WriteLine("== the dialog memory: openMs and instance, with no clock of its own and no window to look at");
+
+// `openMs` and `instance` cannot be measured inside one invocation: this CLI exits between the two observations they
+// are about, and the moment the window went up belongs to a process that has already gone. So the memory is a file
+// under %LOCALAPPDATA%\dorico-use, and what is asserted here is that file's rules — with a clock the check passes in
+// and a liveness predicate it answers itself, because the alternative is sleeping six hours for a prune.
+var memoryRoot = Path.Combine(Path.GetTempPath(), $"dorico-use-check-{Environment.ProcessId}-{Guid.NewGuid():N}");
+var memory = Path.Combine(memoryRoot, "dialogs.json");
+var t0 = new DateTimeOffset(2026, 10, 11, 9, 12, 31, TimeSpan.Zero);
+
+// The two answers the Windows side supplies as a function: IsWindow, asked of a window the check cannot look at.
+Func<nint, bool> alive = _ => true;
+Func<nint, bool> gone = _ => false;
+
+// The first thing every invocation does is the cheap case: no dialog, so nothing to remember.
+DialogInstances.Forget(memory);
+
+Check("an invocation with no dialog and nothing to forget does not create a state file to say so", !File.Exists(memory));
+
+var first = DialogInstances.Observe(0x00C91106, alive, t0, memory);
+
+Check("a handle seen for the first time is occurrence 1, and has just opened", first is { OpenMs: 0, Instance: 1 }, first?.OpenMs.ToString());
+Check("and the memory is on disk afterwards, in a directory of this check's own", File.Exists(memory));
+
+var sameHandle = DialogInstances.Observe(0x00C91106, alive, t0.AddMilliseconds(4210), memory);
+
+Check("the same handle keeps its firstSeen, so openMs is how long that window has been up", sameHandle is { OpenMs: 4210, Instance: 1 }, sameHandle?.OpenMs.ToString());
+Check("and the occurrence does not increase while the handle stays up", sameHandle?.Instance == 1);
+
+Check(
+    "the file names the handle in the payload's own spelling",
+    NodeRead.Str(NodeRead.Arr(JsonNode.Parse(File.ReadAllText(memory)), "dialogs")?[0], "hwnd") == "0x00C91106",
+    File.ReadAllText(memory).Replace('\n', ' '));
+
+var second = DialogInstances.Observe(0x00DEB120A, alive, t0.AddHours(1), memory);
+
+Check("a second handle is a second entry, and starts at 1 as well", second is { OpenMs: 0, Instance: 1 });
+Check("so the memory holds both", NodeRead.Arr(JsonNode.Parse(File.ReadAllText(memory)), "dialogs")?.Count == 2);
+
+var pruned = DialogInstances.Observe(
+    0x00DEB120A,
+    alive,
+    t0 + DialogInstances.StaleAfter + TimeSpan.FromHours(1),
+    memory);
+
+Check("an entry that has not been the dialog for longer than the bound is pruned", NodeRead.Arr(JsonNode.Parse(File.ReadAllText(memory)), "dialogs")?.Count == 1);
+Check("while the dialog that is up keeps its own firstSeen, however long a user left it there", pruned is { OpenMs: 21600000, Instance: 1 }, pruned?.OpenMs.ToString());
+
+var recycled = DialogInstances.Observe(0x00C91106, gone, t0.AddHours(2), memory);
+
+Check("a handle whose window is gone is forgotten rather than carried over", recycled is { OpenMs: 0, Instance: 1 });
+Check(
+    "so a later dialog on a recycled handle counts from 1 again",
+    DialogInstances.Observe(0x00C91106, gone, t0.AddHours(3), memory) is { OpenMs: 0, Instance: 1 });
+
+// Put one entry back after the recycled-handle cases, so that the Forget below has something to forget.
+DialogInstances.Observe(0x00C91106, alive, t0, memory);
+DialogInstances.Forget(memory);
+
+Check(
+    "a probe that finds no dialog forgets every handle",
+    NodeRead.Arr(JsonNode.Parse(File.ReadAllText(memory)), "dialogs")?.Count == 0,
+    File.ReadAllText(memory).Replace('\n', ' '));
+
+var afterForget = DialogInstances.Observe(0x00C91106, alive, t0.AddHours(4), memory);
+
+Check("and the handle it was remembering is new again", afterForget is { OpenMs: 0, Instance: 1 });
+
+Check(
+    "a store that cannot be written degrades to nothing, not to a number nobody can stand behind",
+    DialogInstances.Observe(0x00C91106, alive, t0, memoryRoot) is null);
+
+// A file this feature wrote and cannot make sense of is not a failure: refusing to read it would turn one bad byte
+// into two fields missing from every payload until somebody deleted a file they have never heard of.
+File.WriteAllText(memory, "{\"dialogs\": [ {\"hwnd\": \"not a handle\"} ]}");
+
+Check(
+    "a memory that says nothing this build can use is replaced rather than treated as a failure",
+    DialogInstances.Observe(0x00C91106, alive, t0.AddHours(5), memory) is { OpenMs: 0, Instance: 1 }
+        && File.ReadAllText(memory).Contains("\"hwnd\": \"0x00C91106\"", StringComparison.Ordinal),
+    File.ReadAllText(memory).Replace('\n', ' '));
+
+try
+{
+    Directory.Delete(memoryRoot, recursive: true);
+}
+catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+{
+    // The check's own temporary directory: failing to delete it is not a failure of anything asserted here.
+}
 
 Console.WriteLine();
 Console.WriteLine("== the execution verdict, from a fixture log (no Dorico: a check cannot raise a modal dialog)");

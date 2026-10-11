@@ -17,20 +17,61 @@ internal sealed record DialogCatalogueButton(
     IReadOnlyList<string> MatchAutomationIdTails,
     IReadOnlyList<string> MatchClassicIds);
 
+/// <summary>What one read measured about a window: the facts an entry may match on, and nothing else.</summary>
+/// <remarks>
+/// One record rather than a longer parameter list, because the whole safety property of the table below is "which
+/// facts does this entry claim to have measured": with the fingerprint spelled out member by member, a caller
+/// cannot pass the labels where the automation ids belong, and adding a sixth fact is an edit the compiler carries
+/// to every caller instead of one a call site can silently skip.
+/// </remarks>
+/// <param name="Title">The window caption, verbatim — and generic in one measured case: Dorico's error box is titled
+/// just <c>Dorico</c>, which another window of the same session is titled too.</param>
+/// <param name="WindowClass">The Win32 window class, verbatim.</param>
+/// <param name="BodyText">The dialog's own text, joined with newlines, verbatim; empty when it shows none.</param>
+/// <param name="ButtonLabels">The labels the buttons really show, in the order they were read. May repeat.</param>
+/// <param name="ButtonAutomationIds">
+/// The buttons' own automation ids, verbatim and in the same order, empty strings included. An entry that wants a
+/// path has to look here and not at <paramref name="ButtonLabels"/>: measured, the two buttons of Dorico's error box
+/// share the automation id path <c>buttonBox.QPushButton</c>, so the path identifies the dialog and not the button.
+/// </param>
+internal sealed record DialogFingerprint(
+    string Title,
+    string WindowClass,
+    string BodyText,
+    IReadOnlyList<string> ButtonLabels,
+    IReadOnlyList<string> ButtonAutomationIds);
+
 /// <summary>One catalogued dialog and the matcher that recognises it.</summary>
 /// <param name="Id">The stable <c>dialog.id</c>. Part of the published contract; never renamed.</param>
 /// <param name="Measured">True when the title or the labels below came from reading the real dialog.</param>
 /// <param name="Note">What was measured, and by which dialog, in one sentence.</param>
-/// <param name="TitleGlobs">Window captions that match. An empty list means the labels alone identify the dialog.</param>
+/// <param name="TitleGlobs">Window captions that match. An empty list means the other criteria identify the dialog.</param>
 /// <param name="RequiredButtonLabels">Every one of these must be present for the entry to apply.</param>
 /// <param name="Buttons">The buttons this build knows, in match order.</param>
+/// <param name="WindowClasses">
+/// Window classes that match, all of them one of these, when the entry declares any. Null is "this entry does not
+/// claim this fact", the same idiom the <c>Button</c> helper below uses: an entry written before this criterion
+/// existed keeps matching exactly what it matched before, because a criterion nobody declared is not checked.
+/// </param>
+/// <param name="RequiredBodyText">
+/// Text that must appear in the dialog's own body, every one of these, when the entry declares any. Added for the
+/// error box and measured on it: a caption is not always an identity, and the body is the next fact the read has.
+/// </param>
+/// <param name="RequiredAutomationIds">
+/// Paths that must appear inside the buttons' automation ids, every one of them, when the entry declares any.
+/// "Some button carries this path" is the relation, not equality, because that is what the measurement supports:
+/// the error box's two buttons share one path.
+/// </param>
 internal sealed record DialogCatalogueEntry(
     string Id,
     bool Measured,
     string Note,
     IReadOnlyList<string> TitleGlobs,
     IReadOnlyList<string> RequiredButtonLabels,
-    IReadOnlyList<DialogCatalogueButton> Buttons);
+    IReadOnlyList<DialogCatalogueButton> Buttons,
+    IReadOnlyList<string>? WindowClasses = null,
+    IReadOnlyList<string>? RequiredBodyText = null,
+    IReadOnlyList<string>? RequiredAutomationIds = null);
 
 /// <summary>
 /// The measured whitelist: which dialogs this build will press a button in, and which buttons it calls safe.
@@ -147,6 +188,31 @@ internal static class DialogCatalogue
             ]),
 
         new DialogCatalogueEntry(
+            Id: "dorico.error",
+            Measured: true,
+            Note: "Measured: Dorico's error message box, captured from a real payload. Its caption is the bare word "
+                + "Dorico, which another window of the same session carries as well, so the caption is not the "
+                + "identity and this entry declares three more measured facts: the class Qt6101QWindowIcon, the body "
+                + "text 错误发生, and the button-box path buttonBox.QPushButton its two buttons share. Its buttons are "
+                + "关闭 and 确定 — an error report, not a question — and neither can lose work by itself, so both are "
+                + "safe. It is a blocking modal: it had disabled the document window while it was up, whatever its "
+                + "class reads as, and it was reported as blocksQueue true.",
+            TitleGlobs: ["Dorico"],
+            RequiredButtonLabels: ["关闭", "确定"],
+            WindowClasses: ["Qt6101QWindowIcon"],
+            RequiredBodyText: ["错误发生"],
+            RequiredAutomationIds: ["buttonBox.QPushButton"],
+            // Both labels were measured. Neither id is `accept`: an error box has nothing to accept, and the id is
+            // what an agent pastes back — the uncatalogued read of this same dialog produced `position-1` for the
+            // 关闭 button and `QPushButton` for the 确定 one, and neither of those is an id worth remembering. The
+            // catalogue's own names are what make them stable, which is what an entry is for.
+            Buttons:
+            [
+                Button("dismiss", DialogModel.RoleDismiss, safe: true, alias: AliasCancel, labels: ["关闭"]),
+                Button("ok", DialogModel.RoleDefault, safe: true, alias: AliasOk, labels: ["确定"]),
+            ]),
+
+        new DialogCatalogueEntry(
             Id: "dorico.folder-picker",
             Measured: true,
             Note: "Measured: raised by the export dialog's folder button, caption 选择文件夹, class #32770, in "
@@ -179,16 +245,14 @@ internal static class DialogCatalogue
     /// <summary>
     /// The entry that recognises this dialog, or null when nothing does.
     /// </summary>
-    /// <param name="title">The window caption, verbatim.</param>
-    /// <param name="windowClass">The Win32 window class, verbatim.</param>
-    /// <param name="buttonNames">The labels the buttons really show, in the order they were read.</param>
-    public static DialogCatalogueEntry? Match(string title, string windowClass, IReadOnlyList<string> buttonNames)
+    /// <param name="fingerprint">What the read measured: the facts an entry may match on.</param>
+    public static DialogCatalogueEntry? Match(DialogFingerprint fingerprint)
     {
-        ArgumentNullException.ThrowIfNull(buttonNames);
+        ArgumentNullException.ThrowIfNull(fingerprint);
 
         foreach (var entry in Entries)
         {
-            if (Matches(entry, title, buttonNames))
+            if (Matches(entry, fingerprint))
             {
                 return entry;
             }
@@ -197,21 +261,47 @@ internal static class DialogCatalogue
         return null;
     }
 
-    private static bool Matches(DialogCatalogueEntry entry, string title, IReadOnlyList<string> buttonNames)
+    private static bool Matches(DialogCatalogueEntry entry, DialogFingerprint fingerprint)
     {
-        // An entry with neither a caption nor required labels would match every dialog there is. There is no such
-        // entry, and this keeps one from being added by accident.
-        if (entry.TitleGlobs.Count == 0 && entry.RequiredButtonLabels.Count == 0)
+        // An entry with no criterion at all would match every dialog there is. There is no such entry, and this
+        // keeps one from being added by accident.
+        if (entry.TitleGlobs.Count == 0
+            && entry.RequiredButtonLabels.Count == 0
+            && entry.WindowClasses is not { Count: > 0 }
+            && entry.RequiredBodyText is not { Count: > 0 }
+            && entry.RequiredAutomationIds is not { Count: > 0 })
         {
             return false;
         }
 
-        if (entry.TitleGlobs.Count > 0 && !entry.TitleGlobs.Any(glob => Glob(title, glob)))
+        if (entry.TitleGlobs.Count > 0 && !entry.TitleGlobs.Any(glob => Glob(fingerprint.Title, glob)))
         {
             return false;
         }
 
-        return entry.RequiredButtonLabels.All(required => buttonNames.Contains(required, StringComparer.Ordinal));
+        if (entry.WindowClasses is { Count: > 0 } classes
+            && !classes.Contains(fingerprint.WindowClass, StringComparer.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        // A substring, not an equality: 错误发生 is what the body of the measured error box says, and a translation
+        // or a longer sentence around it would still be that dialog. Matched case-insensitively like the captions,
+        // which costs nothing here and is the same rule an entry for a Latin-script dialog would want.
+        if (entry.RequiredBodyText is { Count: > 0 } body
+            && !body.All(text => fingerprint.BodyText.Contains(text, StringComparison.OrdinalIgnoreCase)))
+        {
+            return false;
+        }
+
+        if (entry.RequiredAutomationIds is { Count: > 0 } paths
+            && !paths.All(path => fingerprint.ButtonAutomationIds.Any(
+                id => id.Contains(path, StringComparison.OrdinalIgnoreCase))))
+        {
+            return false;
+        }
+
+        return entry.RequiredButtonLabels.All(required => fingerprint.ButtonLabels.Contains(required, StringComparer.Ordinal));
     }
 
     /// <summary>

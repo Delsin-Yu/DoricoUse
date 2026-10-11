@@ -64,7 +64,7 @@ Two things live outside the executable:
 
 | Path | What | Removing it |
 |---|---|---|
-| `%LOCALAPPDATA%\dorico-use\` | `session.json` holds the connection settings and the session token Dorico granted this client, kept **in plain text**. It also holds `host.json` (the running host's pid and pipe) and `host.log`. | delete the folder |
+| `%LOCALAPPDATA%\dorico-use\` | `session.json` holds the connection settings and the session token Dorico granted this client, kept **in plain text**. It also holds `host.json` (the running host's pid and pipe), `host.log`, and `dialogs.json` — the dialog memory behind `dialog.openMs` and `dialog.instance`, one entry per dialog window handle, no more than a handful of small entries. | delete the folder |
 | a running `host` process | The `host start` command leaves one background process alive by design. The connection must stay open for the status stream Dorico pushes. | `dorico-use host stop` |
 
 **Upgrade: stop the host first.** A running host holds the executable open, so you cannot replace the file while
@@ -150,7 +150,8 @@ closed the export dialog. That blind spot is why every payload carries two more 
 ```json
 {"ok":true,"command":"session status","status":{"…":"…"},
  "execution":{"state":"queued","evidence":"NoteInput.Enter: queued - posted, with no Executing line 1 s later: the command is on Dorico's queue, not run, which is what a modal dialog does","log":"C:\Users\<you>\AppData\Roaming\Steinberg\Dorico 6\application.log","postings":1},
- "dialog":{"id":"dorico.export-musicxml","kind":"known","shape":"qt","class":"Qt6101QWindow","owner":"0x006C1132",
+ "dialog":{"id":"dorico.export-musicxml","kind":"known","shape":"qt","hwnd":"0x00C91106","openMs":4210,"instance":1,
+   "class":"Qt6101QWindow","owner":"0x006C1132",
    "blocksQueue":true,"title":"导出MusicXML","description":"导出到哪里\n格式","textSource":"uia",
    "buttons":[{"id":"accept","alias":"yes","name":"确定","automationId":"…buttonBox.QPushButton","index":5,"role":"default","safe":true,"invokable":true},
               {"id":"cancel","alias":"no","name":"取消","automationId":"…buttonBox.QPushButton","index":6,"role":"dismiss","safe":true,"invokable":true},
@@ -159,6 +160,22 @@ closed the export dialog. That blind spot is why every payload carries two more 
    "probe":{"how":"win32+uia","ms":12,"degraded":false,"nodes":41,"truncated":false,"doricoWindows":1,"documentEnabled":false}}}
 ```
 
+- **`hwnd`, `openMs` and `instance` are how a caller tells "the same dialog is still up" from "my press raised a new
+  one".** `hwnd` is the dialog's own window handle, in the same `0x00C91106` spelling the panel payload has always
+  used — the dialog payload did not carry it until now, which was the inconsistency. `openMs` is how long that
+  window has been up, in whole milliseconds, and `instance` is the 1-based occurrence counter of that handle: 1 the
+  first time the tool saw it, repeated unchanged for as long as the same handle stays up, and 1 again for a handle
+  the memory has forgotten (so a recycled handle hosting the same dialog id reads as the new window it is). A dialog
+  that ignored a press is therefore the same `hwnd` with the same `instance` and a larger `openMs`; a dialog the
+  press raised is a different `hwnd`. `dialog.id` cannot answer this — it is the same on every raise of the same
+  dialog — and measured on Dorico's error box the caption cannot either.
+- **`openMs` and `instance` come from a state file**, `%LOCALAPPDATA%\dorico-use\dialogs.json`, one entry per window
+  handle (`{"dialogs":[{"hwnd":"0x00C91106","firstSeenUtc":"…","instance":1}]}`), because this CLI exits between the
+  two observations they are about and the moment a window went up belongs to a process that has already gone. A
+  handle whose window is gone is forgotten, a handle that has not been the dialog for six hours is pruned so the
+  file cannot grow without bound, and the file is written only when it changes. If it cannot be read or written at
+  all, the two fields are **left out** rather than reported as a zero that would read like "just opened": a state
+  file that will not cooperate is no reason for a probe to fail.
 - **`dialog` is `null` when nothing is modal**, and that is a measurement rather than silence: the probe ran and
   found nothing. `probe.doricoWindows` says how many visible windows Dorico had (0 would mean it is not running,
   which is a different answer) and `probe.documentEnabled` says whether its document window was enabled, which is
@@ -205,10 +222,17 @@ dorico-use ui press --dialog dorico.export-musicxml --button accept     # or --b
   there rather than guessed away.
 - **Only measured dialogs are pressable.** The catalogue holds the dialogs whose real captions and labels were
   read — `dorico.export-musicxml`, the `dorico.folder-picker` it raises, `dorico.unsaved-changes` (discard is
-  丢弃, cancel is 取消, and discard is not safe) and `dorico.crash-report`, Dorico's own crash reporter
+  丢弃, cancel is 取消, and discard is not safe), `dorico.crash-report`, Dorico's own crash reporter
   (向 Steinberg 发送崩溃报告, with 发送到 Steinberg, 不发送 and 不再询问; only 不发送 is safe, and all three buttons share
-  one automation id, so their ids come from their labels). A dialog that is not in it is reported in full and
-  refused with `UnknownDialog`.
+  one automation id, so their ids come from their labels) and `dorico.error`, the error message box (关闭 and 确定;
+  an error report only needs closing, so both are safe, and `pressWith` offers the 关闭 line, which needs no flag).
+  A dialog that is not in it is reported in full and refused with `UnknownDialog`.
+- **An entry matches on measured facts and never on a caption alone.** A caption is not always an identity:
+  `dorico.error` is titled just `Dorico`, which another window of the same session is titled too, so its entry also
+  requires the window class (`Qt6101QWindowIcon`), the body text (`错误发生`) and the button-box path its two buttons
+  share (`buttonBox.QPushButton`) — all four were read off the real window, and a window that shares only the caption
+  stays `unknown`. Nothing is matched that has not been measured, and a dialog nobody has read still needs both
+  flags.
 - **Two flags, and only for a caller that means it.** `--allow-unknown-dialog` allows a button of an unmeasured
   dialog; `--allow-destructive` allows one this build does not call safe (discard, overwrite). Every button of an
   unknown dialog is unsafe — cancel included, because "cancel is harmless" is a claim about a specific dialog — so
@@ -1118,7 +1142,7 @@ reported there as a single `skip`.
 
 ```bash
 dotnet build tests/VocabularyCheck/VocabularyCheck.csproj -v q --nologo
-./tests/VocabularyCheck/bin/Debug/net10.0/vocabulary-check.exe    # 327 checks, no setup at all
+./tests/VocabularyCheck/bin/Debug/net10.0/vocabulary-check.exe    # 433 checks, no setup at all
 ```
 
 The `VocabularyCheck` program needs nothing but the framework: no Dorico, no host, no extraction step. It checks
@@ -1126,13 +1150,18 @@ the table against the code that uses it, so the note values the CLI resolves are
 checks the shape rule, the refusal and its suggestions, and the one behaviour that matters for forward
 compatibility: a value for a parameter this build does not know is never refused.
 
-It also compiles the two pure files of the dialog model (`Ui/DialogModel.cs`, `Ui/DialogCatalogue.cs`) by hand and
-asserts the rules an agent depends on without a dialog, a COM pointer or Windows: the id of every button of the
-measured export dialog (two of its seven share a label and one has none), three times over, so stability is a check
-and not a hope; the classic control ids of a native `#32770` dialog; the unknown-dialog hash; the position
-fallback; every catalogue entry's roles and safety; and that none of the reserved ids has an entry, because an
-entry needs a measurement and a check refuses to let one be guessed. That asymmetry is why the CLI's Windows-only
-code lives under `Ui/` in files this project does not compile.
+It also compiles the pure files of the dialog model (`Ui/DialogModel.cs`, `Ui/DialogCatalogue.cs` and
+`Ui/DialogInstances.cs`) by hand and asserts the rules an agent depends on without a dialog, a COM pointer or
+Windows: the id of every button of the measured export dialog (two of its seven share a label and one has none),
+three times over, so stability is a check and not a hope; the classic control ids of a native `#32770` dialog; the
+unknown-dialog hash; the position fallback; the three new payload fields and the store behind `openMs` and
+`instance` (a first sighting, a handle that keeps its `firstSeen`, a recycled handle that counts from 1 again, a
+handle whose window is gone, the prune, and a store that cannot be written degrading to no fields rather than to a
+wrong number) — with a clock the check passes in, because the alternative is sleeping six hours for a prune; every
+catalogue entry's roles and safety, including the error box's fingerprint, which is asserted to match the measured
+window and to let go of a window that shares only the caption `Dorico`; and that none of the reserved ids has an
+entry, because an entry needs a measurement and a check refuses to let one be guessed. That asymmetry is why the
+CLI's Windows-only code lives under `Ui/` in files this project does not compile.
 
 ## Troubleshooting
 
@@ -1184,8 +1213,9 @@ code lives under `Ui/` in files this project does not compile.
    pattern. The library manager turned out to have no file control at all, so this is the route for a library
    import — see the panel section.
 
-11. **Next**: the rest of the dialog catalogue. Four dialogs are in it because their captions and labels were
-   actually read, and four more are named in the code as reserved (`dorico.allow-remote-client`,
+11. **Next**: the rest of the dialog catalogue. Five dialogs are in it because their captions, labels and — for
+   `dorico.error`, whose caption is not an identity — window class, body text and button path were actually read,
+   and four more are named in the code as reserved (`dorico.allow-remote-client`,
    `dorico.import-musicxml`, `dorico.save-picker`, `dorico.overwrite-file`) and have **no** entry, because an entry
    needs a measurement and a check refuses to let one be guessed. Until they are read they are reported in full and
    refused, which is safe but not useful.

@@ -120,6 +120,17 @@ internal static class DialogProbe
     public static (string Title, string WindowClass) Describe(nint handle)
         => (Text(handle), Class(handle));
 
+    /// <summary>
+    /// True while a handle is still a window, which is the store's test for "the dialog it remembers has gone".
+    /// </summary>
+    /// <remarks>
+    /// Asked of Windows and not of the probe's own window list, and that is the point: an entry has to be forgotten
+    /// when the window it names is destroyed, and a dialog that has been answered is a handle no enumeration will
+    /// hand out again. <see cref="DialogInstances"/> takes this as a function so that its rules stay testable
+    /// without a window to look at.
+    /// </remarks>
+    public static bool IsWindowAlive(nint handle) => handle != nint.Zero && IsWindow(handle);
+
     /// <summary>Enumerates the visible top-level windows, topmost first, which is the order Win32 hands them out.</summary>
     private static List<WindowFacts> Enumerate()
     {
@@ -330,6 +341,17 @@ internal static class DialogProbe
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool IsWindowVisible(nint handle);
+
+    /// <summary>
+    /// <c>IsWindow</c>: whether a handle still names a window, used by <see cref="IsWindowAlive"/>.
+    /// </summary>
+    /// <remarks>
+    /// Distinct from <c>IsWindowVisible</c> and not a substitute for it: a handle that Windows has recycled names a
+    /// window that is visible, and the store's rule is about the window being <b>gone</b>, not about it being shown.
+    /// </remarks>
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool IsWindow(nint handle);
 
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]

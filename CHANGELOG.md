@@ -362,6 +362,62 @@ defaults" is, and what must stop `command send` from repeating the two crashes.
   (`library collections` — 50 — and `library entities`), which is what makes a comparison made by hand checkable by
   name afterwards.
 
+### The dialog's window handle, and an error box whose caption is not an identity (round 5)
+
+Two changes to the same surface: every `dialog` object now says *which window* it is describing and for how long,
+and Dorico's error message box is catalogued instead of being reported as unknown.
+
+### Added
+- **`dialog.hwnd`, `dialog.openMs` and `dialog.instance` on every payload.** `hwnd` is the dialog's own window
+  handle in the `0x00C91106` spelling the panel payload has always used — the dialog payload did not carry one, which
+  was the inconsistency. `openMs` is how long that window has been up, in whole milliseconds, and `instance` is the
+  1-based occurrence counter of its handle. Together they answer what a press leaves behind: a dialog that ignored the
+  press is the same `hwnd` with the same `instance` and a larger `openMs`, while a dialog the press raised is a
+  different handle — and a handle the memory has forgotten counts from 1 again, even when it hosts the same
+  `dialog.id`. That last clause is why the handle is needed at all: the id is the same on every raise of the same
+  dialog, and measured on the error box below the caption is not an identity either.
+- **The dialog memory**: `%LOCALAPPDATA%\dorico-use\dialogs.json`, one entry per window handle
+  (`{"dialogs":[{"hwnd":"0x00C91106","firstSeenUtc":"…","instance":1}]}`). A handle seen first gets
+  `firstSeenUtc = now` and `instance = 1`; a handle already in it keeps both; a handle whose window is gone — or a
+  probe that found no dialog at all — is forgotten; an entry that has not been the dialog for six hours is pruned so
+  the file cannot grow without bound; and the file is written only when it changes. It exists because this CLI exits
+  between the two observations `openMs` is about: the moment a window went up belongs to a process that has already
+  gone. A memory file this build cannot parse is replaced on the next sighting rather than treated as a failure, and
+  one it cannot read or write at all leaves the two fields off the payload — degraded, never wrong.
+- **`dorico.error` is catalogued.** Measured, captured verbatim from a real payload: Dorico's error message box is
+  class `Qt6101QWindowIcon`, its caption is the bare word `Dorico`, its body says `错误发生`, and its two buttons 关闭
+  and 确定 share the button-box path `buttonBox.QPushButton`. Both buttons are `safe` — an error report only needs
+  closing — so answering it needs no flag at all, where it used to need both `--allow-unknown-dialog` and
+  `--allow-destructive`, and `pressWith` offers the 关闭 button as `dismiss`.
+- **35 more checks in `VocabularyCheck`**, 433 now, 0 failed, 0 skipped: the error box's fingerprint, one criterion
+  taken away at a time — a window that shares only the caption `Dorico`, one that shares the caption and the class but
+  shows no body text, one that shares the caption and the body text in another class, one whose 关闭 and 确定 carry no
+  button-box path, and one whose caption says something else must each stay `unknown` — plus the three new payload
+  fields with their order and the store that could not say, and the dialog memory's rules: a first sighting, a handle
+  that keeps its `firstSeen`, a recycled handle that counts from 1 again, a handle whose window is gone, the prune
+  that keeps the file bounded, the file that is not created when there is nothing to remember, a memory file that
+  says nothing usable being replaced rather than treated as a failure, and a store that cannot be written degrading
+  to no fields rather than to a wrong number. The memory is asserted with a clock the check passes in, because the
+  alternative is sleeping six hours for a prune.
+
+### Changed
+- **`DialogCatalogue.Match` takes the whole fingerprint** (`DialogFingerprint`: caption, window class, body text,
+  button labels, button automation ids) instead of three loose arguments, and `DialogCatalogueEntry` gained the
+  window class, the required body text and the required button automation-id path. Every criterion is optional and an
+  undeclared one is not checked, so the entries written before this match exactly what they matched before — and
+  `PanelModel` now formats handles through the one `DialogModel.HandleText`, so a handle cannot have two spellings in
+  one payload.
+- **A `dialog` whose store could not be read or written omits `openMs` and `instance`** rather than reporting a zero
+  that would read like "just opened". A state file that will not cooperate is no reason for a probe to fail.
+
+### Documented, not fixed
+- **The queue sentence on a blocking `Qt…Icon` window is a class hint it did not earn.** `dialog.note` says "this
+  window's class is one whose dialogs stall Dorico's command queue" whenever `blocksQueue` is true, and for
+  `dorico.error` — a `Qt6101QWindowIcon`, the class the payloads read as modeless — that is true of the *document
+  window being disabled* and not of the class. The same sentence has been on the crash reporter since it was
+  catalogued. `blocksQueue` itself is right (`documentEnabled: false` or the class, and only the queue measurement in
+  `execution` settles it); the sentence is the part that overstates how it was decided.
+
 ## [0.1.0] - 2026-10-11
 
 The first release: a stateless JSON CLI that lets an agent or a script steer a running Dorico, and a from-scratch
