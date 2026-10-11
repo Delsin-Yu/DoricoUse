@@ -719,6 +719,106 @@ var capped = PanelModel.Elements(
 
 Check("more elements than the cap is reported as truncated, not dropped quietly", NodeRead.Bool(capped, "truncated") == true && NodeRead.Arr(capped, "elements")?.Count == PanelModel.MaxElements, NodeRead.Arr(capped, "elements")?.Count.ToString());
 
+Console.WriteLine("== reading a control's value, and the write that had no read-back");
+Console.WriteLine("== the row ceiling: a viewport is not a list");
+
+// Measured, and the reason both sections exist. Before this round a payload could say `state: "value"` and nothing
+// else, so a write was reported by the string that was sent and could not be checked: on the Open picker's file-name
+// box the tool wrote a path and said so, and on the 重命名演奏者 dialog's shortNameLineEdit it wrote "Probe." over
+// "Picc." while the re-read said "value" both times. The value pattern carries the text (its legacy value repeats
+// it), and the two fields below are what now says so.
+var typed = new List<PanelElementInput>
+{
+    new(ControlTypes.Edit, "文件名(N):", "…open-picker.fileNameEdit", "", null, null, null, false, 0, 0,
+        ValueReadOnly: false, Container: null),
+    new(ControlTypes.ComboBox, "文件类型(T):", "1136", "Any Readable File (*.doricolib)", null, null, null, false, 0, 20,
+        ValueReadOnly: false),
+    new(ControlTypes.Edit, "短名：", "…RenamePlayerDialog.shortNameLineEdit", "Picc.", null, null, null, false, 0, 40,
+        ValueReadOnly: false),
+    new(ControlTypes.Edit, "大小", "…System.Size", "", null, null, null, false, 0, 60, ValueReadOnly: true),
+    new(ControlTypes.Button, "关闭", "…closePushButton", null, null, null, null, true, 0, 80),
+    new(ControlTypes.ListItem, "Piano", null, null, null, true, null, false, 0, 100,
+        Container: "playersListView"),
+};
+
+// ElementPayload returns the `elements` array itself, for both a panel and a dialog.
+var typedElements = PanelModel.ElementPayload(PanelModel.Describe(typed), out var typedReturned);
+
+Check("the elements are all there", typedReturned == 6 && typedElements.Count == 6, typedReturned.ToString());
+Check("a field reports the value its value pattern answered, not the word 'value'", NodeRead.Str(typedElements[2], "value") == "Picc.", NodeRead.Str(typedElements[2], "value"));
+Check("and says which pattern it came from", NodeRead.Str(typedElements[2], "valueFrom") == PanelModel.ValueFromValuePattern, NodeRead.Str(typedElements[2], "valueFrom"));
+Check("an empty field is an empty string and not a missing value", NodeRead.Str(typedElements[0], "value") == string.Empty, NodeRead.Str(typedElements[0], "value") ?? "(absent)");
+Check("the file-type box reads back the filter the picker is showing", NodeRead.Str(typedElements[1], "value") == "Any Readable File (*.doricolib)", NodeRead.Str(typedElements[1], "value"));
+Check("a read-only field says so, which is what a write has to be refused on", NodeRead.Bool(typedElements[3], "valueReadOnly") == true);
+Check("a button carries no value at all", typedElements[4]!.AsObject()!.ContainsKey("value") == false, typedElements[4]!.ToJsonString());
+Check("and neither does a list row", typedElements[5]!.AsObject()!.ContainsKey("value") == false);
+
+// The evidence a press owes: the same element, read again in the same invocation.
+var reRead = PanelModel.Describe([new(ControlTypes.Edit, "短名：", "…RenamePlayerDialog.shortNameLineEdit", "Probe.", null, null, null, false, 0, 40, ValueReadOnly: false)]);
+
+Check(
+    "the re-read of the element a write acted on reports the text the field really holds",
+    NodeRead.Str(PanelModel.StateAfter(reRead, [new(ControlTypes.Edit, "短名：", "…RenamePlayerDialog.shortNameLineEdit", "Probe.", null, null, null, false, 0, 40, ValueReadOnly: false)], "shortNameLineEdit"), "value") == "Probe.");
+Check(
+    "an element that is gone reads as null rather than as an empty state",
+    PanelModel.StateAfter([], [], "shortNameLineEdit") is null);
+
+var dialogAfter = new JsonObject
+{
+    ["id"] = "dorico.open-picker",
+    ["controls"] = JsonNode.Parse(
+        """
+        [{"id":"edit-1148","role":"edit","value":"C:\\Temp\\a.doricolib","valueReadOnly":false,"state":"value"}]
+        """),
+};
+
+Check("a dialog's control is read back out of the dialog payload too", NodeRead.Str(PanelModel.ControlAfter(dialogAfter, "edit-1148"), "value") == "C:\\Temp\\a.doricolib", PanelModel.ControlAfter(dialogAfter, "edit-1148")?.ToJsonString());
+Check("and a control that is gone is null, not a guess", PanelModel.ControlAfter(dialogAfter, "edit-999") is null);
+Check("a dialog that closed reads as null", PanelModel.ControlAfter(null, "edit-1148") is null);
+
+// The ceiling: measured on the Setup lists (30 of 49 player rows and 28 of 45 layout rows) and on the
+// 繁衍声部格式 dialog's two lists (15 and 14 of 44), none of which exposes a scroll pattern.
+var ceilingInput = new List<PanelElementInput>
+{
+    new(ControlTypes.ListItem, "组 1", "…playersListView", null, null, null, null, false, 0, 0, Container: "playersListView"),
+    new(ControlTypes.ListItem, "Piccolo", "…playersListView", null, null, null, null, false, 0, 20, Container: "playersListView"),
+    new(ControlTypes.ListItem, "总谱", "…layoutsListView", null, null, null, null, false, 0, 40, Container: "layoutsListView"),
+    new(ControlTypes.Edit, "文件名(N):", "1148", "", null, null, null, false, 0, 60, ValueReadOnly: false),
+};
+
+var ceiling = PanelModel.Elements(
+    new WindowFacts(0x1000, 1, nint.Zero, true, true, "Qt6101QWindowIcon", "谱章 1 在 fixture 内"),
+    documentEnabled: true,
+    ceilingInput,
+    truncated: false,
+    readMs: 40);
+var ceilingLists = NodeRead.Arr(ceiling, "lists")!;
+
+Check("the rows are counted per list, not as one number", NodeRead.Int(ceiling, "rows") == 3 && ceilingLists.Count == 2, NodeRead.Int(ceiling, "rows")?.ToString());
+Check("each list reports how many rows it realised", NodeRead.Str(ceilingLists[0], "container") == "playersListView" && NodeRead.Int(ceilingLists[0], "rows") == 2, ceilingLists[0]!.ToJsonString());
+Check("and that it cannot be scrolled, which is why the rest is out of reach", NodeRead.Bool(ceilingLists[0], "scrollPattern") == false);
+Check("the payload says the rows are a viewport rather than the list", NodeRead.Bool(ceiling, "viewportLimited") == true);
+Check("and spells the ceiling out where a caller cannot miss it", NodeRead.Str(ceiling, "rowCeiling")?.Contains("30 of 49", StringComparison.Ordinal) == true);
+Check("a row carries the container it came from, so two lists stay apart", NodeRead.Str(typedElements[5], "container") == "playersListView", NodeRead.Str(typedElements[5], "container"));
+Check("a field that is not in a list carries no container", typedElements[4]!.AsObject()!.ContainsKey("container") == false);
+
+var noRows = PanelModel.Elements(
+    new WindowFacts(0x1000, 1, nint.Zero, true, true, "Qt6101QWindowIcon", "库管理"),
+    documentEnabled: true,
+    libraryElements,
+    truncated: false,
+    readMs: 30);
+
+Check("a window with no list carries no ceiling at all", NodeRead.Int(noRows, "rows") is null && NodeRead.Str(noRows, "rowCeiling") is null);
+
+Check("a row container names a list, a tree, a grid and a table", ControlTypes.IsRowContainer(ControlTypes.List) && ControlTypes.IsRowContainer(ControlTypes.Tree) && ControlTypes.IsRowContainer(ControlTypes.DataGrid) && ControlTypes.IsRowContainer(ControlTypes.Table));
+Check("a plain pane is not a row container", !ControlTypes.IsRowContainer(ControlTypes.Pane));
+Check("a list row, a tree item and a data item are rows", ControlTypes.IsRow(ControlTypes.ListItem) && ControlTypes.IsRow(ControlTypes.TreeItem) && ControlTypes.IsRow(ControlTypes.DataItem));
+Check("a text field is not a row", !ControlTypes.IsRow(ControlTypes.Edit));
+Check("a container is named by its automation-id tail, which is what a caller already saw", PanelModel.ContainerName("DoricoQApplication.DocumentWindow…playersContentFrame.playersListView", "", ControlTypes.List) == "playersListView", PanelModel.ContainerName("a.b.playersListView", "", ControlTypes.List));
+Check("a container with no tail falls back to the label the window shows, verbatim", PanelModel.ContainerName(null, "布局", ControlTypes.List) == "布局", PanelModel.ContainerName(null, "布局", ControlTypes.List));
+Check("and with neither, to its role", PanelModel.ContainerName(null, "", ControlTypes.List) == "list");
+
 Check("every catalogued panel has a note, an id and a matcher", PanelCatalogue.Entries.All(entry => entry.Id.Length > 0 && entry.Note.Length > 0 && (entry.TitleGlobs.Count > 0 || entry.ClassPrefixes.Count > 0)));
 Check("a panel catalogue entry only matches the class it was measured in", PanelCatalogue.Match("库管理", "#32770") is null);
 Check("an empty caption does not match a catalogued panel", PanelCatalogue.Match("", "Qt6101QWindowIcon") is null);

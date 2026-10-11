@@ -71,6 +71,18 @@ internal static class UiaCalls
 
     public const int ValuePatternId = 10002;
 
+    /// <summary>
+    /// The scroll pattern, which is what would be needed to bring a list's unrealised rows into the tree.
+    /// </summary>
+    /// <remarks>
+    /// Measured: no measured Dorico list view exposes it — the Setup player/flow/layout lists, the
+    /// 繁衍声部格式 dialog's two lists and every ancestor of each of them answer no scroll pattern, and their rows
+    /// answer no scroll-item pattern either, so this build reports the row ceiling instead of pretending to page.
+    /// The two scrollbars that do exist belong to the score canvas viewport and carry a range value, not a scroll
+    /// pattern, and driving one of those leaves the list rows exactly as they were.
+    /// </remarks>
+    public const int ScrollPatternId = 10004;
+
     public const int TogglePatternId = 10015;
 
     public const int TextPatternId = 10014;
@@ -153,8 +165,15 @@ internal static class UiaCalls
     /// measured crash reporter, because each <c>GetCurrentPattern</c> on a Qt element is a COM round trip. A button
     /// is not asked whether it is checked, and a check box is not asked for a text value.
     /// </para>
+    /// <para>
+    /// A value pattern answers with its text <b>and</b> with whether the field is read-only, and both are reported:
+    /// measured on the Open picker's file-name box (<c>1148</c>, read-only false, and the written path came back
+    /// verbatim), the 重命名演奏者 dialog's two fields (read-only false, holding the selected player's name), the
+    /// picker's file-type box (<c>1136</c>, read-only false, holding <c>Any Readable File (*.doricolib)</c>) and
+    /// the file list's own columns (read-only true, and writing to one of those is what the flag warns about).
+    /// </para>
     /// </remarks>
-    public static (string? Toggle, bool? Selected, string? Expanded, string? Value, bool Invokable) State(
+    public static (string? Toggle, bool? Selected, string? Expanded, string? Value, bool? ValueReadOnly, bool Invokable) State(
         nint element,
         int controlType)
     {
@@ -162,6 +181,7 @@ internal static class UiaCalls
         bool? selected = null;
         string? expanded = null;
         string? value = null;
+        bool? valueReadOnly = null;
         var invokable = false;
 
         if (controlType is ControlTypes.Button or ControlTypes.SplitButton or ControlTypes.MenuItem)
@@ -175,9 +195,10 @@ internal static class UiaCalls
         }
         else if (controlType is ControlTypes.Edit or ControlTypes.ComboBox)
         {
-            if (TryValue(element, out var text, out _))
+            if (TryValue(element, out var text, out var readOnly))
             {
                 value = text;
+                valueReadOnly = readOnly;
             }
         }
         else if (controlType is ControlTypes.TabItem or ControlTypes.ListItem or ControlTypes.TreeItem
@@ -196,15 +217,16 @@ internal static class UiaCalls
         {
             // Anything else that got this far: ask for what a value pattern and an invoke pattern answer, and leave
             // the state patterns alone.
-            if (TryValue(element, out var text, out _))
+            if (TryValue(element, out var text, out var readOnly))
             {
                 value = text;
+                valueReadOnly = readOnly;
             }
 
             invokable = HasPattern(element, InvokePatternId);
         }
 
-        return (toggleState, selected, expanded, value, invokable);
+        return (toggleState, selected, expanded, value, valueReadOnly, invokable);
     }
 
     private static string? ReadToggle(nint element)
@@ -279,6 +301,13 @@ internal static class UiaCalls
             UiaCom.Release(pattern);
         }
     }
+
+    /// <summary>
+    /// Whether an element exposes the scroll pattern — the one pattern that would make a list's unrealised rows
+    /// reachable. Measured false on every list this build has read; reported per container so the payload can say
+    /// so instead of leaving a viewport looking like a whole list.
+    /// </summary>
+    public static bool HasScroll(nint element) => HasPattern(element, ScrollPatternId);
 
     /// <summary>True when the element exposes a pattern at all, without keeping the pattern object.</summary>
     public static bool HasPattern(nint element, int patternId)

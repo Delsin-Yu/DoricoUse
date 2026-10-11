@@ -60,6 +60,9 @@ internal static class ControlTypes
 
     public const int Group = 50026;
 
+    /// <summary>A grid that holds rows. A row container, like a list or a tree.</summary>
+    public const int DataGrid = 50028;
+
     /// <summary>A row of a data grid. Not a list row: the two are different control types with different ids.</summary>
     public const int DataItem = 50029;
 
@@ -76,6 +79,24 @@ internal static class ControlTypes
     public const int TitleBar = 50037;
 
     public const int Separator = 50038;
+
+    /// <summary>A table that holds rows. The other half of <see cref="DataGrid"/>.</summary>
+    public const int Table = 50036;
+
+    /// <summary>
+    /// Whether an element is a row of a list, a tree or a data grid. Measured: Dorico's Setup rows and the
+    /// 繁衍声部格式 dialog's rows are <c>ListItem</c> (50007) — the number this build once had wrong — and a file
+    /// picker's file list contributes <c>DataItem</c> rows.
+    /// </summary>
+    public static bool IsRow(int controlType) => controlType is ListItem or TreeItem or DataItem;
+
+    /// <summary>
+    /// Whether an element is a container that holds rows. <b>Measured</b>: <see cref="List"/> is what Dorico's
+    /// Setup lists and the 繁衍声部格式 dialog's lists are (their rows are <c>ListItem</c> children), and a
+    /// <see cref="Tree"/> is what a file picker's folder pane is. The grid and table types are the standard ones
+    /// and are here so that a row of either still gets a container name rather than none.
+    /// </summary>
+    public static bool IsRowContainer(int controlType) => controlType is List or Tree or DataGrid or Table;
 
     /// <summary>
     /// Whether an element is one an action could target. A text label, a group, a pane, a list or a tree is not:
@@ -122,6 +143,7 @@ internal static class ControlTypes
         TreeItem => "TreeItem",
         Custom => "Custom",
         Group => "Group",
+        DataGrid => "DataGrid",
         DataItem => "DataItem",
         SplitButton => "SplitButton",
         Window => "Window",
@@ -130,6 +152,7 @@ internal static class ControlTypes
         HeaderItem => "HeaderItem",
         TitleBar => "TitleBar",
         Separator => "Separator",
+        Table => "Table",
         _ => $"controlType({controlType})",
     };
 
@@ -149,11 +172,13 @@ internal static class ControlTypes
         Tree => "tree",
         TreeItem => "treeItem",
         Group => "group",
+        DataGrid => "dataGrid",
         DataItem => "dataItem",
         SplitButton => "splitButton",
         Pane => "pane",
         TitleBar => "titleBar",
         Separator => "separator",
+        Table => "table",
         Text => "text",
         _ => "controlType-" + controlType.ToString(System.Globalization.CultureInfo.InvariantCulture),
     };

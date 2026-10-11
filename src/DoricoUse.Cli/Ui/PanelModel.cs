@@ -44,6 +44,20 @@ internal sealed record WindowFacts(
 /// <param name="Invokable">True when the element exposes an invoke pattern.</param>
 /// <param name="Left">Screen x of the element's bounding rectangle.</param>
 /// <param name="Top">Screen y of the element's bounding rectangle.</param>
+/// <param name="ValueReadOnly">
+/// Whether the value pattern reports itself read-only. Null when there is no value pattern. A read-only field is
+/// what a write has to be refused on, so it is carried rather than assumed from the control type.
+/// </param>
+/// <param name="Container">
+/// The identity of the nearest ancestor that holds rows — a list, a tree, a data grid — or null when the element
+/// is not inside one. It is what makes a viewport distinguishable from a whole list: measured, a Dorico list view
+/// realises only the rows around its viewport and exposes no scroll pattern, so the reported rows are a window
+/// onto the list, and a caller has to be able to see which window an id came from.
+/// </param>
+/// <param name="ContainerScrollable">
+/// Whether that ancestor exposes the scroll pattern. Measured false on every list view this build has read, which
+/// is why the read cannot page to the rows the viewport hides.
+/// </param>
 internal sealed record PanelElementInput(
     int ControlType,
     string Name,
@@ -54,7 +68,10 @@ internal sealed record PanelElementInput(
     string? Expanded,
     bool Invokable,
     int Left = 0,
-    int Top = 0);
+    int Top = 0,
+    bool? ValueReadOnly = null,
+    string? Container = null,
+    bool ContainerScrollable = false);
 
 /// <summary>One element as the payload reports it, with the id an agent passes back to <c>ui press --element</c>.</summary>
 /// <param name="Id">The stable id, derived from the same rules the dialog buttons use.</param>
@@ -70,6 +87,21 @@ internal sealed record PanelElementInput(
 /// Which pattern an action would use — <c>invoke</c>, <c>toggle</c>, <c>select</c>, <c>expand</c>, <c>collapse</c>
 /// or <c>value</c> — or null when the element exposes none of them, in which case acting on it is refused.
 /// </param>
+/// <param name="Value">
+/// The value pattern's current value, or null when this read did not get one. This is the field a write is verified
+/// with: it used to be dropped, so a payload reported <c>state: "value"</c> and the caller could see that a field
+/// holds something and not what — measured on the 重命名演奏者 dialog's <c>shortNameLineEdit</c>, which read
+/// <c>Picc.</c> and, after a write, <c>Probe.</c>, while the payload said <c>"value"</c> both times. A read asks a
+/// value pattern for the control types that carry one (<c>Edit</c>, <c>ComboBox</c>, and anything that is not a
+/// button, a check box or a row), so null on a button or a row means "not asked", not "empty".
+/// </param>
+/// <param name="ValueFrom">
+/// Which pattern the value came from, or null when there is none. Always <c>valuePattern</c> today: the legacy
+/// accessibility pattern repeats the same text on every measured field, but it is not what this build reads, so it
+/// is not claimed as a source.
+/// </param>
+/// <param name="ValueReadOnly">Whether the value pattern is read-only, or null when there is none.</param>
+/// <param name="Container">The id or label of the row container this element belongs to, or null.</param>
 internal sealed record PanelElementDescription(
     string Id,
     string Role,
@@ -77,7 +109,11 @@ internal sealed record PanelElementDescription(
     string? AutomationId,
     int Index,
     string? State,
-    string? Action);
+    string? Action,
+    string? Value = null,
+    string? ValueFrom = null,
+    bool? ValueReadOnly = null,
+    string? Container = null);
 
 /// <summary>How one element would be acted on: the pattern, and what it would change.</summary>
 public enum PanelAction
@@ -310,10 +346,194 @@ internal static class PanelModel
                 AutomationId: string.IsNullOrEmpty(element.AutomationId) ? null : element.AutomationId,
                 Index: index,
                 State: State(element),
-                Action: Action(element) == PanelAction.None ? null : Action(element).ToString().ToLowerInvariant()));
+                Action: Action(element) == PanelAction.None ? null : Action(element).ToString().ToLowerInvariant(),
+                // The value is reported only when a value pattern answered: the key's presence is the fact that the
+                // element has one, and an empty field therefore reads as value: "" rather than as "no value".
+                Value: element.Value,
+                ValueFrom: element.Value is null ? null : ValueFromValuePattern,
+                ValueReadOnly: element.Value is null ? null : element.ValueReadOnly,
+                Container: element.Container));
         }
 
         return described;
+    }
+
+    /// <summary>The pattern name a reported value came from. See <see cref="PanelElementDescription.ValueFrom"/>.</summary>
+    public const string ValueFromValuePattern = "valuePattern";
+
+    /// <summary>
+    /// The row containers an element list realised, with how many rows each one, and whether it could be scrolled.
+    /// </summary>
+    /// <param name="elements">The elements a read kept, in read order.</param>
+    /// <param name="rows">How many of them are rows of some container.</param>
+    /// <remarks>
+    /// <para>
+    /// Measured, and this is the reason the field exists: Dorico's list views realise only the rows around their
+    /// viewport. The Setup players list implements 30 of that project's 49 rows, the layouts list 28 of its 45, and
+    /// the 繁衍声部格式 dialog's two lists 15 and 14 of 44 — the counts do not change when the window is minimized
+    /// or restored. Nothing about the list or any of its ancestors exposes the scroll pattern (measured on the full
+    /// ancestor chain of both Setup lists and of the dialog's list, and on a row of each, which exposes no
+    /// scroll-item pattern either), and the only two scrollbars in the document window belong to the score canvas
+    /// viewport: driving one of those with its range value (1212 -> 0 -> 1212 of 1574) left the player and layout
+    /// rows at 30 and 28. So there is no paging this build can do, and what it owes the caller instead is the plain
+    /// fact: these are the rows that are real, and the rest cannot be read or chosen.
+    /// </para>
+    /// <para>
+    /// A container is reported by its automation-id tail when it has one, because that is what a caller can match
+    /// against a <c>ui panels</c> payload it already has; otherwise by its label; otherwise by its role.
+    /// </para>
+    /// </remarks>
+    public static JsonArray Lists(IReadOnlyList<PanelElementInput> elements, out int rows)
+    {
+        ArgumentNullException.ThrowIfNull(elements);
+
+        rows = 0;
+        var order = new List<string>();
+        var counts = new Dictionary<string, int>(StringComparer.Ordinal);
+        var scrollable = new Dictionary<string, bool>(StringComparer.Ordinal);
+
+        foreach (var element in elements)
+        {
+            if (!ControlTypes.IsRow(element.ControlType) || string.IsNullOrEmpty(element.Container))
+            {
+                continue;
+            }
+
+            rows++;
+
+            if (!counts.TryGetValue(element.Container, out var count))
+            {
+                order.Add(element.Container);
+                scrollable[element.Container] = element.ContainerScrollable;
+            }
+
+            counts[element.Container] = count + 1;
+        }
+
+        var lists = new JsonArray();
+
+        foreach (var container in order)
+        {
+            JsonArr.AddNode(lists, new JsonObject
+            {
+                ["container"] = container,
+                ["rows"] = counts[container],
+                ["scrollPattern"] = scrollable[container],
+            });
+        }
+
+        return lists;
+    }
+
+    /// <summary>
+    /// What the payload says when a read realised rows: the rows it saw are what the viewport holds, and the list
+    /// itself is longer. Reported only when there are rows, so a window with no list does not carry a warning about
+    /// one.
+    /// </summary>
+    public const string RowCeiling =
+        "The rows with a `container` are the rows that list view has realised, which is the viewport and not the "
+        + "list. Measured: Dorico's Setup players and layouts lists realise 30 of 49 and 28 of 45 rows of a "
+        + "44-player project, and the 繁衍声部格式 dialog's two lists 15 and 14 of 44, with the same counts while "
+        + "minimized and restored. Neither list nor any ancestor exposes a scroll pattern and no row exposes a "
+        + "scroll-item pattern, so this build cannot page to the rest: a row outside the viewport can be neither "
+        + "read nor chosen, and `lists[].rows` is a count of what was seen, never the length of the list.";
+
+    /// <summary>
+    /// The name a row's container is reported under: the container's automation-id tail when it has one, the label
+    /// the window shows when it has not, and its role when it has neither. Measured, a Dorico list view's tail is
+    /// its own meaningful name (<c>playersListView</c>, <c>sourceLayoutListView</c>), which is what a caller matches
+    /// against a payload it already read.
+    /// </summary>
+    /// <remarks>
+    /// The label is reported <b>verbatim</b> rather than slugged: a container name is a value in a payload, not an
+    /// id an agent pastes back, so a Chinese list label must not be turned into an empty string — which is what the
+    /// id rules would do with it, and what a check here caught.
+    /// </remarks>
+    public static string ContainerName(string? automationId, string name, int controlType)
+    {
+        var tail = Tail(automationId);
+
+        if (tail.Length > 0)
+        {
+            return tail;
+        }
+
+        return string.IsNullOrWhiteSpace(name) ? ControlTypes.Role(controlType) : name.Trim();
+    }
+
+    /// <summary>
+    /// The state of one element in a fresh read, for the evidence a press owes: the same fields the element carries
+    /// in the payload. Null when the element is gone, which is a real answer too — it is what a dialog that was
+    /// dismissed and a tab that was closed look like.
+    /// </summary>
+    /// <param name="described">The ids and states of a fresh read, in the order the read found them.</param>
+    /// <param name="inputs">The same read's plain data, which carries the toggle and selection states a payload
+    /// states only as one word.</param>
+    /// <param name="id">The id the caller acted on.</param>
+    public static JsonObject? StateAfter(
+        IReadOnlyList<PanelElementDescription> described,
+        IReadOnlyList<PanelElementInput> inputs,
+        string id)
+    {
+        ArgumentNullException.ThrowIfNull(described);
+        ArgumentNullException.ThrowIfNull(inputs);
+        ArgumentNullException.ThrowIfNull(id);
+
+        for (var index = 0; index < described.Count; index++)
+        {
+            if (!string.Equals(described[index].Id, id, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            return new JsonObject
+            {
+                ["state"] = described[index].State,
+                ["value"] = described[index].Value,
+                ["valueReadOnly"] = described[index].ValueReadOnly,
+                ["toggle"] = index < inputs.Count ? inputs[index].ToggleState : null,
+                ["selected"] = index < inputs.Count ? inputs[index].Selected : null,
+            };
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// The same evidence for a dialog's control, read back out of the re-read payload: a dialog's fresh read is
+    /// published as JSON (<c>dialog.controls</c>), not as an element list, so this finds the control the press acted
+    /// on there.
+    /// </summary>
+    /// <param name="dialog">The <c>dialog</c> object of the re-read, or null when the dialog is gone.</param>
+    /// <param name="id">The control id the caller acted on.</param>
+    public static JsonObject? ControlAfter(JsonNode? dialog, string id)
+    {
+        ArgumentNullException.ThrowIfNull(id);
+
+        if (dialog is not JsonObject window || window["controls"] is not JsonArray controls)
+        {
+            return null;
+        }
+
+        foreach (var node in controls)
+        {
+            if (node is not JsonObject control || (string?)control["id"] != id)
+            {
+                continue;
+            }
+
+            return new JsonObject
+            {
+                ["state"] = control["state"]?.DeepClone(),
+                ["value"] = control["value"]?.DeepClone(),
+                ["valueReadOnly"] = control["valueReadOnly"]?.DeepClone(),
+                ["role"] = control["role"]?.DeepClone(),
+                ["name"] = control["name"]?.DeepClone(),
+                ["container"] = control["container"]?.DeepClone(),
+            };
+        }
+
+        return null;
     }
 
     /// <summary>
@@ -419,9 +639,17 @@ internal static class PanelModel
     /// <param name="elements">The elements <see cref="Describe"/> produced.</param>
     /// <param name="returned">How many of them were written, so a caller can say whether the cap was hit.</param>
     /// <remarks>
+    /// <para>
     /// One function for both windows an element can live in, because the id an agent pastes back must mean the
     /// same thing in a panel and in a dialog. A dialog's edit fields and list rows are reported through this, which
     /// is what makes <c>ui press --dialog … --element … --value …</c> possible at all.
+    /// </para>
+    /// <para>
+    /// Each element carries its <b>current value</b> when the read got one, and that is the field this round exists
+    /// for: a write used to be reported by the string that was sent and by nothing else, so no caller could verify
+    /// one. The key is present only when the value pattern answered, which is what makes <c>value: ""</c> a field
+    /// that is really empty and keeps a button or a check box from looking like one.
+    /// </para>
     /// </remarks>
     public static JsonArray ElementPayload(IReadOnlyList<PanelElementDescription> elements, out int returned)
     {
@@ -436,7 +664,7 @@ internal static class PanelModel
                 break;
             }
 
-            JsonArr.AddNode(array, new JsonObject
+            var item = new JsonObject
             {
                 ["id"] = element.Id,
                 ["role"] = element.Role,
@@ -445,7 +673,21 @@ internal static class PanelModel
                 ["index"] = element.Index,
                 ["state"] = element.State,
                 ["action"] = element.Action,
-            });
+            };
+
+            if (element.Value is not null)
+            {
+                item["value"] = element.Value;
+                item["valueFrom"] = element.ValueFrom;
+                item["valueReadOnly"] = element.ValueReadOnly;
+            }
+
+            if (element.Container is not null)
+            {
+                item["container"] = element.Container;
+            }
+
+            JsonArr.AddNode(array, item);
         }
 
         returned = array.Count;
@@ -482,12 +724,48 @@ internal static class PanelModel
         payload["truncated"] = truncated || described.Count > returned;
         payload["readMs"] = readMs;
 
+        var lists = Lists(elements ?? [], out var rows);
+
+        if (rows > 0)
+        {
+            // A read that realised rows owes the caller the fact that those rows are a viewport. Without it an
+            // element list that is short of the real list looks like the whole list, which is exactly how "select
+            // all" was mistaken for a proof that every layout was chosen.
+            payload["lists"] = lists;
+            payload["rows"] = rows;
+            payload["viewportLimited"] = !AllScrollable(elements ?? []);
+            payload["rowCeiling"] = RowCeiling;
+        }
+
         if (error is not null)
         {
             payload["error"] = error;
         }
 
         return payload;
+    }
+
+    /// <summary>Whether every row container a read saw can be scrolled, which is what makes paging possible at all.</summary>
+    private static bool AllScrollable(IReadOnlyList<PanelElementInput> elements)
+    {
+        var seen = false;
+
+        foreach (var element in elements)
+        {
+            if (!ControlTypes.IsRow(element.ControlType) || string.IsNullOrEmpty(element.Container))
+            {
+                continue;
+            }
+
+            seen = true;
+
+            if (!element.ContainerScrollable)
+            {
+                return false;
+            }
+        }
+
+        return seen;
     }
 
     /// <summary>

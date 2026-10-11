@@ -412,12 +412,15 @@ internal static class DialogSurface
 
         var worked = ElementActions.Perform(read.ElementHandles[index], action, target, value, description.Id);
 
-        // The same evidence rule as a button press: the action's own answer is not the proof, the re-probe is.
+        // The same evidence rule as a button press: the action's own answer is not the proof, the re-probe is -
+        // and the re-probe now carries the control's own value, which is what makes a write verifiable at all.
         var after = Describe(SettledAfterPress(window.Handle), raw: false, out _);
 
+        worked["stateAfter"] = PanelModel.ControlAfter(after, controlId);
         worked["ms"] = (long)Stopwatch.GetElapsedTime(started).TotalMilliseconds;
-        worked["note"] = "The action's own answer is not evidence. The `dialog` field below is a second read of the "
-            + "same window, in the same invocation, and that is what proves it happened.";
+        worked["note"] = "The action's own answer is not evidence. `stateAfter` and the `dialog` field beside it are "
+            + "a second read of the same window, in the same invocation, and that is what proves it happened - for a "
+            + "write, `stateAfter.value` is the text the field really holds now, not the text that was sent.";
 
         return new JsonObject
         {

@@ -969,7 +969,30 @@ Invoke-Check -Name 'the document window carries the Setup lists as elements' -Ar
     if ($rows.Count -lt 1) { return ('the document window reported {0} elements and not one list row, so Dorico''s Setup lists are unreachable' -f $panel.elementCount) }
     if (-not ($rows | Where-Object { $_.action -eq 'select' })) { return 'no list row reports a selection action, so no row could be chosen' }
 
-    Write-Line ('      NOTE  {0} elements, {1} of them list rows' -f $panel.elementCount, $rows.Count)
+    # The row ceiling, measured and reported since this build reads values: a list view realises only the rows around
+    # its viewport, so a read that realised rows has to say so or a short list looks like a complete one.
+    if ($panel.PSObject.Properties.Name -notcontains 'lists') { return 'a read that realised rows carries no `lists` array, so a caller cannot tell a viewport from a list' }
+    if (@($panel.lists).Count -lt 1) { return 'the `lists` array is empty although rows were read' }
+    foreach ($list in $panel.lists) {
+        if ([string]::IsNullOrEmpty("$($list.container)")) { return 'a list entry names no container' }
+        if ($null -eq $list.rows -or $list.rows -lt 1) { return ('list {0} reports {1} rows' -f (Format-Value $list.container), (Format-Value $list.rows)) }
+        if ($null -eq $list.scrollPattern) { return ('list {0} does not say whether it can be scrolled' -f (Format-Value $list.container)) }
+    }
+
+    if ($null -eq $panel.rows -or $panel.rows -lt 1) { return ('rows is {0}, but rows were read' -f (Format-Value $panel.rows)) }
+    if ($null -eq $panel.viewportLimited) { return 'a read that realised rows does not say whether the rows are a viewport' }
+    if ([string]::IsNullOrEmpty("$($panel.rowCeiling)")) { return 'the row ceiling is not spelled out' }
+    if (-not ($rows | Where-Object { -not [string]::IsNullOrEmpty("$($_.container)") })) { return 'no row says which list it came from' }
+
+    # Reading a control's current value: the document window has a text field among its elements, and every element
+    # that has a value pattern must report its value. Measured, the field carries `state: "value"` and the text.
+    $valued = @($panel.elements | Where-Object { $_.PSObject.Properties.Name -contains 'value' })
+    if ($valued.Count -lt 1) { return 'no element reports its current value, so a write cannot be checked against this payload' }
+    if (-not ($valued | Where-Object { "$($_.valueFrom)" -eq 'valuePattern' })) { return 'no element says which pattern its value came from' }
+    if (-not ($valued | Where-Object { $null -ne $_.valueReadOnly })) { return 'no element says whether its value is read-only' }
+
+    Write-Line ('      NOTE  {0} elements, {1} of them list rows; {2} element(s) report a value' -f $panel.elementCount, $rows.Count, $valued.Count)
+    Write-Line ('      NOTE  lists: {0}' -f (($panel.lists | ForEach-Object { '{0} x{1}' -f $_.container, $_.rows }) -join ', '))
     return $true
 }
 

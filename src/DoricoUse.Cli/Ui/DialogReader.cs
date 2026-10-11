@@ -118,7 +118,19 @@ internal static class DialogReader
     /// Visits one element and everything below it, collecting text and buttons. Returns true when the element was
     /// kept because it is a button, so its caller does not release it.
     /// </summary>
-    private static bool Visit(nint element, nint walker, int depth, WalkState state)
+    /// <param name="element">The element to visit.</param>
+    /// <param name="walker">The raw-view walker.</param>
+    /// <param name="depth">How deep this element is.</param>
+    /// <param name="state">What the read has collected so far.</param>
+    /// <param name="container">The nearest ancestor that holds rows, or null.</param>
+    /// <param name="containerScrollable">Whether that ancestor can be scrolled.</param>
+    private static bool Visit(
+        nint element,
+        nint walker,
+        int depth,
+        WalkState state,
+        string? container = null,
+        bool containerScrollable = false)
     {
         state.Nodes++;
 
@@ -164,6 +176,7 @@ internal static class DialogReader
             // Everything else an action could target: an edit field, a check box, a list row, a tab. Kept beside the
             // buttons rather than among them, so a dialog's `buttons` array keeps exactly the meaning it had.
             var elementState = UiaCalls.State(element, controlType);
+            var row = ControlTypes.IsRow(controlType);
 
             state.Elements.Add(new PanelElementInput(
                 ControlType: controlType,
@@ -175,7 +188,10 @@ internal static class DialogReader
                 Expanded: elementState.Expanded,
                 Invokable: elementState.Invokable,
                 Left: bounds.Left,
-                Top: bounds.Top));
+                Top: bounds.Top,
+                ValueReadOnly: elementState.ValueReadOnly,
+                Container: row ? container : null,
+                ContainerScrollable: row && containerScrollable));
 
             state.ElementHandles.Add(element);
             kept = true;
@@ -183,6 +199,17 @@ internal static class DialogReader
             // ...and its children are still walked. Measured on the Open picker: the file-name box is an `Edit`
             // nested inside a `ComboBox`, so a walk that stopped at the combo box would keep the wrapper and never
             // reach the control the value actually goes into.
+        }
+
+        // A dialog's lists are lists too: the 繁衍声部格式 dialog is two of them side by side (measured, 15 and 14
+        // rows of 44), and a row of one is meaningless without knowing which one it came from.
+        var here = container;
+        var scrollable = containerScrollable;
+
+        if (ControlTypes.IsRowContainer(controlType))
+        {
+            here = PanelModel.ContainerName(automationId, name, controlType);
+            scrollable = UiaCalls.HasScroll(element);
         }
 
         if (controlType == ControlTypes.Text)
@@ -210,7 +237,7 @@ internal static class DialogReader
         {
             var next = UiaCalls.NextSibling(walker, child);
 
-            if (!Visit(child, walker, depth + 1, state))
+            if (!Visit(child, walker, depth + 1, state, here, scrollable))
             {
                 UiaCom.Release(child);
             }

@@ -260,31 +260,21 @@ internal static class PanelSurface
             try
             {
                 var described = PanelModel.Describe(read.Elements);
-                var index = IndexOf(described, elementId);
+                var panel = PanelModel.Elements(
+                    window,
+                    presence.DocumentEnabled,
+                    read.Elements,
+                    read.Truncated,
+                    (long)Stopwatch.GetElapsedTime(started).TotalMilliseconds,
+                    error: null,
+                    documentHandle: presence.Document,
+                    dialogHandle: presence.Dialog?.Handle ?? nint.Zero);
 
                 // An element that is gone is a real answer too: it is what a tab that was closed and a panel that
                 // was dismissed look like, and the null says exactly that.
-                JsonNode? state = index < 0
-                    ? null
-                    : new JsonObject
-                    {
-                        ["state"] = described[index].State,
-                        ["value"] = read.Elements[index].Value,
-                        ["toggle"] = read.Elements[index].ToggleState,
-                        ["selected"] = read.Elements[index].Selected,
-                    };
+                var state = PanelModel.StateAfter(described, read.Elements, elementId);
 
-                return (
-                    state,
-                    PanelModel.Elements(
-                        window,
-                        presence.DocumentEnabled,
-                        read.Elements,
-                        read.Truncated,
-                        (long)Stopwatch.GetElapsedTime(started).TotalMilliseconds,
-                        error: null,
-                        documentHandle: presence.Document,
-                        dialogHandle: presence.Dialog?.Handle ?? nint.Zero));
+                return (state, panel);
             }
             finally
             {

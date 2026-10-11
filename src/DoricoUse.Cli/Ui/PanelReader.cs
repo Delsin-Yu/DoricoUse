@@ -86,7 +86,9 @@ internal static class PanelReader
         List<PanelElementInput> elements,
         List<nint> handles,
         ref int visited,
-        ref bool truncated)
+        ref bool truncated,
+        string? container = null,
+        bool containerScrollable = false)
     {
         visited++;
 
@@ -98,24 +100,42 @@ internal static class PanelReader
         }
 
         var controlType = UiaCalls.ControlType(element);
+        var name = UiaCalls.CurrentName(element);
+        var automationId = UiaCalls.AutomationId(element);
         var kept = false;
 
-        if (IsTarget(controlType))
+        // A row container names itself, so every row underneath can say which list it came from - and whether that
+        // list could be scrolled, which is the difference between "the rows that are there" and "the rows that can
+        // be reached".
+        var here = container;
+        var scrollable = containerScrollable;
+
+        if (ControlTypes.IsRowContainer(controlType))
+        {
+            here = PanelModel.ContainerName(automationId, name, controlType);
+            scrollable = UiaCalls.HasScroll(element);
+        }
+
+        if (ControlTypes.IsActionable(controlType))
         {
             var state = UiaCalls.State(element, controlType);
             var bounds = UiaCalls.Bounds(element);
+            var row = ControlTypes.IsRow(controlType);
 
             elements.Add(new PanelElementInput(
                 ControlType: controlType,
-                Name: UiaCalls.CurrentName(element),
-                AutomationId: UiaCalls.AutomationId(element),
+                Name: name,
+                AutomationId: automationId,
                 Value: state.Value,
                 ToggleState: state.Toggle,
                 Selected: state.Selected,
                 Expanded: state.Expanded,
                 Invokable: state.Invokable,
                 Left: bounds.Left,
-                Top: bounds.Top));
+                Top: bounds.Top,
+                ValueReadOnly: state.ValueReadOnly,
+                Container: row ? here : null,
+                ContainerScrollable: row && scrollable));
 
             handles.Add(element);
             kept = true;
@@ -127,7 +147,7 @@ internal static class PanelReader
         {
             var next = UiaCalls.NextSibling(walker, child);
 
-            if (!Visit(child, walker, depth + 1, elements, handles, ref visited, ref truncated))
+            if (!Visit(child, walker, depth + 1, elements, handles, ref visited, ref truncated, here, scrollable))
             {
                 UiaCom.Release(child);
             }
@@ -137,13 +157,6 @@ internal static class PanelReader
 
         return kept;
     }
-
-    /// <summary>
-    /// Whether an element is one an action could target. The rule lives in <see cref="ControlTypes.IsActionable"/>
-    /// so that the check projects can assert it: this build once filtered list rows out by writing
-    /// <c>ListItem</c> as 50029, and a rule inside a Win32 file is a rule nobody can test.
-    /// </summary>
-    private static bool IsTarget(int controlType) => ControlTypes.IsActionable(controlType);
 
     /// <summary>
     /// Releases every element a read kept, when the read is not going to hand them over.
