@@ -2,6 +2,7 @@ using System.CommandLine;
 using System.Text.Json.Nodes;
 using DoricoUse.Cli.Dorico;
 using DoricoUse.Cli.Ipc;
+using DoricoUse.Cli.Ui;
 
 namespace DoricoUse.Cli.Commands;
 
@@ -14,8 +15,153 @@ internal static class ProjectCommands
         project.Subcommands.Add(BuildFlows());
         project.Subcommands.Add(BuildLayouts());
         project.Subcommands.Add(BuildPlayers());
+        project.Subcommands.Add(BuildLayoutDefaults());
         return project;
     }
+
+    /// <summary>
+    /// The 布局选项 dialog's 重置到保存的默认值 button, as one command: the measured route for the engraving
+    /// checklist's part-layout item.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Measured on Dorico 6.2.30: <c>Project.Layout.AllPartOptions</c> raises the layout options dialog with every
+    /// part layout selected and <c>Project.Layout.Options?LayoutIDArray=&lt;id&gt;</c> raises it for one layout; the
+    /// dialog's <c>resetToSavedDefaults</c> (重置到保存的默认值) button restores the layout options of the layouts
+    /// it is open for, and its effect reaches the document at once — a press restored two dirtied part layouts
+    /// before 应用 was pressed, and `file read --layout` found the new values after a save while the full score (not
+    /// in the dialog's selection) kept its own.
+    /// </para>
+    /// <para>
+    /// This command is the two steps together because a caller that has to raise a dialog, discover its panel id,
+    /// find an element id and then press it is walking a discovery sequence the tool exists to remove. What it does
+    /// <b>not</b> do is claim the effect: the payload carries the panel as it is afterwards and a <c>verifyWith</c>
+    /// line, because whether a layout's options really changed is a question for <c>options get</c> or
+    /// <c>file read --layout</c>, not for a button's acknowledgement.
+    /// </para>
+    /// <para>
+    /// The dialog is left open. Its 关闭 and 应用 buttons have no unique automation id in Qt — measured, their
+    /// element ids are derived from their position and moved between two reads of the same dialog once its page
+    /// changed — so this command does not press one on the caller's behalf; the payload names them as they are.
+    /// </para>
+    /// </remarks>
+    private static Command BuildLayoutDefaults()
+    {
+        var partLayouts = new Option<bool>("--part-layouts")
+        {
+            Description = "Open 全部声部布局选项 (Project.Layout.AllPartOptions): every part layout, which is what "
+                + "the engraving checklist's part-layout item needs.",
+        };
+
+        var layout = new Option<int?>("--layout")
+        {
+            Description = "Open 布局选项 for this layout ID alone (Project.Layout.Options?LayoutIDArray=<id>). "
+                + "`project layouts` lists the IDs.",
+        };
+
+        var timeout = CommandRoot.TimeoutOption();
+        var expectScore = CommandRoot.ExpectScoreOption();
+
+        var command = new Command(
+            "layout-defaults",
+            "Restore the layouts' options to the user's saved defaults: the 布局选项 dialog's 重置到保存的默认值 "
+            + "button (resetToSavedDefaults), pressed for the part layouts or for one named layout. Measured: one "
+            + "press restores every layout the dialog is open for and leaves the layouts that are not in it alone, "
+            + "and the effect reaches the document immediately. The dialog is left open; verify with `options get "
+            + "--type layout --layout <id>` or, after a save, `file read --path <file> --layout`.")
+        {
+            partLayouts,
+            layout,
+            timeout,
+            expectScore,
+        };
+
+        command.SetAction(parse => CommandRoot.RunAsync("project layout-defaults", async () =>
+        {
+            var allParts = parse.GetValue(partLayouts);
+            var one = parse.GetValue(layout);
+
+            // Exactly one scope: both given, or neither, is a usage error rather than a guess.
+            if (allParts == (one is not null))
+            {
+                throw new CliException(
+                    "InvalidArgument",
+                    "Pass exactly one of --part-layouts (every part layout) or --layout <id> (one layout). The "
+                    + "dialog's layout selection is what the reset acts on, and there is no measured way to name "
+                    + "more than one layout in the command's own array parameter.",
+                    1);
+            }
+
+            var budget = CommandRoot.Timeout(parse, timeout) * 2;
+            var raiseName = allParts ? "Project.Layout.AllPartOptions" : "Project.Layout.Options";
+            var args = new JsonObject
+            {
+                ["name"] = raiseName,
+                ["waitMs"] = 0,
+                ["verify"] = true,
+            };
+
+            if (!allParts)
+            {
+                args["parameters"] = new JsonObject { ["LayoutIDArray"] = one!.Value };
+            }
+
+            CommandRoot.AddExpectScore(args, parse.GetValue(expectScore));
+
+            // The raise goes through the host, so --expect-score is checked in the same exchange as the command,
+            // exactly as `command send` does it.
+            var raised = await HostClient.CallAsync(HostProtocol.OpCommand, args, budget, CancellationToken.None)
+                .ConfigureAwait(false);
+
+            var ack = NodeRead.Str(NodeRead.Obj(raised, "result"), "ack");
+
+            // A raise whose window has not been drawn yet is not a missing panel: the dialog is a Qt window and its
+            // widgets appear with it, so the wait is bounded and the answer is reported either way.
+            if (!PanelSurface.WaitForPanel(PanelCataloguedLayoutOptions, 10_000))
+            {
+                throw new CliException(
+                    "LayoutOptionsNotUp",
+                    $"{raiseName} answered {(ack is null ? "no acknowledgement" : ack)} and no window of the layout "
+                    + "options dialog was up ten seconds later, so nothing was pressed. `ui panels` lists the "
+                    + "windows Dorico really has; the dialog is the one titled \"<document> - 布局选项\".",
+                    2)
+                {
+                    Details = new JsonObject { ["raised"] = raiseName, ["ack"] = ack },
+                };
+            }
+
+            var worked = PanelSurface.Act(PanelCataloguedLayoutOptions, ResetToSavedDefaultsElement, null, allowUnknownDialog: false);
+            var element = NodeRead.Obj(worked, "worked");
+
+            var result = new JsonObject
+            {
+                ["scope"] = allParts ? "part-layouts" : "layout",
+                ["layout"] = allParts ? null : one!.Value,
+                ["raised"] = new JsonObject { ["name"] = raiseName, ["ack"] = ack },
+                ["panel"] = NodeRead.Arr(worked, "panels") is { Count: > 0 } panels ? panels[0]?.DeepClone() : null,
+                ["pressed"] = element?.DeepClone(),
+                ["what"] = "重置到保存的默认值 (resetToSavedDefaults) restores the layout options of the layouts the "
+                    + "dialog is open for to the defaults saved in the user's library, and its effect reaches the "
+                    + "document immediately — no 应用 press is needed for it. Measured: one press restored two "
+                    + "dirtied part layouts (staff size 9.9 and 7.7 back to 4.96 in the saved file) and left the "
+                    + "full score, which was not in the dialog's selection, at its own value.",
+                ["verifyWith"] = "dorico-use options get --type layout --layout <id> --filter *   (live), or save the "
+                    + "project and read the file: dorico-use file read --path <project.dorico> --limit 0 --layout",
+                ["note"] = "The dialog is left open: its 关闭/应用 buttons are positional ids this build will not press "
+                    + "for you. The panel above names them as they are right now.",
+            };
+
+            return new JsonObject { ["layoutDefaults"] = result };
+        }));
+
+        return command;
+    }
+
+    /// <summary>The panel id of the 布局选项 dialog. Its catalogue entry was written from a live reading.</summary>
+    private const string PanelCataloguedLayoutOptions = "dorico.layout-options";
+
+    /// <summary>The measured reset button, which is the one control in that dialog with a unique automation id.</summary>
+    private const string ResetToSavedDefaultsElement = "resetToSavedDefaults";
 
     /// <summary>
     /// The players of the open project. There is no protocol request for them, so this reads the running document

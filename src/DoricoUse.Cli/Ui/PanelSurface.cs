@@ -100,6 +100,48 @@ internal static class PanelSurface
     }
 
     /// <summary>
+    /// Waits, bounded, for a panel with this id to be up, and says whether it appeared.
+    /// </summary>
+    /// <param name="panelId">The <c>panel.id</c> a caller means to work an element of.</param>
+    /// <param name="timeoutMs">How long to keep looking, in milliseconds.</param>
+    /// <remarks>
+    /// For a command that raises a panel itself and then works an element of it: measured, the layout options
+    /// dialog raised by <c>Project.Layout.AllPartOptions</c> is the <c>Qt6101QWindowIcon</c> window titled
+    /// <c>&lt;document&gt; - 布局选项</c> and its 162 elements are readable within the same second, but a raise that
+    /// has not finished drawing yet would otherwise be reported as a missing panel. The loop is the cheap Win32
+    /// probe, so it costs nothing while it waits.
+    /// </remarks>
+    public static bool WaitForPanel(string panelId, int timeoutMs)
+    {
+        ArgumentNullException.ThrowIfNull(panelId);
+
+        var deadline = Stopwatch.GetTimestamp() + (long)(Math.Max(0, timeoutMs) * (double)Stopwatch.Frequency / 1000);
+
+        while (true)
+        {
+            var presence = DialogProbe.Probe();
+
+            foreach (var window in presence.All ?? [])
+            {
+                var isDocument = presence.Document != nint.Zero && window.Handle == presence.Document;
+                var id = PanelModel.PanelId(window.Title, window.WindowClass, PanelModel.KindUnknown, isDocument);
+
+                if (string.Equals(id, panelId, StringComparison.Ordinal))
+                {
+                    return true;
+                }
+            }
+
+            if (Stopwatch.GetTimestamp() >= deadline)
+            {
+                return false;
+            }
+
+            Thread.Sleep(100);
+        }
+    }
+
+    /// <summary>
     /// Works one element of one panel: chooses a tab, flips a check box, selects a list or tree item, opens an
     /// expander, presses a button, or writes a text field through the value pattern.
     /// </summary>
@@ -268,7 +310,8 @@ internal static class PanelSurface
                     (long)Stopwatch.GetElapsedTime(started).TotalMilliseconds,
                     error: null,
                     documentHandle: presence.Document,
-                    dialogHandle: presence.Dialog?.Handle ?? nint.Zero);
+                    dialogHandle: presence.Dialog?.Handle ?? nint.Zero,
+                    nodesVisited: read.Nodes);
 
                 // An element that is gone is a real answer too: it is what a tab that was closed and a panel that
                 // was dismissed look like, and the null says exactly that.
@@ -296,7 +339,7 @@ internal static class PanelSurface
 
         try
         {
-            var result = PanelReader.Read(window.Handle);
+            var result = PanelReader.Read(window.Handle, every: raw);
             read++;
 
             try
@@ -309,11 +352,21 @@ internal static class PanelSurface
                     (long)Stopwatch.GetElapsedTime(started).TotalMilliseconds,
                     error: null,
                     documentHandle: presence.Document,
-                    dialogHandle: presence.Dialog?.Handle ?? nint.Zero);
+                    dialogHandle: presence.Dialog?.Handle ?? nint.Zero,
+                    nodesVisited: result.Nodes);
 
-                if (raw)
+                if (result.Every is not null)
                 {
-                    payload["visited"] = result.Nodes;
+                    // --raw adds the whole tree the walk saw, every node, kept or not. That is the read which tells
+                    // "this window holds five controls" apart from "UI Automation exposes five controls of this
+                    // window": measured, the library manager's 27 nodes are 13 unnamed CollectionListDelegate
+                    // groups, 2 labels, 4 panes and 2 scroll bars around its 5 elements.
+                    payload["nodes"] = PanelModel.NodePayload(result.Every, out var nodesReturned);
+                    payload["nodesReturned"] = nodesReturned;
+                    payload["nodesNote"] = "Every node the walk visited, not only the elements an action can "
+                        + "target: `kept` says which is which. The values of these nodes were not read — this is the "
+                        + "shape of the tree, and a node with no name and no value is exactly what a Qt/QML window "
+                        + "gives a reader that expects a list row.";
                 }
 
                 return payload;
