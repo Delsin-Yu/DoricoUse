@@ -92,6 +92,16 @@ The captions and labels in the catalogue are the maintainer's Chinese UI. A dial
 `ui panels` reports every window Dorico has up besides its document window, and `ui panels --panel <id>` reads the
 elements of one of them. The rules are the same shape as the dialog surface's, with two additions.
 
+**An element's value is part of its state, and `--allow-destructive` has nothing to say about it.** Every element
+that has a value pattern reports `value`, `valueFrom` and `valueReadOnly`, and a press on one reports
+`worked.stateAfter` — the same element, read again in the same invocation. A write is therefore checked with the
+payload that reports it, and there is no flag in that path on purpose: `--allow-destructive` is a rule about
+**buttons** (the one control whose purpose is to commit something, and the catalogue is what makes "safe" mean
+anything), while a check box, a list row, a tab and a text field are worked through their own patterns and the guard
+is the dialog they live in — `--allow-unknown-dialog` for a window nobody measured. A value write has no catalogue
+entry to consult, so a flag asking "is this write safe?" would have no answer to give; where the line is drawn is
+"a button may be refused, a control may be worked", and the README says so in one sentence.
+
 **A panel is a window, not a dialog, and the difference is measured, not assumed.** A window that is up while the
 *document window is disabled* is holding Dorico's command queue; a window that is up while the document window is
 enabled is not. That is the whole of `blocksQueue`, and it is a hint: `execution` on a command's payload stays the
@@ -121,7 +131,21 @@ design.** `ListItem` was written as `50029` in the Windows half for a whole rele
 `ControlType.ListItem` is `50007`. Every row of Dorico's Setup lists and of the 繁衍声部格式 dialog was therefore
 filtered out of every read while the reader walked straight past it, which is exactly the kind of mistake a rule
 kept in a Win32 file cannot be tested for. The table, `IsActionable`, `Name` and `Role` are all there now, and
-`VocabularyCheck` asserts the numbers and the actionable set.
+`VocabularyCheck` asserts the numbers and the actionable set. `IsRow` and `IsRowContainer` joined them for the same
+reason: the row ceiling is decided from those two rules, and a rule that decides what a payload *claims* is not a
+rule to keep in a file the checks cannot compile.
+
+**An element reports its value, and a press reports what it left behind.** `PanelModel.Describe` fills `value`,
+`valueFrom` and `valueReadOnly` from the value pattern, and `PanelModel.StateAfter` / `ControlAfter` turn a fresh
+read into the `stateAfter` a press owes. Both are pure and both are checked, because the alternative — a payload that
+reports `state: "value"` and the string that was sent — is a write no caller can verify. `Ui/UiaCalls.State` returns
+the read-only flag beside the text for that reason; it used to throw the flag away.
+
+**A read that realised rows must say that it is a viewport.** `PanelModel.Lists` counts the rows per container,
+`PanelElementInput.Container` carries which list a row came from, and `PanelModel.RowCeiling` is the measured sentence
+the payload adds. Do not add paging to this layer without a measurement that a list view exposes the scroll pattern;
+the four lists read so far do not, on themselves, on any ancestor, or on a row — see the row-ceiling section of the
+README for the counts and for the range-value experiment on the only scrollbars that exist.
 
 **The document window is a panel with a constant id.** `dorico.document-window` is not in `PanelCatalogue`, because
 that table matches on a caption glob and the document window's caption is the document's name (plus a `*` once it is
@@ -147,9 +171,9 @@ what you changed, so a save "to verify something" can commit somebody else's arr
 `Project.ImportLibrary` when you need a picker up, work on a copy when you need to save, and never save a document
 you did not open for the purpose.
 
-## Two protocol facts that cost a crash and a morning
+## Three protocol facts that cost a crash and a morning
 
-Both were measured while building this layer, and neither is guessable from the catalogue:
+All were measured while building this layer, and none is guessable from the catalogue:
 
 - **`Project.Player.SetAsSoloist?PlayerID=` without its optional `Set` parameter crashes Dorico 6.2.30.** The log's
   last line is the `Executing command: Project.Player.SetAsSoloist?PlayerID=34` line with no
@@ -157,9 +181,18 @@ Both were measured while building this layer, and neither is guessable from the 
   not optional in practice. The same command *with* `Set=true` works, and it renames the player it converts: measured
   on a 34-player project, player 34 (Violin II) went from `baseName "Violin II", isSoloist false` to
   `baseName "Solo Violin", isSoloist true` in the saved file.
+- **Raising a rename dialog that is already up crashes Dorico 6.2.30.** Measured: `Project.PlayerRenameShowDialog`
+  with no parameter raised 重命名演奏者 and worked; the next invocation,
+  `Project.PlayerRenameShowDialog?PlayerID=0`, executed while that dialog was still on screen and the process died —
+  the log's last line is that command's `Executing` line with no `notifyPostCommandExecute` after it,
+  `%LOCALAPPDATA%\CrashDumps\Dorico6.exe.<pid>.dmp` was written, and the next start showed Dorico's own crash
+  reporter. So a `*ShowDialog` command is one raise at a time; answer or cancel the dialog before sending another.
 - **`Project.Layout.Rename?LayoutID=&Name=` is refused outright** — `kError kCommandNotAllowed`, with no `Posting`
   line in the log, in Write mode and in Setup mode, for the full score and for a part layout, with a `Name` and
-  without one. A layout's name cannot be set through the API; `Project.Layouts.Renumber` answers `kOK` and runs.
+  without one. A layout's name cannot be set through the API; `Project.Layouts.Renumber` answers `kOK` and runs. The
+  same shape was measured for `Project.PlayerGroup.Rename`, whose two **required** parameters (a real `PlayerGroupID`
+  and a `Name`) make no difference, and for `Project.PlayerGroupRenameShowDialog`, which either refuses or raises no
+  window at all.
 
 ## The test corpus
 
@@ -209,6 +242,12 @@ a copy **and rebinds the open document to it**, so use a scratch project for tha
 ran and passed, `1` at least one failed, `2` nothing failed but something could not run (Dorico closed, or no
 document open) — a `not run` line is never success, which is what keeps a green run from being faked.
 
+For a value read, the by-hand check is one round trip on any measured dialog: read it with `ui dialog`, pick a field
+whose `value` you can see, write something into it with `ui press --dialog <id> --element <id> --value <text>`, and
+confirm the payload's `worked.stateAfter.value` is what the field now shows — then answer the dialog with 取消 unless
+you meant the change. The picker's file-type box is the cheapest one of all: raise `Project.ImportLibrary` and read
+`ui dialog`'s `controls` for the id `1136`, which reports the filter the picker is really applying.
+
 ## Adding a feature
 
 - **Protocol work starts in `application.log`** (`%APPDATA%\Steinberg\Dorico 6`): do the thing in Dorico's UI and
@@ -241,6 +280,12 @@ Contributions welcome, in rough order of value:
 4. **The scripting channel as a shipped command.** `session read` uses it internally (see `LiveRead`), and
    `docs/scripting.md` §8 shows what else a script can reach, but there is no supported command that runs a user's
    own Lua. That is deliberate for now: probing that layer blind has crashed Dorico here.
+5. **A list view's unrealised rows.** The ceiling is measured and reported (`lists`, `rows`, `viewportLimited`,
+   `rowCeiling`) but not removed: no list, ancestor or row this build has read exposes the scroll pattern, so a row
+   outside the viewport can be neither read nor chosen. Two routes remain unmeasured, and either would need a
+   measurement before it could be promised — a Qt delegate that exposes a value pattern on the row itself (a list
+   row *does* expose one; nothing has shown that writing there edits the row), and the scripting layer, which
+   enumerates every player and layout but does not act on the Setup trees.
 
 ## Releasing
 

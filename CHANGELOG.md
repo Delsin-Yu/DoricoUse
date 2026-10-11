@@ -231,6 +231,67 @@ Control API — see `README.md`.
   title, not the Setup layout list (no row selected). The closest thing is `status.condensingEnabled`, which mirrors
   the current layout's own `enableCondensing` and identifies it only against a layout that differs.
 
+### Reading a value, reaching rows, and the two open questions closed (round 3)
+
+The three needs the second engraving run left, each measured before it was implemented, plus the two questions the
+earlier rounds left open.
+
+### Added
+- **Every element reports its current value.** `ui panels` and `ui dialog` elements carry `value`,
+  `valueFrom` (`valuePattern`) and `valueReadOnly` when the element has a value pattern, and a button, a check box or
+  a list row carries none of them. Measured: the Open picker's file-name box (`edit-1148`) read `""` and then the
+  written path back, the 重命名演奏者 dialog's `shortNameLineEdit` read `Picc.` and then `Probe.`, and the file-type
+  box read `Any Readable File (*.doricolib)` — which is the answer to the question the earlier round could not
+  settle, and the reason `Project.ImportLibrary` imported nothing from a `.dorico` file.
+- **A write is now verified in the payload it was made in.** `ui press --dialog … --element … --value …` reports
+  `worked.stateAfter.value`: the same element, read again in the same invocation, carrying the text the field really
+  holds. It used to report the string that was sent and nothing else, so no caller could check a write.
+- **The row ceiling is stated where a caller cannot miss it.** A panel read that realised rows now carries
+  `lists` (each row container with how many rows it gave and whether it exposes a scroll pattern), `rows`,
+  `viewportLimited` and `rowCeiling`, and every row carries the `container` it came from — which matters most in a
+  dialog with two lists side by side.
+- **`file read` reports `staveOverride` per note**: the note event's own `logicalStaveIDOverride`, null when the
+  file states none. Measured on a copy of the fixture: `Edit.SelectAll` in Write mode sets `status.hasSelection`,
+  `Edit.CrossStaffBelow` wrote `1` on the two notes of the upper stave, `Edit.CrossStaffAbove` wrote `0` on all
+  three, and `Edit.CrossStaffReset` took them back to null, with the events' own stave/voice/stream untouched.
+- **28 more checks in `VocabularyCheck`** over the two rules the round added — the value shaping (present for a
+  field, absent for a button and for a row, read-only carried) and the row ceiling (per-container counts, the
+  `viewportLimited` flag, the ceiling sentence, the container name) — and one more in `ProjectFileCheck` for the
+  fixture's `staveOverride`.
+
+### Changed
+- **`ui press` on a dialog's control reports `stateAfter`, exactly as a panel element's press does**, so one payload
+  answers "what does it hold now" wherever the element lives.
+- `Ui/UiaCalls.State` now asks the value pattern for read-only as well as for the text, and `Ui/ControlTypes` gained
+  `IsRow`/`IsRowContainer` plus the `DataGrid`/`Table` numbers, so the container rule is a tested rule rather than a
+  Win32-file guess.
+
+### Documented, not fixed
+- **A group's name and abbreviation stay manual, and now that is measured rather than suspected.** With a group row
+  selected in the Setup player list, `Project.PlayerGroupRenameShowDialog` (no parameter) runs and raises **no**
+  window at all; with `PlayerGroupID=-1`, `0`, `1` or `2` — one of them the id `file read` reports for a group the
+  tool itself created — it is refused outright (`kError`, no `Posting` line). The player route works, by contrast:
+  with a player row selected, `Project.PlayerRenameShowDialog` (no parameter) raises 重命名演奏者 with both fields
+  prefilled, which is what proves a UI Automation row selection really is Dorico's own selection. `file read`'s
+  `score.playerGroups` remains the only read for a group's name and short name.
+- **Two document windows make `document: true` name the wrong one.** The probe resolves the document window as the
+  largest unowned visible window of Dorico's process, which was measured correct for one document and is wrong for
+  two: with a second document open and active (the scratch copy this round used), the payload flagged the
+  *inactive*, larger window as `document: true` and gave the active one an `unknown.<hash>` id. Both windows are
+  readable and both are reachable by id — `ui press --panel unknown.<hash>` works on the one that is not flagged —
+  but a caller that trusts `document: true` acts on the wrong document's Setup lists. Not fixed here: the rule needs
+  its own measurement (which window Dorico really has active) rather than another guess.
+- **`Project.PlayerRenameShowDialog?PlayerID=` while the rename dialog is already up crashes Dorico 6.2.30.** The
+  log's last line is `Executing command: Project.PlayerRenameShowDialog?PlayerID=0` with no
+  `notifyPostCommandExecute` after it, `Dorico6.exe.<pid>.dmp` was written, and Dorico's own crash reporter offered
+  发送到 Steinberg / 不发送 on the next start — the same shape as the `Project.Player.SetAsSoloist` crash the
+  README already carries. The first raise (no parameter, with a selected player row) is fine and was used
+  repeatedly; it is the second one, with an explicit id, that killed the process.
+- **Dorico's automatic-recovery dialog (`自动保存工程恢复`) deletes what is not recovered.** Its own text says so
+  ("任何列表中未被选定恢复的自动保存工程将被删除"), it lists the autosaves in a table with `放弃全部` and
+  `恢复选定工程` and **no cancel**, and it is not in the catalogue, so both `--allow-unknown-dialog` and
+  `--allow-destructive` are needed to answer it. See the README for what that means before answering one.
+
 ## [0.1.0] - 2026-10-11
 
 The first release: a stateless JSON CLI that lets an agent or a script steer a running Dorico, and a from-scratch

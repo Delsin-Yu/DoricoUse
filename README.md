@@ -105,8 +105,8 @@ surface. See `CONTRIBUTING.md`.
 | `export musicxml [--path <watch dir>] [--wait-ms n]` | Export MusicXML. **Needs a button pressed in Dorico's export dialog** — `ui press` does it, and the payload names the button (see below). |
 | `export text --path <file.csv>` | Export project text/comments as CSV. Fully unattended. |
 | `ui dialog [--raw]` | The modal dialog Dorico has up, verbatim: its title, its body text and every button with a stable id. `dialog` is null when nothing is modal. Windows only. |
-| `ui panels [--panel <id>] [--raw]` | Every window Dorico has up besides its document window, and — when `--panel` names one — every element an action could target, with its role, its state and the pattern an action would use. Windows only. See [Modeless panels](#modeless-panels). |
-| `ui press --dialog <id> --button <id> \| --panel <id> --element <id> [--value <t>] [--allow-destructive] [--allow-unknown-dialog] [--path <p>] [--timeout-ms n]` | Work one element: press a button of the dialog that is up, or toggle a check box, choose a tab, select a list or tree item, expand, or write a text field. The payload says what is up afterwards. Windows only. See [Modal dialogs](#modal-dialogs) and [Modeless panels](#modeless-panels). |
+| `ui panels [--panel <id>] [--raw]` | Every window Dorico has up besides its document window, and — when `--panel` names one — every element an action could target, with its role, **its current value**, its state, the container it came from and the pattern an action would use. A read that realised list rows also reports the row ceiling: see [Modeless panels](#modeless-panels). Windows only. |
+| `ui press --dialog <id> --button <id> \| --panel <id> --element <id> [--value <t>] [--allow-destructive] [--allow-unknown-dialog] [--path <p>] [--timeout-ms n]` | Work one element: press a button of the dialog that is up, or toggle a check box, choose a tab, select a list or tree item, expand, or write a text field. The payload says what is up afterwards **and what the element holds now** (`worked.stateAfter`), which is how a write is verified. Windows only. See [Modal dialogs](#modal-dialogs) and [Modeless panels](#modeless-panels). |
 | `version` | This build: assembly version, whether it is Native AOT, where its state lives, and the protocol constants. It starts no host and needs no Dorico. |
 
 There is deliberately **no** command that sends an arbitrary protocol message. One existed during development, and
@@ -212,6 +212,22 @@ dorico-use ui press --dialog dorico.export-musicxml --button accept     # or --b
   dialog; `--allow-destructive` allows one this build does not call safe (discard, overwrite). Every button of an
   unknown dialog is unsafe — cancel included, because "cancel is harmless" is a claim about a specific dialog — so
   an unknown dialog needs **both** flags, and the payload then carries a `warning`.
+- **`--allow-destructive` is a rule about buttons, and only buttons.** It answers "may I press the one control whose
+  whole purpose is to commit something", and the catalogue is what makes the answer safe to give. An element worked
+  through `--element` — a check box, a list row, a tab, a text field, a combo — is asked for a different reason and
+  gets a different guard: the guard is the **element's own patterns**, not a safety flag. Toggling a check box
+  flips a setting in a dialog the caller already opened and can see; selecting a row changes a selection; writing a
+  text field puts text where the caller said. None of them commits anything by itself, and all of them stay inside a
+  dialog nobody has answered yet — measured on the 重命名演奏者 dialog, where `Probe.` was written into
+  `shortNameLineEdit` and 取消 then closed the dialog with 确定 never pressed: the text was in the field, and the
+  field is where the payload read it. What a document holds afterwards is `file read`'s answer, not this flag's.
+  And the flag would be *unusable* there: a value write has no catalogue entry to consult, so a flag asking "is this
+  safe?" would have no answer to give, and a flag that is always passed is not a guard.
+
+  What still needs the flags is the dialog itself: `--allow-unknown-dialog` for a window that is not in the
+  catalogue, and `--allow-destructive` for an element that would press a button — which is exactly the case this
+  build refuses to guess about. Where the line is drawn, in one sentence: **a button may be refused; a control may
+  be worked.**
 - **There is no third way to press a button.** Invoke, then toggle, then the legacy accessibility default action;
   an element with none of the three is refused with `ButtonNotInvokable`. This build never posts a mouse event and
   never clicks a coordinate.
@@ -283,10 +299,30 @@ So **every payload carries `panels` beside `dialog`**, and the two never mix:
   or tree item, expand or collapse for an expander, invoke for a button, and the value pattern for a text field,
   which needs `--value <text>`. An element with none of those is refused with `ElementNotActionable`, and this build
   never posts a mouse event and never types at a coordinate.
+- **Every element that has a value reports it.** A field, a combo box or anything else a value pattern answers for
+  carries `value`, `valueFrom` (`valuePattern`) and `valueReadOnly`, and a button, a check box or a list row carries
+  none of the three — the key's presence is the fact that a value pattern answered, so `value: ""` is a field that is
+  really empty and not a missing answer. Measured on the Open picker: the file-name box (`edit-1148`) read `""` and
+  then the whole path that was written into it, and the file-type box read `Any Readable File (*.doricolib)`.
+
+  ```json
+  {"elements":[{"id":"edit-1148","role":"edit","name":"文件名(N):","index":70,"state":"value","action":"value",
+                "value":"C:/scores/example.doricolib","valueFrom":"valuePattern","valueReadOnly":false},
+               {"id":"button-4","role":"button","name":"关闭","index":80,"state":null,"action":"invoke"}],
+   "elementCount":2,"returned":2,"truncated":false}
+  ```
+
+  This is the read a write is checked with, and it is why a *dialog* press reports `worked.stateAfter` beside the
+  string it sent: **a write that cannot be read back cannot be verified**, and until this round a payload could only
+  say `state: "value"` — that a field holds *something*, never what.
+- **A read that realised list rows says so, and says it is a viewport.** See
+  [the row ceiling](#the-row-ceiling-a-viewport-is-not-a-list) below: it is the one capability this round measured as
+  impossible, so the payload states it instead of leaving a short list looking complete.
 - **The evidence is the second read.** A press that destroys its own window reported an error after it had worked,
   measured on this panel's 关闭 button, so `worked.stateAfter` is a fresh read of the same element in the same
   invocation and the `panels` array beside it is the same fresh read of the whole window. Measured:
-  `stateBefore: "off"`, `stateAfter: {"toggle":"on"}` on the 工程 check box.
+  `stateBefore: "off"`, `stateAfter: {"toggle":"on"}` on the 工程 check box — and on a text field, `stateAfter.value`
+  is the text the field really holds after the write, so the same field verifies a write and a check box's flip.
 - **A panel nobody measured is still reported in full**, with an `unknown.<hash>` id, and working one of its
   elements needs `--allow-unknown-dialog`: `PanelNotFound`, `ElementNotFound`, `ElementNotActionable`,
   `ElementNotSettable` and `ValueRequired` are the codes, all exit 1 like every other refusal.
@@ -310,11 +346,54 @@ dorico-use ui press --panel dorico.document-window --element listItem-39
 #   worked.element "listItem-39", name "Flute 1", action "select", stateBefore null, stateAfter {"state":"selected"}
 ```
 
-Two limits are measured and worth knowing before relying on it. A list view realises only the rows around its
-viewport — 30 of that project's 49 player rows and 28 of its 45 layout rows, the same count minimized and restored —
-and it exposes **no scroll pattern**, so this build cannot bring the rest into the tree. And a row's id is derived
-from the rows that were realised (the automation id of a row is the list view's own path, so the fallback rules
-apply), so read a panel and act on it **in the same invocation**, the way the rest of this tool is meant to be used.
+##### The row ceiling: a viewport is not a list
+
+A list view realises only the rows around its viewport, and this build cannot reach the rest. That is measured, in
+full:
+
+| List | Rows realised | Rows the document has |
+|---|---|---|
+| Setup players | 30 | 49 |
+| Setup layouts | 28 | 45 |
+| 繁衍声部格式 dialog, source | 15 | 44 |
+| 繁衍声部格式 dialog, destination | 14 | 44 |
+
+* The counts do not change when the window is minimized or restored.
+* **No `ScrollPattern`** on the list view, on any of its ancestors (the whole chain was walked) or on any other
+  element of the dialog; **no `ScrollItemPattern`** on a row. So there is no pattern to page with.
+* The only two scrollbars in the document window belong to the **score canvas**
+  (`scoreCanvasViewportScrollArea.qt_scrollarea_h/vcontainer.QScrollBar`) and carry a range value, not a scroll
+  pattern. Driving the vertical one — `SetValue` 1212 → 0 → 1212 of 1574 — left the player and layout rows at 30
+  and 28.
+
+So the payload says what it saw rather than what it hopes: a read that realised rows carries
+
+```json
+{"rows": 59, "viewportLimited": true,
+ "lists": [{"container":"playersListView","rows":30,"scrollPattern":false},
+           {"container":"layoutsListView","rows":28,"scrollPattern":false}],
+ "rowCeiling": "The rows with a `container` are the rows that list view has realised, which is the viewport and not the list. …"}
+```
+
+and every row carries the `container` it came from — which is what keeps two lists apart when a dialog shows two,
+and what makes "select all" in that dialog a claim about the rows that are realised, never about every layout. The
+read that sees all of it is `project players`, `project layouts` and `file read`: the scripting layer enumerates
+players and layouts in full, so a decision that needs every one of them is made there, and a row outside the
+viewport can neither be read nor chosen.
+
+A row's id is derived from the rows that were realised (the automation id of a row is the list view's own path, so
+the fallback rules apply), so read a panel and act on it **in the same invocation**, the way the rest of this tool is
+meant to be used.
+
+##### When Dorico has two documents open
+
+`dorico.document-window` is resolved as the largest unowned visible window of Dorico's process. Measured with one
+document open that is the document window; **measured with two, it is the wrong one**: with a scratch copy open and
+active beside the maintainer's original, the payload flagged the larger, *inactive* window as `document: true` and
+gave the active document's window an `unknown.<hash>` id. Both windows are readable and both are reachable —
+`ui panels --panel unknown.<hash>` and `ui press --panel unknown.<hash> --element …` work on the one that is not
+flagged, and acting on it needs `--allow-unknown-dialog` — but a caller that trusts `document: true` reads the wrong
+document's Setup lists. Not fixed: the rule that would replace it needs its own measurement.
 
 #### Edit fields and list rows in a dialog
 
@@ -328,9 +407,27 @@ dorico-use ui press --dialog unknown.1e4222903d39 --element fullNameLineEdit --v
 ```
 
 Measured on the 重命名演奏者 dialog: `fullNameLineEdit` reads `Piccolo` and `shortNameLineEdit` reads `Picc.`, both
-with a value pattern that is not read-only. That dialog's fields were always *visible* in `ui dialog --raw`; what was
-missing was an id and an action, and `--raw` still publishes the whole walked tree under `elements` — the new array
-is `controls` precisely because a field is never repurposed.
+with a value pattern that is not read-only, and both carry their text as `value` in `controls`:
+
+```json
+{"controls":[{"id":"fullNameLineEdit","role":"edit","name":"全名：","state":"value","action":"value",
+              "value":"Piccolo","valueFrom":"valuePattern","valueReadOnly":false},
+             {"id":"shortNameLineEdit","role":"edit","name":"短名：","state":"value","action":"value",
+              "value":"Picc.","valueFrom":"valuePattern","valueReadOnly":false}]}
+```
+
+That dialog's fields were always *visible* in `ui dialog --raw`; what was missing was an id and an action, and
+`--raw` still publishes the whole walked tree under `elements` — the new array is `controls` precisely because a
+field is never repurposed.
+
+**A write is verified by the same payload that reports it**, and that is the one thing a field needed:
+
+```bash
+dorico-use ui press --dialog unknown.1e4222903d39 --element shortNameLineEdit --value "Probe."
+#   worked.action "value", worked.value "Probe."  (the string that was sent)
+#   worked.stateAfter {"state":"value","value":"Probe.","valueReadOnly":false,"role":"edit","name":"短名："}
+#   the second read is the evidence; the first is only what was asked for
+```
 
 #### A file picker, and the library import it is for
 
@@ -352,6 +449,21 @@ button with the classic control id `1`, cancel is `2`, the file-name box is an `
 file filter is `1136` and the address bar is `1001`. The name box, the file filter and the search box all take a
 value through the UI Automation value pattern — measured, the box read the written path back verbatim — so **a file
 picker can be driven without a mouse and without typing**, which is what checklist items 2 and 11 needed.
+
+**The picker filters to `*.doricolib`, and that is now a measurement rather than a suspicion.** The file-type box
+carries a value pattern like any other field, so it can simply be read:
+
+```bash
+dorico-use ui dialog
+#   controls: {"id":"1136","role":"comboBox","name":"文件类型(T):","state":"value","action":"value",
+#              "value":"Any Readable File (*.doricolib)","valueFrom":"valuePattern","valueReadOnly":false}
+```
+
+So `Project.ImportLibrary` will only ever accept a Dorico **library** file. That is what the earlier round could not
+settle — it wrote a project path into the name box, accepted, and Dorico reported no error while the library came
+back byte-identical — and it is the reason the answer is "export a `.doricolib` from the reference project in
+Dorico's library manager" rather than "point the picker at a `.dorico` file". The tool does not invent the library:
+the source file is the caller's to produce.
 
 Note what accepting means: `accept` is `safe: false` and refuses without `--allow-destructive`, because accepting an
 import changes the open document. Cancelling needs no flag. The command itself does not return until the picker is
@@ -531,7 +643,7 @@ dorico-use file read --path <same> --limit 0 --tree DynamicGroupEventDefinition 
 {"ok":true,"command":"file read","file":{"kind":"Dorico project (ZIP package)","bytes":2458207},
  "metadata":{"title":"Bad Apple!! (JAGMO Cover.)","composer":"ZUN","players":[…36…]},
  "score":{"counts":{"notes":16002,"measures":185,"players":36,"layouts":37,"stavesWithNotes":39},
-          "notes":[{"measure":1,"beat":"1","duration":"8","pitch":"D3","midi":50,"player":"Bassoon 1","stave":7,"voice":1}]},
+          "notes":[{"measure":1,"beat":"1","duration":"8","pitch":"D3","midi":50,"player":"Bassoon 1","stave":7,"staveOverride":null,"voice":1}]},
  "tree":{"kind":"census","nodes":140465,"leaves":440361,"names":[{"name":"xOffset","kind":"leaf","count":28346}]}}
 ```
 
@@ -548,9 +660,13 @@ key. A name dumps each occurrence with its root path and fields, and a miss retu
 Every `file read` payload also carries **`score.playerGroups`**, the score's own groups: each one's `name`, its
 `shortName` (the abbreviation a staff label prints), its file `id` and the player ids in it. Measured on a 34-player
 project: Woodwinds/Ww., Brass/Br., Percussion/Perc., Strings/Str. and Band/Bnd. That is the read the engraving
-checklist's group item needs, and it is the only one there is — `Project.PlayerGroup.Rename?PlayerGroupID=&Name=` is
-refused outright by Dorico 6.2.30 (`kError kCommandNotAllowed`, and no `Posting` line in its log), so a group's name
-and abbreviation cannot be set through the API at all; `file read` is what verifies them.
+checklist's group item needs, and it is the only one there is. Measured again, harder: `Project.PlayerGroup.Rename`
+**is refused outright** (`kError kCommandNotAllowed`, and no `Posting` line in its log) even with both of its
+required parameters — `PlayerGroupID` set to the id `file read` reports for a group the tool itself created — and
+`Project.PlayerGroupRenameShowDialog` either refuses the same way (with a `PlayerGroupID`) or runs and raises **no
+window at all** (with the group row selected in the Setup player list). The player route, by contrast, works: with a
+player row selected, `Project.PlayerRenameShowDialog` with no parameter raises 重命名演奏者 with both fields
+prefilled. So a group's name and abbreviation stay manual, and `file read` is what verifies them.
 
 **`score.players[].soloPlayer`** is the other half of a player's identity, and the one a Sibelius import gets wrong:
 each player carries the file's own `soloPlayer` leaf (read raw) beside **`playerType`**, this build's name for its two
@@ -594,9 +710,19 @@ not list.
 **Ties and beams are not events.** A tie chain is one note event with the sounding duration. The beaming a score is
 printed with is computed at layout time. No corpus file has both beam properties and an export.
 
-**A click in the window is the only way to address a point**. Anything about where music sits on a page (frame
-geometry → measure mapping) is therefore not derivable here. Casting off is a layout computation, and the file's
-own cache of it is empty.
+**Cross-staff notation is stored, and it is now a field: a note's `staveOverride`.** It is the note event's own
+`logicalStaveIDOverride`, null when the file states none (the leaf is `-1`). Measured on a copy of the corpus fixture,
+whose Piano part has two staves: every note read null; `Edit.SelectAll` in Write mode sets `status.hasSelection`
+(**so a note selection needs no mouse**), `Edit.CrossStaffBelow` then wrote `1` on the two notes that were on the
+upper stave and left the one on the lower stave alone, `Edit.CrossStaffAbove` wrote `0` on all three, and
+`Edit.CrossStaffReset` took all three back to null — while each event's own `stave`, `voice` and `stream` stayed
+exactly as they were. Reading `0` and `1` as the logical stave id (0-based) is an inference from those three commands
+on one two-stave instrument, and the payload's caveat says so. Checklist item 12 is therefore a CLI item:
+`Edit.SelectAll` → `Edit.CrossStaffBelow|Above|Reset` → save → `file read`, and `staveOverride` is the answer.
+
+**A click in the window is the only way to address a point**, for everything else. Anything about where music sits on
+a page (frame geometry → measure mapping) is therefore not derivable here. Casting off is a layout computation, and
+the file's own cache of it is empty.
 
 **Lyrics are read, and that reading was checked against a score that has them.** The non-empty path was written
 from the *binary's* vocabulary (`LyricElementDefinition`, `LyricEventDefinition`, `elementID`, `text`,
@@ -865,6 +991,9 @@ code lives under `Ui/` in files this project does not compile.
 | How do I revoke this client? | Delete `%LOCALAPPDATA%\dorico-use\` and remove the client in Dorico if it is listed there. The session token Dorico granted this client sits in `session.json` there, in plain text. The `host stop` command does not remove it, but deleting the folder does. |
 | I only wanted to check something, and Dorico now says the document is unsaved | **`File.Save` writes whatever is unsaved, not just what you changed**, so a save "to verify something" can commit somebody else's arrangement. Observed on a 44-player project: the project file as imported had its 45 layouts and its player table in numeric-id order, and the file after a save had them in the document's own voice order, with every player and layout record otherwise identical field for field and no move command anywhere in `application.log` from Dorico's start. **Not established:** which command put the order there — `Project.Layouts.Renumber` was run in that session and is one candidate, "the save simply writes the document's order" is the other. The consequence is what matters: treat `File.Save` as a real edit, never as a probe. `--expect-score` and a throwaway copy are the way to be sure; a command that only reads (`session status`, `session read`, `project layouts`, `file read`) saves nothing. |
 | A command I ran left the document marked unsaved without changing it | Measured: raising `File.Import.OtherProjectFlow` and cancelling its file picker re-activated the document (`Activating document: 2` in `application.log`) and set the unsaved marker, with no score command sent and nothing changed in the music. Use `Project.ImportLibrary` if you need a picker up. There is no way to clear the marker without saving, and this tool will not save a document it did not open for the purpose. |
+| Dorico vanished while I was working a dialog | Measured: `Project.PlayerRenameShowDialog?PlayerID=<n>` **while the rename dialog is already up** kills Dorico 6.2.30. The log's last line is that command's `Executing` line with no `notifyPostCommandExecute` after it, `%LOCALAPPDATA%\CrashDumps\Dorico6.exe.<pid>.dmp` appears, and the next start shows Dorico's own crash reporter (`向 Steinberg 发送崩溃报告`, catalogued as `dorico.crash-report`; 不发送 is the safe button). One raise of that command at a time — and the same shape as the `Project.Player.SetAsSoloist` crash above: a second call into a dialog that is already open. |
+| Dorico offered to recover autosaves after that | Its `自动保存工程恢复` dialog lists the autosaves and says in its own text that **any autosave not selected for recovery will be deleted**. It has 放弃全部 and 恢复选定工程 and **no cancel**, so answering it is a decision, not a dismissal. It is not in the catalogue: it takes both `--allow-unknown-dialog` and `--allow-destructive`, and both of its buttons are `safe: false` for that reason. Nothing here picks for you — but read the list before you press, and prefer recovering what you may need over discarding it. |
+| `ui panels` named a window as the document that is not the active document | With two documents open, `dorico.document-window` resolves to the largest unowned window, which was measured to be the **inactive** one. The active document's window is reported with an `unknown.<hash>` id instead and is reachable with `ui press --panel <that id> --allow-unknown-dialog`. See [When Dorico has two documents open](#when-dorico-has-two-documents-open). |
 
 ## Roadmap
 
@@ -904,10 +1033,19 @@ code lives under `Ui/` in files this project does not compile.
    refused, which is safe but not useful.
 
 12. **Next**: a list view's unrealised rows. Dorico's Setup lists expose only the rows around their viewport (30 of
-   49, 28 of 45 measured) and carry no scroll pattern, so this build can read and choose what is shown and no more.
-   The scripting layer can enumerate a project's players and layouts in full, which is why `project players` and
+   49, 28 of 45 measured, and 15 and 14 of the 44 in the 繁衍声部格式 dialog's two lists) and carry no scroll
+   pattern on the list, on any ancestor or on a row, so this build can read and choose what is shown and no more.
+   The payload now says so for every read that realised rows (`lists`, `rows`, `viewportLimited`, `rowCeiling`), and
+   the scripting layer can enumerate a project's players and layouts in full, which is why `project players` and
    `file read` exist; acting on a row that is not realised would need the list to scroll, and nothing measured so
    far scrolls a Qt list from UI Automation.
+
+13. **Next**: the row-ceiling work a later round could still do. The ceiling is reported now, not removed. The two
+   routes not measured to the end are (i) an in-place edit of a list row, which a Qt delegate might expose as a value
+   pattern on the row itself — measured, a Qt list row does expose a value pattern, but this build does not ask it
+   for one, and nothing has shown that writing there edits the row — and (ii) the scripting layer, which reaches
+   every player and layout but acts on none of the Setup trees. Both would need a measurement on a real list before
+   this build could promise anything.
 
 Two things are tested and settled, so they are no longer "next". The **unpublished commands** are blocked on the
 remote channel and usable from inside. Over the API, `File.New` answers `kError` with no log entry, and it
