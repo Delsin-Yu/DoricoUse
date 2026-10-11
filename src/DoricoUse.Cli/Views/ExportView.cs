@@ -81,7 +81,20 @@ internal static class ExportView
     public static readonly string[] MusicXmlPatterns = ["*.musicxml", "*.mxl"];
 
     public const int DefaultMusicXmlWaitMs = 15_000;
-    public const int DefaultTextWaitMs = 5_000;
+
+    /// <summary>
+    /// How long <c>export text</c> watches for the CSV by default.
+    /// </summary>
+    /// <remarks>
+    /// Raised from 5 s after a measurement, and it is the same defect as the live read's fixed 20 s wait: the
+    /// budget is a ceiling, not a delay (the watch returns as soon as the folder has been quiet for
+    /// <see cref="QuietPeriod"/>), so it costs nothing on a small score and decides the answer on a big one.
+    /// Measured on 2026-10-11 against a 44-player, 531-measure project: <c>File.Export.Text</c> was posted at
+    /// 10:24:08.177 and finished at 10:24:19.524 — <b>11.3 s</b> — so a 5 s budget reported <c>ExportWroteNothing</c>
+    /// for a CSV that Dorico wrote (485 428 bytes). The same command on the committed fixture writes about 1 KB and
+    /// returns immediately.
+    /// </remarks>
+    public const int DefaultTextWaitMs = 30_000;
 
     /// <summary>How long the folder must stop changing before a write is called finished.</summary>
     private static readonly TimeSpan QuietPeriod = TimeSpan.FromMilliseconds(400);

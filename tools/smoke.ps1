@@ -936,6 +936,40 @@ Invoke-Check -Name 'ui panels' -Arguments @('ui', 'panels') -Offline -Assert {
         Write-Line ('      NOTE  {0} window(s) beside the document window: {1}' -f $j.panels.Count, (($j.panels | ForEach-Object { "$($_.id)" }) -join ', '))
     }
 
+    # Measured and fixed: the document window used to be resolved by Process.MainWindowHandle, which is whichever
+    # unowned window EnumWindows lists first - so with the library manager up the *library manager* was flagged
+    # `document: true`. There is always exactly one document window, and its id is a constant now, so both halves are
+    # asserted here; the second one is what would have caught the bug with a panel open.
+    $documents = @($j.panels | Where-Object { $_.document -eq $true })
+    if ($documents.Count -gt 1) { return ('{0} windows are flagged as the document window, expected at most one' -f $documents.Count) }
+    foreach ($document in $documents) {
+        if ("$($document.id)" -ne 'dorico.document-window') { return ('the document window''s id is {0}, expected the constant dorico.document-window' -f (Format-Value $document.id)) }
+    }
+
+    return $true
+}
+
+# The document window is the one window an agent has to be able to name: Dorico's Setup work is inside it.
+Invoke-Check -Name 'the document window carries the Setup lists as elements' -Arguments @('ui', 'panels', '--panel', 'dorico.document-window', '--raw') -NeedsScore -Assert {
+    param($j, $code)
+
+    $ok = Assert-Ok $j $code
+    if ($ok -ne $true) { return $ok }
+
+    if ($j.count -ne 1) { return ('count is {0}, expected the one document window' -f (Format-Value $j.count)) }
+
+    $panel = @($j.panels)[0]
+    if ("$($panel.id)" -ne 'dorico.document-window') { return ('the panel read back as {0}' -f (Format-Value $panel.id)) }
+    if ($panel.elementCount -lt 1) { return 'the document window reported no element at all' }
+
+    # Measured: the player, flow and layout lists expose their rows as control type 50007 (ListItem), which this
+    # build once filtered out by asking for 50029 (DataItem) instead. A row with a selection action is what the
+    # Setup work needs, so a payload with no row means the reader is blind to Setup again.
+    $rows = @($panel.elements | Where-Object { $_.role -eq 'listItem' })
+    if ($rows.Count -lt 1) { return ('the document window reported {0} elements and not one list row, so Dorico''s Setup lists are unreachable' -f $panel.elementCount) }
+    if (-not ($rows | Where-Object { $_.action -eq 'select' })) { return 'no list row reports a selection action, so no row could be chosen' }
+
+    Write-Line ('      NOTE  {0} elements, {1} of them list rows' -f $panel.elementCount, $rows.Count)
     return $true
 }
 
@@ -1204,6 +1238,18 @@ Invoke-WriteCheck -Name 'note insert (real write, at the start of the first flow
 #   dorico.export-musicxml   raise it: dorico-use export musicxml --path .\export --wait-ms 120000
 #                            expect: title 导出MusicXML, buttons 确定/取消, two labelled 选择全部, one labelled
 #                            with a glyph, and pressWith pointing at `cancel`.
+#   dorico.open-picker       raise it: dorico-use command send --name Project.ImportLibrary --expect-score <id>
+#                            (it needs an open document, and the command does not return until the picker is
+#                            answered - measured 45 to 106 s, so read `execution` on whatever comes next)
+#                            expect: title 打开, class #32770, owner the document window, blocksQueue true,
+#                            buttons accept (name 打开, classic id 1, safe:false) and cancel (取消, classic id 2,
+#                            safe:true), and pressWith pointing at cancel.
+#                            its controls include edit-1148 (`文件名(N):`, action `value`) and 1136 (`文件类型(T):`).
+#                            then:  dorico-use ui press --dialog dorico.open-picker --element edit-1148 --value <a path>
+#                            expect: worked.action "value" and the re-read of the same window carrying the path.
+#                            to close it:  dorico-use ui press --dialog dorico.open-picker --button cancel
+#                            DO NOT press `accept` on a document you care about: accepting an import changes it,
+#                            which is why it is not safe.
 #   dorico.folder-picker     raise it: ui press --dialog dorico.export-musicxml --button folder-picker
 #                            expect: title 选择文件夹, class #32770, buttons accept (classic id 1) and cancel (2).
 #                            It has NO file-name box, so ui press --path must refuse PickerNotSettable.
@@ -1228,6 +1274,23 @@ Invoke-WriteCheck -Name 'note insert (real write, at the start of the first flow
 #                            in the same payload showing the new state. NOTE the three collection check boxes are
 #                            exclusive: choosing one turns the others off, measured.
 #                            to close it:  dorico-use ui press --panel dorico.library-manager --element button-4
+#                            Measured: the panel has NO file control - its whole tree is four levels of panes,
+#                            labels and groups around those five elements, and its collection rows have no name and
+#                            no value - so `Project.ImportLibrary` above is the route to a file, not this panel.
+#
+#   dorico.document-window   NOT a panel of its own: Dorico's own document window, and the check above reads it.
+#                            raise it: nothing - it is always up when a document is open.
+#                            expect: `ui panels` listing one window with id dorico.document-window and
+#                            document:true, whichever other windows are up (measured: it used to be the library
+#                            manager that got that flag, because the probe took Process.MainWindowHandle).
+#                            then:  dorico-use ui panels --panel dorico.document-window
+#                            expect: the Setup lists - listItem rows for the players, the flows and the layouts,
+#                            each action `select`, and exactly one of them `state: "selected"`.
+#                            acting on one:  dorico-use ui press --panel dorico.document-window --element <row id>
+#                            expect: worked.stateAfter.selected true and the panels array in the same payload
+#                            showing the row that was selected before now unselected. Measured: only the rows the
+#                            list has realised are there (30 of 49 players, 28 of 45 layouts on one project), and
+#                            a row's id depends on what was realised - so read and act in one invocation.
 #
 # Everything else is reported as unknown and refused, which is the designed answer for a window nobody has read.
 # A panel that is not in PanelCatalogue is still listed in full with an `unknown.<hash>` id, and working one of its
