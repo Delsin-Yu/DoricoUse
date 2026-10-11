@@ -291,6 +291,111 @@ So **every payload carries `panels` beside `dialog`**, and the two never mix:
   elements needs `--allow-unknown-dialog`: `PanelNotFound`, `ElementNotFound`, `ElementNotActionable`,
   `ElementNotSettable` and `ValueRequired` are the codes, all exit 1 like every other refusal.
 
+#### Dorico's own document window is a panel too
+
+Dorico's Setup work — the player list, the flows, the layouts, the instrument cards — lives **inside the document
+window**, not in a window of its own, and its id used to be a hash of the caption, so a document rename or an
+unsaved marker changed it. It now has a constant id, `dorico.document-window`, and its caption is not part of it:
+
+```bash
+dorico-use ui panels --panel dorico.document-window
+#   elementCount 132, of which 59 are the rows: 30 in the players list, 1 flow, 28 layouts
+```
+
+Measured, the rows are real UI Automation list items (`ControlType.ListItem`, **50007**) and each one carries a
+selection pattern, so a row can be read and chosen:
+
+```bash
+dorico-use ui press --panel dorico.document-window --element listItem-39
+#   worked.element "listItem-39", name "Flute 1", action "select", stateBefore null, stateAfter {"state":"selected"}
+```
+
+Two limits are measured and worth knowing before relying on it. A list view realises only the rows around its
+viewport — 30 of that project's 49 player rows and 28 of its 45 layout rows, the same count minimized and restored —
+and it exposes **no scroll pattern**, so this build cannot bring the rest into the tree. And a row's id is derived
+from the rows that were realised (the automation id of a row is the list view's own path, so the fallback rules
+apply), so read a panel and act on it **in the same invocation**, the way the rest of this tool is meant to be used.
+
+#### Edit fields and list rows in a dialog
+
+A dialog's **buttons** are reported in `buttons`, exactly as before, and everything else actionable in it is reported
+beside them in `controls` — an edit field, a check box, a list row, a tab — with an id, its state and the action it
+takes. A control is worked with the same `--element` an element of a panel is:
+
+```bash
+dorico-use ui press --dialog unknown.1e4222903d39 --element fullNameLineEdit --value "Piccolo"
+#   worked.role "edit", action "value", value "Piccolo"; worked.stateAfter / the re-read proves the field took it
+```
+
+Measured on the 重命名演奏者 dialog: `fullNameLineEdit` reads `Piccolo` and `shortNameLineEdit` reads `Picc.`, both
+with a value pattern that is not read-only. That dialog's fields were always *visible* in `ui dialog --raw`; what was
+missing was an id and an action, and `--raw` still publishes the whole walked tree under `elements` — the new array
+is `controls` precisely because a field is never repurposed.
+
+#### A file picker, and the library import it is for
+
+The library manager (`库管理`) has no file control at all: its whole UI Automation tree is four levels of panes,
+labels and groups around three check boxes and two buttons, and its collection rows have no name and no value in this
+build. The route to a file is a **command**, and it is measured:
+
+```bash
+dorico-use command send --name Project.ImportLibrary --expect-score 2
+#   dialog: id dorico.open-picker, kind known, class #32770, owner the document window, blocksQueue true
+#   -> pressWith: dorico-use ui press --dialog dorico.open-picker --button cancel
+dorico-use ui press --dialog dorico.open-picker --element edit-1148 --value "H:/scores/library.doricolib"
+dorico-use ui press --dialog dorico.open-picker --button accept --allow-destructive
+```
+
+`Project.ImportLibrary` (and `File.Import.OtherProjectFlow`) raise the classic Windows **Open** dialog: accept is the
+button with the classic control id `1`, cancel is `2`, the file-name box is an `Edit` with automation id **`1148`**
+(inside a `ComboBox` that carries the same id, which is why the ids here are `edit-1148` and `comboBox-1148`), the
+file filter is `1136` and the address bar is `1001`. The name box, the file filter and the search box all take a
+value through the UI Automation value pattern — measured, the box read the written path back verbatim — so **a file
+picker can be driven without a mouse and without typing**, which is what checklist items 2 and 11 needed.
+
+Note what accepting means: `accept` is `safe: false` and refuses without `--allow-destructive`, because accepting an
+import changes the open document. Cancelling needs no flag. The command itself does not return until the picker is
+answered — measured, `Project.ImportLibrary` ran 45 to 106 seconds because nobody had answered it — so read
+`execution` on the payload of whatever comes next.
+
+**`File.Import.OtherProjectFlow` is not a safe way to look at a picker.** Measured: raising it and pressing 取消
+re-activated the document (`Activating document: 2`, `Document setup and activation complete` in `application.log`)
+and left the title marked unsaved (`*`) with no content change. Use `Project.ImportLibrary` when you need a picker
+up, and never save a document you did not open for the purpose.
+
+#### Which layout is current, and how to make one current
+
+`Edit.ToggleLayoutTransposition` and `Edit.ToggleLayoutCondensing` act on the **current** layout, which is why they
+looked unusable. Measured: a specific layout can be made current, and Dorico's own status carries the two ids the
+command needs:
+
+```bash
+dorico-use session status
+#   status.view: {"openScoreID":2,"viewContainerID":2,
+#                 "switchWith":"dorico-use command send --name Window.SwitchToLayout --param OpenScoreID=2
+#                              --param ScoreLayoutViewContainerID=2 --param LayoutID=<layout id>"}
+```
+
+Switching to layout 1 flipped `condensingEnabled` from `true` (its stored `enableCondensing`) to `false` and back
+again, which is how the change was verified. **No payload reads which layout is current** — not `session status`,
+not `project layouts --raw`, not the window title, not the Setup layout list, which marks no row selected. For a
+layout's own stored settings, `options set --type layout --layout N` is the route that never needs a current layout
+at all.
+
+#### A read that follows a long command waits for it now
+
+Dorico answers `kOK` to a command it has only queued, and four of the commands measured here take 11–55 seconds
+(`Instrument.MoveToPlayer` 54.8 s, a transposition toggle 52.7 s, `AddToNewGroup` 11 s). A live read sent after one
+of those used to give up after 20 seconds and report `LiveReadWroteNothing` while its own script was still on the
+queue — measured, its script was posted at 10:04:50.116 and executed at 10:05:20.180, **30.1 s later**.
+
+The read's wait now asks Dorico's log whether the queue is still busy and moves its bound out while it is, so the
+same case now ends in a real answer: measured, a live read behind a file picker waited 43.9 s
+(script posted 10:20:31.048, executed 10:21:14.911) and returned `ok: true, source: live, count: 44`. The bound is
+**not** open-ended: 20 s while nothing is queued, and at most 180 s while the log shows work that was posted and
+never executed. A read that still fails says which of the two it was, names the commands that were stuck on the
+queue, and costs one invocation to retry.
+
 Everything here is **Windows only**, and it is in every build, exactly like the modal surface.
 
 ### Entering notes
@@ -729,7 +834,7 @@ reported there as a single `skip`.
 
 ```bash
 dotnet build tests/VocabularyCheck/VocabularyCheck.csproj -v q --nologo
-./tests/VocabularyCheck/bin/Debug/net10.0/vocabulary-check.exe    # 217 checks, no setup at all
+./tests/VocabularyCheck/bin/Debug/net10.0/vocabulary-check.exe    # 327 checks, no setup at all
 ```
 
 The `VocabularyCheck` program needs nothing but the framework: no Dorico, no host, no extraction step. It checks
@@ -758,6 +863,8 @@ code lives under `Ui/` in files this project does not compile.
 | Dorico crashed while running a script | The scripting layer (`Script.RunScript` via `command send`) is undocumented and not defensive. Building its C++ argument objects blind has crashed Dorico here. See `docs/scripting.md` §8 before using it. |
 | `file read` reports `NotAContainer` / `UnsupportedScoreData` | The file is not a Dorico project, or it is a newer format than this build knows. The reader refuses rather than guessing. |
 | How do I revoke this client? | Delete `%LOCALAPPDATA%\dorico-use\` and remove the client in Dorico if it is listed there. The session token Dorico granted this client sits in `session.json` there, in plain text. The `host stop` command does not remove it, but deleting the folder does. |
+| I only wanted to check something, and Dorico now says the document is unsaved | **`File.Save` writes whatever is unsaved, not just what you changed**, so a save "to verify something" can commit somebody else's arrangement. Observed on a 44-player project: the project file as imported had its 45 layouts and its player table in numeric-id order, and the file after a save had them in the document's own voice order, with every player and layout record otherwise identical field for field and no move command anywhere in `application.log` from Dorico's start. **Not established:** which command put the order there — `Project.Layouts.Renumber` was run in that session and is one candidate, "the save simply writes the document's order" is the other. The consequence is what matters: treat `File.Save` as a real edit, never as a probe. `--expect-score` and a throwaway copy are the way to be sure; a command that only reads (`session status`, `session read`, `project layouts`, `file read`) saves nothing. |
+| A command I ran left the document marked unsaved without changing it | Measured: raising `File.Import.OtherProjectFlow` and cancelling its file picker re-activated the document (`Activating document: 2` in `application.log`) and set the unsaved marker, with no score command sent and nothing changed in the music. Use `Project.ImportLibrary` if you need a picker up. There is no way to clear the marker without saving, and this tool will not save a document it did not open for the purpose. |
 
 ## Roadmap
 
@@ -784,12 +891,23 @@ code lives under `Ui/` in files this project does not compile.
 
 9. **Done**: the modal-dialog surface — the `dialog` field on every payload, the `execution` verdict beside it,
    `ui dialog`, and `ui press` with a measured whitelist, two safety flags and stable derived button ids.
-10. **Next**: the rest of the dialog catalogue. Three dialogs are in it because their captions and labels were
-   actually read; five more are named in the code as reserved (`dorico.allow-remote-client`, `dorico.import-musicxml`,
-   `dorico.open-picker`, `dorico.save-picker`, `dorico.overwrite-file`) and have **no** entry, because an entry
+10. **Done**: the file picker. `Project.ImportLibrary` and `File.Import.OtherProjectFlow` raise the classic
+   Windows Open dialog, and it is catalogued as `dorico.open-picker`: accept is the button with classic control id
+   `1`, cancel is `2`, and the file-name box is an `Edit` with automation id `1148`, settable through the value
+   pattern. The library manager turned out to have no file control at all, so this is the route for a library
+   import — see the panel section.
+
+11. **Next**: the rest of the dialog catalogue. Four dialogs are in it because their captions and labels were
+   actually read, and four more are named in the code as reserved (`dorico.allow-remote-client`,
+   `dorico.import-musicxml`, `dorico.save-picker`, `dorico.overwrite-file`) and have **no** entry, because an entry
    needs a measurement and a check refuses to let one be guessed. Until they are read they are reported in full and
-   refused, which is safe but not useful. A file picker is the one that blocks two other jobs: no file picker has
-   been read, so `ui press --path` (which writes through the UI Automation value pattern) is unverified.
+   refused, which is safe but not useful.
+
+12. **Next**: a list view's unrealised rows. Dorico's Setup lists expose only the rows around their viewport (30 of
+   49, 28 of 45 measured) and carry no scroll pattern, so this build can read and choose what is shown and no more.
+   The scripting layer can enumerate a project's players and layouts in full, which is why `project players` and
+   `file read` exist; acting on a row that is not realised would need the list to scroll, and nothing measured so
+   far scrolls a Qt list from UI Automation.
 
 Two things are tested and settled, so they are no longer "next". The **unpublished commands** are blocked on the
 remote channel and usable from inside. Over the API, `File.New` answers `kError` with no log entry, and it

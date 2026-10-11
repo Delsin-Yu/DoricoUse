@@ -149,6 +149,88 @@ Control API — see `README.md`.
   for element). What remains — 34,284 chains against 34,284 events — agrees in every one of the 44 players and in
   all 531 measures: 0 differing (player, measure) cells, checked after the tie-chain rule was applied.
 
+### The UI surface's depth (the gaps the engraving run exposed)
+
+### Added
+- **Dorico's own document window is reachable**, under the constant id **`dorico.document-window`**. Its UIA tree
+  carries the Setup surface — the player list, the flows, the layouts and their action bars — and its rows are
+  reported as elements like any other panel's. Measured on a 44-player project: 132 elements, 59 of them rows
+  (30 players, 1 flow, 28 layouts), and
+  `ui press --panel dorico.document-window --element listItem-39` moved the list's selection from `Piccolo` to
+  `Flute 1` with the re-read as evidence.
+- **`dialog.controls`**: everything actionable in a dialog that is not a button — an edit field, a check box, a list
+  row — with an id, its state and the action it takes, and **`ui press --dialog <id> --element <id> [--value <text>]`**
+  works one of them. Measured on the 重命名演奏者 dialog: `fullNameLineEdit` read `Piccolo` and `shortNameLineEdit`
+  read `Picc.`, each with a writable value pattern, and a written value read back verbatim. The dialog's buttons are
+  unchanged, and `--raw` still publishes the whole walked tree under `elements` — the new array is `controls`
+  because a field is never repurposed.
+- **`dorico.open-picker`** in the catalogue, with **`Project.ImportLibrary`** and **`File.Import.OtherProjectFlow`**
+  as the two commands measured to raise it: the classic Windows Open dialog, caption 打开, class `#32770`, owning the
+  document window and disabling it. Accept is the button with classic control id `1` (unsafe: accepting an import
+  changes the document), cancel is `2`, the file-name box is an `Edit` with automation id `1148`, the file filter is
+  `1136`, the address bar `1001`, and the file type was `Any Readable File (*.doricolib)`. The name box, the filter
+  and the search box all take a value through the UI Automation value pattern, so a file picker is driven with no
+  mouse and no typing.
+- **`session status.view`**: `openScoreID`, `viewContainerID` and a ready-to-paste **`switchWith`** line. Measured:
+  `Window.SwitchToLayout?OpenScoreID=&ScoreLayoutViewContainerID=&LayoutID=` makes a specific layout current, and the
+  two ids are exactly Dorico's own `activeOpenScoreID` and `activeViewContainerID`. Switching to layout 1 flipped
+  `status.condensingEnabled` from true to false and switching back flipped it back.
+
+### Changed
+- **A live read waits for a busy queue instead of giving up.** The wait is 20 s while the log shows nothing queued
+  and at most 180 s while it shows work that was posted and never executed. Measured before and after:
+  a read behind a file picker used to fail after 21.4 s with `LiveReadWroteNothing` while its own script was posted
+  at 10:04:50.116 and executed at 10:05:20.180; it now waits and answers — measured 43.9 s and `ok: true, source:
+  live, count: 44`. A read that still fails says which of the two it was and names what was stuck on the queue.
+- **A catalogue button now has to match *every* criterion its entry declares**, not any of them. Measured on the live
+  Open picker, which has two `DropDown` buttons labelled 打开 beside the real accept button: matched by the label
+  alone, the entry handed them the `accept` id, so `--button accept` would have pressed a combo box's arrow. The
+  entry declares label *and* classic id, and every other entry was tightened the same way.
+- **A dialog element is walked past, not stopped at.** The file-name box is an `Edit` nested inside a `ComboBox`;
+  a read that kept the combo box and did not descend never reached the control a value goes into.
+
+### Fixed
+- **`panels[].document` was on the wrong window.** `DialogProbe` took `Process.MainWindowHandle` as the document
+  window, and with two visible unowned windows .NET returns whichever EnumWindows lists first. Measured: with the
+  library manager up, `MainWindowHandle` answered the 库管理 window (`0x038A0A34`, normal area 816187) instead of the
+  document window (`0x00C91106`, normal area 2688357), so the library manager was flagged `document: true` and the
+  real one `false`; with nothing else up it was right. The document window is now the process's visible unowned
+  window with the largest **restored** rectangle, taken from `WINDOWPLACEMENT.rcNormalPosition` — measured
+  necessary, because while the document window is minimized `GetWindowRect` answers 158x26 at (-21333,-21333) for a
+  window that is really 2191x1227.
+- **A list row was invisible to every read.** `UiaCalls.ControlTypeListItem` was `50029`, which is `DataItem`;
+  `ListItem` is `50007`. Measured with an independent walker and again through this build's own reader: the Setup
+  lists expose their rows as 50007, and `PanelReader` filtered every one of them out, which is why Dorico's Setup
+  work looked unreachable and why the 繁衍声部格式 dialog's layout lists looked empty. The correction moves the table
+  into a pure file, `Ui/ControlTypes.cs`, that the check projects compile, and asserts the number there.
+- **A shared classic Win32 control id now gets an id an agent can paste.** Measured on the Open picker, the
+  `ComboBoxEx32` pane, the `ComboBox` inside it and the `Edit` inside that all answer automation id `1148`, so an
+  unqualified number is not unique and fell through to a position id. It is now `comboBox-1148` and `edit-1148`.
+
+### Documented, not fixed
+- **`File.Save` writes whatever is unsaved, not only what you changed.** Observed on the engraved project: the file
+  as imported had its layouts and its player table in numeric-id order, the file after a save had them in the
+  document's voice order, every record identical field for field, and `application.log` held no move command from
+  Dorico's start. **Not established:** which command put the order there — `Project.Layouts.Renumber` is one
+  candidate, "a save writes the document's own order" the other. The consequence is in the README: a save is a real
+  edit, never a probe.
+- **Raising `File.Import.OtherProjectFlow` and cancelling it marks the document unsaved** with no content change:
+  measured, it re-activated the document (`Activating document: 2`, `Document setup and activation complete`), and
+  the title gained `*`. Not deterministically reproducible — the same command was raised and cancelled an hour
+  earlier and the title stayed clean.
+- **A group's name and short name cannot be set.** `Project.PlayerGroup.Rename?PlayerGroupID=&Name=` and
+  `Project.PlayerGroupRenameShowDialog?PlayerGroupID=` are both refused (`kError`, no `Posting` line), and no
+  command publishes the short name. The Setup tree does expose the group rows as list items, and each is selectable,
+  but `InvokePattern.Invoke()` on one does nothing measurable and there is no in-place edit. A group's abbreviation
+  stays a manual step.
+- **A list view realises only the rows around its viewport.** Measured: 30 of 49 player rows and 28 of 45 layout rows,
+  the same count minimized and restored, with no scroll pattern on the list and no scroll-item pattern on a row. A
+  row that is not realised cannot be read or chosen by this build; `project players` and `file read` are the reads
+  that see all of it.
+- **No payload reads which layout is current.** Not `session status`, not `project layouts --raw`, not the window
+  title, not the Setup layout list (no row selected). The closest thing is `status.condensingEnabled`, which mirrors
+  the current layout's own `enableCondensing` and identifies it only against a layout that differs.
+
 ## [0.1.0] - 2026-10-11
 
 The first release: a stateless JSON CLI that lets an agent or a script steer a running Dorico, and a from-scratch

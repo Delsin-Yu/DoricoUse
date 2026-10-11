@@ -116,6 +116,37 @@ value. Measured, a Qt check box exposes an invoke pattern *and* a toggle pattern
 change its state, while toggling does — which is why toggle is asked for first. An element with none of them is
 refused with `ElementNotActionable`; there is no coordinate clicking and no synthetic typing anywhere in this build.
 
+**Which control types are elements lives in `Ui/ControlTypes.cs`, a pure file, and that is a bug fix as much as a
+design.** `ListItem` was written as `50029` in the Windows half for a whole release; `50029` is `DataItem`, and
+`ControlType.ListItem` is `50007`. Every row of Dorico's Setup lists and of the 繁衍声部格式 dialog was therefore
+filtered out of every read while the reader walked straight past it, which is exactly the kind of mistake a rule
+kept in a Win32 file cannot be tested for. The table, `IsActionable`, `Name` and `Role` are all there now, and
+`VocabularyCheck` asserts the numbers and the actionable set.
+
+**The document window is a panel with a constant id.** `dorico.document-window` is not in `PanelCatalogue`, because
+that table matches on a caption glob and the document window's caption is the document's name (plus a `*` once it is
+unsaved). Measured: the same window answered to two different `unknown.<hash>` ids as its title changed. The
+constant comes from `PanelModel.DocumentWindowId`, and the probe decides *which* window it is — an unowned, visible
+window of Dorico's process, the largest by its **restored** rectangle, because `GetWindowRect` on a minimized window
+answers the 158x26 icon rectangle. If you change that resolution, take all three measurements again: nothing else up,
+the library manager up, and the document window minimized.
+
+**A dialog's non-button controls are called `controls`, and `--raw`'s `elements` was left alone.** A panel publishes
+its actionable elements as `elements`; a dialog has published the whole tree it walked as `elements` under `--raw`
+since the modal layer shipped, and a published field is never repurposed. So a dialog's edit fields, check boxes,
+list rows and tabs are `controls`, with the same id/state/action shape a panel element has, and `ui press --dialog
+<id> --element <id>` works them through the same `ElementActions` code a panel uses. Two rules follow from
+measurements and both are in the checks: a control nested inside another control is still walked (the file picker's
+`1148` name box is an `Edit` inside a `ComboBox`), and a catalogue button has to match **every** criterion its entry
+declares — matched by the label `打开` alone, the Open picker's accept entry also claimed the two `DropDown` buttons
+beside it, so `--button accept` would have pressed a combo box's arrow.
+
+**One more trap, and it is in Dorico rather than in this tool.** `File.Save` writes whatever is unsaved, not only
+what you changed, so a save "to verify something" can commit somebody else's arrangement — and raising
+`File.Import.OtherProjectFlow` and cancelling its picker marks the document unsaved with no content change. Use
+`Project.ImportLibrary` when you need a picker up, work on a copy when you need to save, and never save a document
+you did not open for the purpose.
+
 ## Two protocol facts that cost a crash and a morning
 
 Both were measured while building this layer, and neither is guessable from the catalogue:
