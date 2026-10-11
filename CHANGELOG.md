@@ -142,6 +142,12 @@ Control API — see `README.md`.
   are measures the export marks only on a tied continuation, and a tie continuation is not an event of its own.
   13 of the 120 events carry a second entry: 11 read a count of 0, which this build does not name, and two in one
   measure repeat their own count. The `--beams` caveat now says all of that.
+- **The note count is a tie-chain count, and Dorico lost nothing.** Dorico's 34,284 note events against the
+  import's 61,034 `<note>` elements is not a discrepancy: 24,281 of those elements are `<rest>` (Dorico counts no
+  rests at all), 2,077 are extra tied segments of a chain (a chain is one note event whose duration is the whole
+  chain), and 392 are grace notes, which Dorico reports as their own kind (`kGraceNoteEvent` 392, matching element
+  for element). What remains — 34,284 chains against 34,284 events — agrees in every one of the 44 players and in
+  all 531 measures: 0 differing (player, measure) cells, checked after the tie-chain rule was applied.
 
 ## [0.1.0] - 2026-10-11
 
