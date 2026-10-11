@@ -922,6 +922,109 @@ Check("a button that carries the accept label and no classic id is not the accep
 Check("the one that carries the classic id is", pickerLookalike.Buttons[1].Id == "accept" && pickerLookalike.Buttons[1].Alias == "ok", pickerLookalike.Buttons[1].Id);
 Check("and its pressWith offers the safe cancel line", pickerLookalike.PressWith == "dorico-use ui press --dialog dorico.open-picker --button cancel", pickerLookalike.PressWith);
 
+Console.WriteLine("== the modal guard: command send refuses while a blocking dialog is up");
+
+// Measured twice on Dorico 6.2.30: a command that raises a dialog while a dialog is already up kills the process,
+// and the tool knows a modal is up from the `dialog` field it already carries. The rule is pure - it takes the
+// dialog's JSON, not a window - so it is asserted here without a dialog, which no check can raise.
+var upDialog = new JsonObject
+{
+    ["id"] = "dorico.export-musicxml",
+    ["title"] = "导出MusicXML",
+    ["kind"] = "known",
+    ["class"] = "Qt6101QWindow",
+    ["pressWith"] = "dorico-use ui press --dialog dorico.export-musicxml --button cancel",
+};
+
+var refusedWhileUp = DialogModel.CommandSendGuard(upDialog, allowModalDialog: false);
+var guardData = refusedWhileUp?.Data;
+
+Check("a blocking dialog up refuses the send", refusedWhileUp is not null);
+Check(
+    "with a code of its own, not one of the press refusals",
+    DialogModel.ModalDialogUpCode == "ModalDialogUp"
+        && !DialogModel.RefusalCodes.Contains(DialogModel.ModalDialogUpCode, StringComparer.Ordinal));
+Check("and exit 1, like every other refusal", DialogModel.RefusalExitCode == 1);
+Check(
+    "and the dialog's identity in error.data",
+    NodeRead.Str(NodeRead.Obj(guardData, "dialog"), "id") == "dorico.export-musicxml"
+        && NodeRead.Str(NodeRead.Obj(guardData, "dialog"), "title") == "导出MusicXML",
+    guardData?.ToJsonString());
+Check(
+    "and the line that answers it",
+    NodeRead.Str(NodeRead.Obj(guardData, "dialog"), "pressWith") == upDialog["pressWith"]!.GetValue<string>());
+Check("and the override's name", NodeRead.Str(guardData, "override") == "--allow-modal-dialog", NodeRead.Str(guardData, "override"));
+Check("and the reason it exists, so the refusal explains itself", NodeRead.Str(guardData, "reason")?.Contains("kills the process", StringComparison.Ordinal) == true);
+Check(
+    "and the sentence names the dialog and the way out",
+    refusedWhileUp!.Message.Contains("导出MusicXML", StringComparison.Ordinal)
+        && refusedWhileUp.Message.Contains("--allow-modal-dialog", StringComparison.Ordinal));
+
+Check("the override sends anyway", DialogModel.CommandSendGuard(upDialog, allowModalDialog: true) is null);
+Check("nothing modal sends", DialogModel.CommandSendGuard(null, allowModalDialog: false) is null);
+Check(
+    "and a dialog object that cannot be named does not refuse either",
+    DialogModel.CommandSendGuard(new JsonObject { ["title"] = "?" }, allowModalDialog: false) is null);
+
+Console.WriteLine("== a short element list is not a small window");
+
+// Measured, and the reason `visited` is on every panel read rather than under --raw: the library manager's UIA tree
+// visits 28 nodes and only 5 of them are elements an action can target, while the window draws rows, a filter, a
+// search field and a drop target that have no node at all. `elementCount: 5` must not read as "empty dialog".
+var walkedPanel = PanelModel.Elements(
+    new WindowFacts(0x2000, 1, nint.Zero, false, true, "Qt6101QWindowIcon", "库管理"),
+    documentEnabled: true,
+    elements: [row],
+    truncated: false,
+    readMs: 12,
+    error: null,
+    nodesVisited: 28);
+
+Check("a read says how many nodes it walked", NodeRead.Int(walkedPanel, "visited") == 28, NodeRead.Int(walkedPanel, "visited")?.ToString());
+Check("and says so in words when the walk kept fewer", NodeRead.Str(walkedPanel, "walkNote")?.Contains("visited 28 elements", StringComparison.Ordinal) == true, NodeRead.Str(walkedPanel, "walkNote"));
+Check("the sentence names the measured example", NodeRead.Str(walkedPanel, "walkNote")?.Contains("library manager", StringComparison.Ordinal) == true);
+Check("and it claims only what it saw", NodeRead.Str(walkedPanel, "walkNote")?.Contains("not proof that the window is small", StringComparison.Ordinal) == true);
+
+var completePanel = PanelModel.Elements(
+    new WindowFacts(0x2001, 1, nint.Zero, false, true, "Qt6101QWindowIcon", "小窗口"),
+    documentEnabled: true,
+    elements: [row],
+    truncated: false,
+    readMs: 3,
+    error: null,
+    nodesVisited: 1);
+
+Check("a read whose walk kept everything carries no such warning", completePanel["walkNote"] is null && NodeRead.Int(completePanel, "visited") == 1);
+
+var everyNode = PanelModel.NodePayload(
+[
+    new PanelNodeInput(ControlTypes.Window, "库管理", "DoricoQApplication.root", 0, false),
+    new PanelNodeInput(ControlTypes.Group, string.Empty, "…CollectionListDelegate_QMLTYPE_629", 1, false),
+    new PanelNodeInput(ControlTypes.CheckBox, "用户库", "…Button_QMLTYPE_43", 2, true),
+    new PanelNodeInput(ControlTypes.ScrollBar, string.Empty, "…ScrollBar_QMLTYPE_34", 2, false),
+], out var nodesReturned);
+
+Check("the raw walk reports every node, not only the kept ones", nodesReturned == 4 && everyNode.Count == 4, nodesReturned.ToString());
+Check("and says which ones an action could target", NodeRead.Bool(everyNode[1], "kept") == false && NodeRead.Bool(everyNode[2], "kept") == true);
+Check(
+    "and names the roles a tree is made of, not their numbers",
+    NodeRead.Str(everyNode[0], "role") == "window" && NodeRead.Str(everyNode[3], "role") == "scrollBar",
+    NodeRead.Str(everyNode[3], "role"));
+Check("and reports what the window draws with nothing in it", string.IsNullOrEmpty(NodeRead.Str(everyNode[1], "name")) && NodeRead.Str(everyNode[1], "controlType") == "Group");
+
+Console.WriteLine("== the layout options dialog: the reset control the checklist needs");
+
+var layoutOptions = PanelCatalogue.Entries.FirstOrDefault(entry => entry.Id == "dorico.layout-options");
+
+Check("the layout options dialog is catalogued now that it has been read", layoutOptions is not null);
+Check("by its measured caption, which carries the document's name", layoutOptions is not null && DialogCatalogue.Glob("layoutprobe - 布局选项", layoutOptions.TitleGlobs[0]), layoutOptions?.TitleGlobs[0]);
+Check("and by the Qt class its reading found", layoutOptions is not null && layoutOptions.ClassPrefixes.Contains("Qt", StringComparer.OrdinalIgnoreCase));
+Check("its note names the reset button this build presses", layoutOptions?.Note.Contains("resetToSavedDefaults", StringComparison.Ordinal) == true);
+Check("and what the press measured", layoutOptions?.Note.Contains("restored two dirtied part layouts", StringComparison.Ordinal) == true);
+Check(
+    "the library manager's note carries this round's reading",
+    PanelCatalogue.Entries.First(entry => entry.Id == "dorico.library-manager").Note.Contains("27 nodes", StringComparison.Ordinal));
+
 LogQueue.Begin(fixture);
 LogQueue.Mark("NoteInput.Enter");
 WriteLater(

@@ -91,21 +91,22 @@ surface. See `CONTRIBUTING.md`.
 | `session events [--limit 20] [--payload]` | What Dorico pushed unprompted while nobody was asking. |
 | `session probe [--rounds 3] [--observe-ms 1500]` | Diagnostics for the connection itself. It talks to Dorico directly, not through the host. |
 | `host start [--address] [--client-name]` / `host status` / `host stop` / `host restart` | The long-lived process that owns the connection. |
-| `command send --name <Name> [--param K=V]... [--wait-ms n] [--no-verify]` | Send a Dorico command. The status is read back afterwards. |
+| `command send --name <Name> [--param K=V]... [--wait-ms n] [--no-verify] [--allow-modal-dialog]` | Send a Dorico command. The status is read back afterwards. **Refused with `ModalDialogUp` (exit 1) while a blocking dialog is up** unless `--allow-modal-dialog` says you mean it. |
 | `command list [--family X] [--filter "*Glob*"] [--limit 100]` | Search the catalogue of 1090 commands. |
 | `command info --name <Name>` | One entry: display name and the parameters it accepts. |
 | `project flows [--raw]` / `project layouts [--kind full-score\|part] [--raw]` | Flow and layout IDs, which several options need. |
 | `project players [--expect-score n]` | The players of the **open** document. There is no protocol request for players, so this is a live read through the scripting layer: it reports each player's index, the text Dorico describes it with, and which members the layer refuses. |
+| `project layout-defaults (--part-layouts \| --layout n) [--expect-score n]` | Restore the layouts' options to the user's saved defaults: raises 布局选项 for the part layouts (or for one layout) and presses 重置到保存的默认值. Measured route for engraving checklist item 11; leaves the dialog open, and the document is what verifies it. |
 | `options get --type engraving\|notation\|layout [--layout n] [--flow n] [--filter glob] [--limit n]` | The option paths and their current values (1565 engraving options in the reference project). |
-| `options set --type ... --value path=value... [--layout n] [--flow n] [--no-verify]` | Set option values, then read them back to prove them. |
-| `library collections` / `library entities --collection <name>` | The 50 library collections and their entities. |
+| `options set --type ... --value path=value... [--layout n] [--flow n] [--no-verify]` | Set option values, then read them back to prove them. **A layout write lands on the layout that is current**, whatever `--layout` says: measured, the protocol ignores the target. Make the layout current first with `Window.SwitchToLayout`. |
+| `library collections` / `library entities --collection <name>` | The 50 library collections and their entities. These are also what the library manager's 集合 rows stand for, which is how an import made by hand is checked. |
 | `playback techniques` / `properties get` | Expression maps and drum kit note maps. The `properties get` command reads what it can from the selection. |
 | `note insert ...` | Enter notes, chords, tuplets and rests. `--from-start` writes from the top, and `--read` proves the result (see below). |
 | `file read --path <project.dorico> [--limit n\|all] [--measure a-b] [--player <glob>] [--tree <name\|*>] [--dynamics] [--lyrics] [--slurs] [--articulations] [--ties] [--beams] [--techniques] [--layout] [--mark-limit n]` | Read a project file from disk: notes, dynamics, slurs, articulations, ties, beams, techniques, layout, or any subtree. No Dorico needed. |
 | `export musicxml [--path <watch dir>] [--wait-ms n]` | Export MusicXML. **Needs a button pressed in Dorico's export dialog** — `ui press` does it, and the payload names the button (see below). |
 | `export text --path <file.csv>` | Export project text/comments as CSV. Fully unattended. |
 | `ui dialog [--raw]` | The modal dialog Dorico has up, verbatim: its title, its body text and every button with a stable id. `dialog` is null when nothing is modal. Windows only. |
-| `ui panels [--panel <id>] [--raw]` | Every window Dorico has up besides its document window, and — when `--panel` names one — every element an action could target, with its role, **its current value**, its state, the container it came from and the pattern an action would use. A read that realised list rows also reports the row ceiling: see [Modeless panels](#modeless-panels). Windows only. |
+| `ui panels [--panel <id>] [--raw]` | Every window Dorico has up besides its document window, and — when `--panel` names one — every element an action could target, with its role, **its current value**, its state, the container it came from and the pattern an action would use. Every read also says how many nodes the walk visited (`visited`) and, when it kept fewer, why a short list is not a small window (`walkNote`); `--raw` lists every node with `kept` marking the difference. A read that realised list rows also reports the row ceiling: see [Modeless panels](#modeless-panels). Windows only. |
 | `ui press --dialog <id> --button <id> \| --panel <id> --element <id> [--value <t>] [--allow-destructive] [--allow-unknown-dialog] [--path <p>] [--timeout-ms n]` | Work one element: press a button of the dialog that is up, or toggle a check box, choose a tab, select a list or tree item, expand, or write a text field. The payload says what is up afterwards **and what the element holds now** (`worked.stateAfter`), which is how a write is verified. Windows only. See [Modal dialogs](#modal-dialogs) and [Modeless panels](#modeless-panels). |
 | `version` | This build: assembly version, whether it is Native AOT, where its state lives, and the protocol constants. It starts no host and needs no Dorico. |
 
@@ -236,8 +237,49 @@ Everything here is **Windows only**, and it is in every build: there is no compi
 [Build](#build)). The captions and labels above are what a Chinese Dorico shows, and on another UI language the same
 dialog reports as `unknown` and is refused. That is the intended failure: read it, report it, do not guess.
 
-#### The codes `ui press` refuses with
+#### `command send` refuses while a blocking dialog is up
 
+A dialog that **raises** a dialog is what has killed Dorico here, twice: `Project.Player.SetAsSoloist` with its
+optional `Set` omitted, and `Project.PlayerRenameShowDialog?PlayerID=0` sent while the rename dialog was already open.
+Both times the log's last line is that command's `Executing` line with no `notifyPostCommandExecute` after it, and a
+minidump is written. Dorico also does not run a command sent while a modal is up when it was asked to — measured, a
+`NoteInput.Enter` posted behind the export dialog waited 8 seconds for that command to finish.
+
+So `command send` — and only `command send` — refuses, before anything reaches Dorico:
+
+```bash
+dorico-use command send --name Project.PlayerRenameShowDialog --param PlayerID=0
+# exit 1
+# {"ok":false,"command":"command send","error":{"code":"ModalDialogUp",
+#   "message":"Dorico has a blocking dialog up: 导出MusicXML (dorico.export-musicxml). A command that raises a dialog
+#              while one is already up has killed Dorico here twice, and a command sent while a modal is up runs late
+#              at best, so nothing was sent. Answer the dialog first
+#              (dorico-use ui press --dialog dorico.export-musicxml --button cancel), or pass --allow-modal-dialog
+#              when you mean to send it anyway.",
+#   "data":{"dialog":{"id":"dorico.export-musicxml","title":"导出MusicXML","kind":"known","class":"Qt6101QWindow",
+#                    "pressWith":"dorico-use ui press --dialog dorico.export-musicxml --button cancel"},
+#           "override":"--allow-modal-dialog","reason":"…"}},
+#  "dialog":{…the same dialog, in full…},"panels":[…]}
+```
+
+- **Nothing is sent.** The refusal happens before the host is contacted: `application.log` gains no `Posting` line for
+  that command — measured, on a command whose earlier copy *had* left one.
+- **`--allow-modal-dialog` sends anyway**, and is the caller saying they mean it. Measured with the export dialog up:
+  `command send --name NoteInput.Enter --allow-modal-dialog` answered `kOK`, reported
+  `execution.state: "queued"`, and Dorico's log gained exactly one `Posting` line.
+- **It is a refusal, so it is exit 1**, with the dialog's identity and the override's name in `error.data` — an agent
+  never has to parse the sentence. The `dialog` field is still on the payload, in full, because every payload has it.
+- **The guard turns on the window, not on the read.** It refuses when the probe found a modal window at all, whatever
+  the UI Automation read behind it said. A probe that **fails** reports no modal window, and then this sends as it
+  always did: a broken probe must not block a caller's command, and `probe.degraded` already says so on every payload.
+- **The scope is deliberately this one command.** `note insert`, `options set`, `session read` and the two `export`
+  commands post sequences this tool composes itself, and those keep working with a dialog up — measured with the
+  export dialog on screen: `note insert --dry-run` returned its plan, `options set` answered `kOK` with
+  `execution: "queued"`, and the live read still waited on the queue and read. Refusing those would break the read
+  behind every verification and the export that raised the dialog in the first place. `command send --dry-run` is not
+  guarded either: it sends nothing, starts no host, and is exactly what a caller wants while Dorico is stuck.
+
+#### The codes `ui press` refuses with
 | Code (exit 1) | When |
 |---|---|
 | `DialogNotFound` | nothing is modal, so there is nothing to press in |
@@ -290,7 +332,10 @@ So **every payload carries `panels` beside `dialog`**, and the two never mix:
                {"id":"dorico","role":"checkBox","name":"Dorico 工程","action":"toggle","state":"off"},
                {"id":"button-4","role":"button","name":"关闭","action":"invoke","state":null},
                {"id":"button-5","role":"button","name":"应用","action":"invoke","state":null}],
-   "elementCount":5,"readMs":30}
+   "elementCount":5,"readMs":30,"visited":28,
+   "walkNote":"The walk visited 28 elements of this window and kept 5: … a short list here is not proof that the
+               window is small — measured, the library manager draws rows, a filter, a search field and a drop
+               target that have no UI Automation node at all."}
   ```
 
 - **One element, one invocation.** `ui press --panel dorico.library-manager --element dorico` toggles the check
@@ -318,6 +363,14 @@ So **every payload carries `panels` beside `dialog`**, and the two never mix:
 - **A read that realised list rows says so, and says it is a viewport.** See
   [the row ceiling](#the-row-ceiling-a-viewport-is-not-a-list) below: it is the one capability this round measured as
   impossible, so the payload states it instead of leaving a short list looking complete.
+- **A read also says how much of the window it could see at all.** The walk visits every node of the accessibility
+  tree and keeps the ones an action can target, so the two numbers are different and the difference is a fact:
+  `visited` is on every panel read, and when it is larger than `elementCount` the payload adds a `walkNote` saying
+  what the rest were. Measured on the library manager, that is 28 nodes for 5 elements. `--raw` lists the whole walk
+  under `nodes`, each node with `role`, `controlType`, `name`, `automationId`, `depth` and **`kept`** — which is the
+  read that answers "is there really no such control here" instead of leaving it to be assumed. It is worth knowing
+  why this exists: a short element list was twice read as "that window has nothing", and both times the window was
+  full.
 - **The evidence is the second read.** A press that destroys its own window reported an error after it had worked,
   measured on this panel's 关闭 button, so `worked.stateAfter` is a fresh read of the same element in the same
   invocation and the `panels` array beside it is the same fresh read of the whole window. Measured:
@@ -326,6 +379,13 @@ So **every payload carries `panels` beside `dialog`**, and the two never mix:
 - **A panel nobody measured is still reported in full**, with an `unknown.<hash>` id, and working one of its
   elements needs `--allow-unknown-dialog`: `PanelNotFound`, `ElementNotFound`, `ElementNotActionable`,
   `ElementNotSettable` and `ValueRequired` are the codes, all exit 1 like every other refusal.
+- **Two panels are catalogued, each from a reading of the real window**: `dorico.library-manager` (库管理, whose
+  measured content is in [the picker section](#a-file-picker-and-the-library-import-it-is-for)) and
+  `dorico.layout-options` (the 布局选项 dialog, whose reset button is what
+  [restoring a layout to its defaults](#restoring-a-layout-to-the-users-defaults-the-reset-control-not-a-propagation)
+  uses). A catalogued panel gets a constant id that survives a document rename, needs no `--allow-unknown-dialog` to
+  work its elements, and carries what was measured in its `description`. Dorico's own document window is the third
+  constant id, `dorico.document-window`, and it is not in the catalogue because its caption is the document's name.
 
 #### Dorico's own document window is a panel too
 
@@ -431,9 +491,51 @@ dorico-use ui press --dialog unknown.1e4222903d39 --element shortNameLineEdit --
 
 #### A file picker, and the library import it is for
 
-The library manager (`库管理`) has no file control at all: its whole UI Automation tree is four levels of panes,
-labels and groups around three check boxes and two buttons, and its collection rows have no name and no value in this
-build. The route to a file is a **command**, and it is measured:
+The library manager (`库管理`) has no file control at all, and — measured in full — **it draws far more than UI
+Automation can see**. Its whole tree is 28 nodes, and only five of them are elements an action can target: the three
+check boxes `出厂设置` / `用户库` / `Dorico 工程`, `关闭` and `应用`. The rest are 13 `CollectionListDelegate`
+groups with an empty name and an empty value (five for the 选项 rows, eight for the 集合 rows), two labels, three
+panes, two scroll bars and the window itself. The window really shows an 选项 column, a 集合 column, a 此工程 list
+whose rows read `… 所有选项都匹配`, a `显示: 全部 / 不同 / 不在此工程内` filter, a `搜索` field and — when the
+comparison source is a project — the drop target `将 .dorico 工程文件放在这里`; **none of that has a UI Automation
+node**, and invoking one of the Groups that *are* there changes nothing (measured twice, with the on-screen selection
+unchanged). So the five elements are the whole of what this layer can offer for that dialog, and the payload says so
+rather than leaving a short list to be misread:
+
+```bash
+dorico-use ui panels --panel dorico.library-manager
+#   elementCount 5, visited 28
+#   walkNote: "The walk visited 28 elements of this window and kept 5: … a short list here is not proof that the
+#              window is small — measured, the library manager draws rows, a filter, a search field and a drop
+#              target that have no UI Automation node at all …"
+dorico-use ui panels --panel dorico.library-manager --raw
+#   nodes: every node the walk visited, each with `kept` true or false, so the 23 that were dropped are visible
+```
+
+**A `.dorico` project cannot reach that drop target without a mouse**, and that is measured three ways: nothing in
+the dialog's tree raises a file picker; the window carries no `WS_EX_ACCEPTFILES` (its extended style is
+`0x00000100`, `WS_EX_WINDOWEDGE`, and the legacy drop protocol needs that bit), so a `WM_DROPFILES` posted to it is
+not the drop the window registered for — and posting one anyway changed nothing on screen; and there is no command in
+the catalogue that sets a project as the comparison source (`Project.ImportLibrary` / `ExportLibrary` and
+`Project.ShowLibraryImportExportDialog` are the whole `Library` family, and the import picker filters to
+`*.doricolib`).
+
+So the maintainer's style-library route is **manual**, and this is the recipe: 库管理 → 比较: `Dorico 工程` → drag the
+reference `.dorico` project onto `将 .dorico 工程文件放在这里` → `显示: 不同` → mark the collections → `应用`.
+
+What the tool does for that workflow is **read the library on both sides of it**:
+
+```bash
+dorico-use library collections                       # the 50 collections of the open document
+dorico-use library entities --collection kParagraphStyleCollection   # 37 named entities, e.g. "Composer"
+dorico-use file read --path <the reference project> --limit 0 --tree "*" --tree-limit 1   # the file itself
+```
+
+The dialog's 集合 rows are those collections — 段落样式 / 调性系统 / 打击套组 and the rest — so a comparison made by
+hand can be checked by name: `library collections` before the import and after it, and `file read` on a saved copy.
+**The tool cannot press `应用` for you**, because the rows that would have to be marked are the ones with no node.
+
+The route to a *library* file is a **command**, and it is measured:
 
 ```bash
 dorico-use command send --name Project.ImportLibrary --expect-score 2
@@ -490,9 +592,65 @@ dorico-use session status
 
 Switching to layout 1 flipped `condensingEnabled` from `true` (its stored `enableCondensing`) to `false` and back
 again, which is how the change was verified. **No payload reads which layout is current** — not `session status`,
-not `project layouts --raw`, not the window title, not the Setup layout list, which marks no row selected. For a
-layout's own stored settings, `options set --type layout --layout N` is the route that never needs a current layout
-at all.
+not `project layouts --raw`, not the window title, not the Setup layout list, which marks no row selected.
+
+**And `options set --type layout --layout N` does not write to layout N.** Measured on Dorico 6.2.30, in
+`application.log`: the request carried `layoutIDs` with the id that was asked for (and, in a second run, the
+singular `layoutID` as well), and Dorico executed
+`Project.Layout.SetOptions?…&LayoutIDArray=<the layout that was current>` — layout 0 while the full score was
+current, layout 2 once `Window.SwitchToLayout` had made Flute 1 current. The values landed on the current layout
+every time, and the read-back the command owes said so (`verified.<path>.ok: false`). So the protocol has no working
+layout target for a write, and the route for a layout's own settings is: **make the layout current first**, then
+write:
+
+```bash
+dorico-use session status          # status.view carries openScoreID and viewContainerID
+dorico-use command send --name Window.SwitchToLayout --param OpenScoreID=2 --param ScoreLayoutViewContainerID=2 --param LayoutID=2
+dorico-use options set --type layout --layout 2 --value defaultSpaceSize=6.5   # lands on the current layout
+```
+
+#### Restoring a layout to the user's defaults (the reset control, not a propagation)
+
+Checklist item 11 is not 繁衍声部格式 (`Project.Layouts.PropagateFormatting`, which needs a source and refuses a full
+score) but **restore to the user's saved defaults**, and the control for it is measured. `Project.Layout.AllPartOptions`
+(全部声部布局选项…) opens the layout options dialog with **every part layout selected**;
+`Project.Layout.Options?LayoutIDArray=<id>` opens it for one layout. The dialog is a modeless panel — catalogued as
+`dorico.layout-options`, titled `<document> - 布局选项`, 162 elements — and it offers four default buttons:
+
+| Element id | Label | What it does |
+|---|---|---|
+| `saveAsDefault` | 保存为默认 | stores the dialog's settings as the user's defaults |
+| `resetToSavedDefaults` | 重置到保存的默认值 | **restores every layout the dialog is open for to those defaults** |
+| `resetToFactory` | 重置到出厂值 | restores them to the factory values |
+| `removeSavedDefaults` | 移除保存的默认值 | removes the saved defaults |
+
+One command does the whole route:
+
+```bash
+dorico-use project layout-defaults --part-layouts --expect-score 2
+#   -> {"layoutDefaults":{"scope":"part-layouts","raised":{"name":"Project.Layout.AllPartOptions","ack":"kOK"},
+#        "panel":{"id":"dorico.layout-options",…},"pressed":{"element":"resetToSavedDefaults",
+#        "name":"重置到保存的默认值",…}}}
+dorico-use project layout-defaults --layout 3 --expect-score 2      # one layout instead of all of them
+```
+
+**Measured, on a `%TEMP%` copy of a 45-layout project**: two part layouts were first dirtied through
+`options set` (staff size 9.9 and 7.7, against the part-layout default of 4.96), the dialog was raised for all part
+layouts, and **one press** of `重置到保存的默认值` took both back to 4.96 in the saved file — while the full score,
+which was not in the dialog's selection, kept its own 8.8. 重置到出厂值 produced the same 4.96 on that document, so
+the two buttons are indistinguishable there; nothing in this round saved a user default (`saveAsDefault` writes to the
+user's library, which is not this tool's to change), so "saved defaults" and "factory defaults" are only shown to
+agree on this project. The dialog's own 关闭/应用 buttons have **no unique automation id** in Qt — measured, their
+element ids moved between two reads of the same dialog once its page changed — which is why the command presses only
+`resetToSavedDefaults` and leaves the dialog open.
+
+The press is not the proof. **Verify with the document**, which is what the payload's `verifyWith` line says:
+
+```bash
+dorico-use options get --type layout --layout 3 --filter "*SpaceSize*"     # live
+dorico-use command send --name File.Save --expect-score 2                   # on a copy you may save
+dorico-use file read --path <that copy>.dorico --limit 0 --layout           # the file the save wrote
+```
 
 #### A read that follows a long command waits for it now
 
@@ -991,7 +1149,7 @@ code lives under `Ui/` in files this project does not compile.
 | How do I revoke this client? | Delete `%LOCALAPPDATA%\dorico-use\` and remove the client in Dorico if it is listed there. The session token Dorico granted this client sits in `session.json` there, in plain text. The `host stop` command does not remove it, but deleting the folder does. |
 | I only wanted to check something, and Dorico now says the document is unsaved | **`File.Save` writes whatever is unsaved, not just what you changed**, so a save "to verify something" can commit somebody else's arrangement. Observed on a 44-player project: the project file as imported had its 45 layouts and its player table in numeric-id order, and the file after a save had them in the document's own voice order, with every player and layout record otherwise identical field for field and no move command anywhere in `application.log` from Dorico's start. **Not established:** which command put the order there — `Project.Layouts.Renumber` was run in that session and is one candidate, "the save simply writes the document's order" is the other. The consequence is what matters: treat `File.Save` as a real edit, never as a probe. `--expect-score` and a throwaway copy are the way to be sure; a command that only reads (`session status`, `session read`, `project layouts`, `file read`) saves nothing. |
 | A command I ran left the document marked unsaved without changing it | Measured: raising `File.Import.OtherProjectFlow` and cancelling its file picker re-activated the document (`Activating document: 2` in `application.log`) and set the unsaved marker, with no score command sent and nothing changed in the music. Use `Project.ImportLibrary` if you need a picker up. There is no way to clear the marker without saving, and this tool will not save a document it did not open for the purpose. |
-| Dorico vanished while I was working a dialog | Measured: `Project.PlayerRenameShowDialog?PlayerID=<n>` **while the rename dialog is already up** kills Dorico 6.2.30. The log's last line is that command's `Executing` line with no `notifyPostCommandExecute` after it, `%LOCALAPPDATA%\CrashDumps\Dorico6.exe.<pid>.dmp` appears, and the next start shows Dorico's own crash reporter (`向 Steinberg 发送崩溃报告`, catalogued as `dorico.crash-report`; 不发送 is the safe button). One raise of that command at a time — and the same shape as the `Project.Player.SetAsSoloist` crash above: a second call into a dialog that is already open. |
+| Dorico vanished while I was working a dialog | Measured: `Project.PlayerRenameShowDialog?PlayerID=<n>` **while the rename dialog is already up** kills Dorico 6.2.30. The log's last line is that command's `Executing` line with no `notifyPostCommandExecute` after it, `%LOCALAPPDATA%\CrashDumps\Dorico6.exe.<pid>.dmp` appears, and the next start shows Dorico's own crash reporter (`向 Steinberg 发送崩溃报告`, catalogued as `dorico.crash-report`; 不发送 is the safe button). One raise of that command at a time — and the same shape as the `Project.Player.SetAsSoloist` crash above: a second call into a dialog that is already open. **`command send` now refuses this by default**: with a blocking dialog up it answers `ModalDialogUp` (exit 1) and sends nothing, unless you pass `--allow-modal-dialog`. `command send --dry-run` is not refused (it sends nothing) and neither is any of this tool's own composed commands (`note insert`, `options set`, `session read`, the exports), which keep working with a dialog up — see [`command send` refuses while a blocking dialog is up](#command-send-refuses-while-a-blocking-dialog-is-up). |
 | Dorico offered to recover autosaves after that | Its `自动保存工程恢复` dialog lists the autosaves and says in its own text that **any autosave not selected for recovery will be deleted**. It has 放弃全部 and 恢复选定工程 and **no cancel**, so answering it is a decision, not a dismissal. It is not in the catalogue: it takes both `--allow-unknown-dialog` and `--allow-destructive`, and both of its buttons are `safe: false` for that reason. Nothing here picks for you — but read the list before you press, and prefer recovering what you may need over discarding it. |
 | `ui panels` named a window as the document that is not the active document | With two documents open, `dorico.document-window` resolves to the largest unowned window, which was measured to be the **inactive** one. The active document's window is reported with an `unknown.<hash>` id instead and is reachable with `ui press --panel <that id> --allow-unknown-dialog`. See [When Dorico has two documents open](#when-dorico-has-two-documents-open). |
 
@@ -1046,6 +1204,28 @@ code lives under `Ui/` in files this project does not compile.
    for one, and nothing has shown that writing there edits the row — and (ii) the scripting layer, which reaches
    every player and layout but acts on none of the Setup trees. Both would need a measurement on a real list before
    this build could promise anything.
+
+14. **Done**: the library manager read honestly and the layout defaults restored. The library manager's tree is 28
+   nodes for 5 elements, and the window draws rows, a filter, a search field and a `.dorico` drop target that have no
+   UI Automation node at all: every panel read now says how many nodes it walked (`visited`, `walkNote`) and `--raw`
+   lists all of them with `kept`. Nothing can deliver a file to that drop target without a mouse (measured: no picker
+   in the tree, no `WS_EX_ACCEPTFILES`, a posted `WM_DROPFILES` did nothing), so the style-library import is a
+   documented manual recipe and the tool's part is reading the library on both sides of it. And checklist item 11 is
+   a command now: `project layout-defaults --part-layouts` raises 布局选项 for the part layouts (catalogued as
+   `dorico.layout-options`) and presses 重置到保存的默认值 — measured to restore two dirtied part layouts in one press
+   while leaving a full score that was not in the dialog's selection alone.
+
+15. **Next**: the library manager's *content*. Its 集合 rows are the protocol's 50 collections and its options are the
+   five option sets the library holds, so the data behind the dialog is reachable (`library collections`,
+   `library entities`); what is missing is a way to *apply* a comparison, which is the drop target the tree cannot
+   see. A `.doricolib` route through `Project.ImportLibrary` exists and is measured; a project-as-comparison-source
+   route does not, and none is planned until a non-mouse one is measured.
+
+16. **Next**: writing a layout's options to a *named* layout. Measured, the protocol's `setoptions` ignores
+   `layoutIDs` (and the singular `layoutID`) and writes to the layout that is current — `application.log` shows
+   `LayoutIDArray=<the current layout>` whatever was asked for — so `options set --layout N` is only honest after
+   `Window.SwitchToLayout`. A later round could look for the request shape Dorico really reads, but nothing in this
+   one found it, and the workaround is written down instead.
 
 Two things are tested and settled, so they are no longer "next". The **unpublished commands** are blocked on the
 remote channel and usable from inside. Over the API, `File.New` answers `kError` with no log entry, and it

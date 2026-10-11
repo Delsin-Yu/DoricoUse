@@ -996,6 +996,74 @@ Invoke-Check -Name 'the document window carries the Setup lists as elements' -Ar
     return $true
 }
 
+# A short element list is not a small window. Measured, the library manager draws an 选项 column, a 集合 column, a
+# 此工程 list, a 显示 filter, a 搜索 field and a .dorico drop target while UI Automation exposes five elements of it -
+# so every panel read says how many nodes the walk visited, and says so in words when it kept fewer, and `--raw`
+# lists every node with `kept` as the difference. This is the read that keeps "there is no such control" honest.
+Invoke-Check -Name 'a panel read says what the walk saw, and --raw lists every node' -Arguments @('ui', 'panels', '--panel', 'dorico.document-window', '--raw') -NeedsScore -Assert {
+    param($j, $code)
+
+    $ok = Assert-Ok $j $code
+    if ($ok -ne $true) { return $ok }
+
+    $panel = @($j.panels)[0]
+    if ($null -eq $panel.visited) { return 'the read does not say how many nodes the walk visited' }
+    if ($panel.visited -lt $panel.elementCount) { return ('the walk visited {0} nodes but reports {1} elements' -f (Format-Value $panel.visited), (Format-Value $panel.elementCount)) }
+
+    if ($panel.visited -gt $panel.elementCount -and [string]::IsNullOrEmpty("$($panel.walkNote)")) {
+        return ('the walk dropped {0} of {1} nodes and says nothing about it' -f ($panel.visited - $panel.elementCount), (Format-Value $panel.visited))
+    }
+
+    $nodes = @($panel.nodes)
+    if ($nodes.Count -lt 1) { return '--raw published no node at all, although the walk visited some' }
+    if ($null -eq $panel.nodesReturned -or $panel.nodesReturned -ne $nodes.Count) { return ('nodesReturned is {0} for {1} nodes' -f (Format-Value $panel.nodesReturned), $nodes.Count) }
+    if (-not ($nodes | Where-Object { $_.kept -eq $false })) { return 'every node reads as kept, so nothing was filtered and the difference this field exists for is invisible' }
+    if (-not ($nodes | Where-Object { $_.kept -eq $true })) { return 'no node reads as kept, although elements were reported' }
+    if (($nodes | Where-Object { [string]::IsNullOrEmpty("$($_.role)") -or [string]::IsNullOrEmpty("$($_.controlType)") }).Count -gt 0) {
+        return 'a node reports no role or no control type'
+    }
+    if (($nodes | Where-Object { "$($_.role)".StartsWith('controlType-') }).Count -gt 0) {
+        return 'a node fell back to a numbered role: the control type table is missing one a real window uses'
+    }
+
+    Write-Line ('      NOTE  {0} nodes walked, {1} kept, {2} dropped' -f $panel.visited, $panel.elementCount, ($panel.visited - $panel.elementCount))
+    return $true
+}
+
+# The modal guard's half that must not change: with nothing modal, a send goes out and is not refused. The guard
+# itself cannot be checked here - a check cannot raise a blocking dialog - so the refusal is a BY HAND item below,
+# and this check is what fails if the guard ever starts refusing a Dorico with no dialog up.
+Invoke-Check -Name 'command send with nothing modal is sent, not refused' -Arguments @('command', 'send', '--name', 'Edit.SelectNone') -Assert {
+    param($j, $code)
+
+    if ("$($j.error.code)" -eq 'ModalDialogUp') {
+        return ('the guard refused with a dialog it names as {0}, and this run found no dialog: {1}' -f (Format-Value $j.error.data.dialog.id), (Format-Value $j.error.message))
+    }
+
+    $ok = Assert-Ok $j $code
+    if ($ok -ne $true) { return $ok }
+
+    # The tool's own probe is the second opinion on the same question: a send that went out must have seen no modal.
+    # (A dialog this command itself raised would be the one exception, and Edit.SelectNone raises none.)
+    if ($null -ne $j.dialog) { return ('the send went out with a dialog up ({0}), so the guard let one through' -f (Format-Value $j.dialog.id)) }
+    if ($null -eq $j.execution) { return 'a posted command carries no execution verdict' }
+
+    Write-Line ('      NOTE  sent, Dorico answered {0}, execution {1}' -f (Format-Value $j.result.ack), (Format-Value $j.execution.state))
+    return $true
+}
+
+# The override flag parses and does not change a dry run, which contacts nothing.
+Invoke-Check -Name 'command send --allow-modal-dialog is accepted' -Arguments @('command', 'send', '--name', 'NoteInput.Pitch', '--param', 'Pitch=C', '--param', 'OctaveValue=5', '--dry-run', '--allow-modal-dialog') -Offline -Assert {
+    param($j, $code)
+
+    $ok = Assert-Ok $j $code
+    if ($ok -ne $true) { return $ok }
+
+    if ($j.plan.dryRun -ne $true) { return 'the dry run planned nothing' }
+    if ("$($j.error.code)" -eq 'ModalDialogUp') { return 'a dry run was refused by the modal guard, although it sends nothing' }
+    return $true
+}
+
 # Naming a panel that is not up is a refusal, and it needs no window at all.
 Invoke-Check -Name 'ui panels --panel nope reports a miss rather than an empty list' -Arguments @('ui', 'panels', '--panel', 'dorico.no-such-panel') -Offline -Assert {
     param($j, $code)
@@ -1291,15 +1359,63 @@ Invoke-WriteCheck -Name 'note insert (real write, at the start of the first flow
 #                            (it needs an open document), then:  dorico-use ui panels --panel dorico.library-manager
 #                            expect: title 库管理, class Qt6101QWindowIcon, blocksQueue false, and five elements -
 #                            出厂设置 (off), 用户库 (on), Dorico 工程 (off), each action `toggle`; 关闭 and 应用,
-#                            each action `invoke`.
+#                            each action `invoke`. The payload also says `visited`: measured, the walk visits 28
+#                            nodes and keeps those five, and the other 23 are 13 CollectionListDelegate groups with
+#                            no name, 2 labels, 3 panes, 2 scroll bars and the window itself.
 #                            then:  dorico-use ui press --panel dorico.library-manager --element dorico
 #                            expect: worked.stateBefore "off" and worked.stateAfter.toggle "on", and the panel list
 #                            in the same payload showing the new state. NOTE the three collection check boxes are
 #                            exclusive: choosing one turns the others off, measured.
 #                            to close it:  dorico-use ui press --panel dorico.library-manager --element button-4
-#                            Measured: the panel has NO file control - its whole tree is four levels of panes,
-#                            labels and groups around those five elements, and its collection rows have no name and
-#                            no value - so `Project.ImportLibrary` above is the route to a file, not this panel.
+#                            Measured: the panel has NO file control and its drawn content is not in its UIA tree
+#                            at all - an 选项 column of five rows, a 集合 column, a 此工程 list whose rows read
+#                            "… 所有选项都匹配", the 显示: 全部 / 不同 / 不在此工程内 filter and a 搜索 field are
+#                            either absent from the tree or unnamed, valueless Groups, and invoking one of those
+#                            Groups changes nothing (measured twice). Its rows are readable another way - the 集合
+#                            rows are the protocol's 50 collections, so `library collections` and
+#                            `library entities --collection <k…Collection>` report the same library. The .dorico
+#                            drop target (将 .dorico 工程文件放在这里) cannot be reached without a mouse: the window
+#                            carries no WS_EX_ACCEPTFILES, a posted WM_DROPFILES changed nothing, and nothing in the
+#                            tree raises a file picker.
+#                            `--raw` on this panel is the read that shows all of that: it lists every node the walk
+#                            visited with `kept` marking the five.
+#
+#   dorico.layout-options    raise it: dorico-use command send --name Project.Layout.AllPartOptions
+#                            (全部声部布局选项, every part layout selected), or
+#                            dorico-use command send --name Project.Layout.Options --param LayoutIDArray=<id>
+#                            (that one layout alone), then:  dorico-use ui panels --panel dorico.layout-options
+#                            expect: title "<document> - 布局选项", class Qt6101QWindowIcon, blocksQueue false, and
+#                            the buttons saveAsDefault (保存为默认), resetToSavedDefaults (重置到保存的默认值),
+#                            resetToFactory (重置到出厂值), removeSavedDefaults (移除保存的默认值), 选择全部, and the
+#                            layout list's rows carrying each layout's own name.
+#                            the whole route in one command:
+#                              dorico-use project layout-defaults --part-layouts --expect-score <id>
+#                            expect: the raise acknowledged, the panel named, `pressed` naming
+#                            resetToSavedDefaults, and the panel afterwards. The dialog is LEFT OPEN on purpose:
+#                            its 关闭/应用 ids are positional and moved between two reads of the same dialog once
+#                            its page changed, measured.
+#                            verified by reading the document, not by the press: `options get --type layout
+#                            --layout <id> --filter *`, or save and `file read --path <file> --layout`. Measured:
+#                            one press took two dirtied part layouts from staff size 9.9 and 7.7 back to 4.96 and
+#                            left the full score, which was not in the dialog's selection, at its own value.
+#
+# BY HAND: the modal guard. A check cannot raise a blocking dialog, so the refusal is measured like this.
+#
+#   raise a modal:  dorico-use export musicxml --path .\export --wait-ms 3000   (it answers
+#                   ExportNeedsConfirmation and the payload names dorico.export-musicxml)
+#   then:  dorico-use command send --name Project.PlayerRenameShowDialog --param PlayerID=0
+#   expect: exit 1, error.code ModalDialogUp, error.data.dialog carrying the id, the title, the kind and the
+#           pressWith line, error.data.override "--allow-modal-dialog", and a `dialog` field beside it naming the
+#           same window. NOTHING WAS SENT: application.log gains no Posting line for that command. That is the
+#           whole point - measured, a command that raises a dialog while a dialog is up kills Dorico.
+#   then, in the same state:  dorico-use command send --name NoteInput.Enter --allow-modal-dialog
+#   expect: it goes out (kOK, execution `queued`, and a Posting line in the log). Do not repeat that with a
+#           dialog-raising command: the override means what it says.
+#   and the paths the guard must not touch, with the modal still up:
+#     dorico-use note insert --notes "C5" --dry-run      -> the plan, sends nothing, unchanged
+#     dorico-use options set --type layout --layout <id> --value <path>=<value>   -> kOK, execution `queued`
+#     dorico-use session read --limit 5                  -> still waits on the queue and still reads
+#   then answer the dialog:  dorico-use ui press --dialog dorico.export-musicxml --button cancel
 #
 #   dorico.document-window   NOT a panel of its own: Dorico's own document window, and the check above reads it.
 #                            raise it: nothing - it is always up when a document is open.

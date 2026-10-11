@@ -292,6 +292,76 @@ earlier rounds left open.
   `恢复选定工程` and **no cancel**, and it is not in the catalogue, so both `--allow-unknown-dialog` and
   `--allow-destructive` are needed to answer it. See the README for what that means before answering one.
 
+### The library manager read honestly, the layout defaults restored, and a guard against the measured crash (round 4)
+
+Three jobs, each decided by a measurement made first: what the library manager really is, what "restore to user
+defaults" is, and what must stop `command send` from repeating the two crashes.
+
+### Added
+- **`command send` refuses while a blocking dialog is up.** With a modal up it answers `ModalDialogUp` (exit 1) and
+  sends nothing — measured, Dorico's log gains no `Posting` line for the refused command — and `--allow-modal-dialog`
+  sends anyway. `error.data` carries the dialog's `id`, `title`, `kind`, `class` and the `pressWith` line that answers
+  it, plus the override's name, so an agent never parses a sentence. The rule turns on the **window**, not on the UI
+  Automation read (a dialog whose content cannot be read still refuses), and a **degraded probe proceeds**: a broken
+  instrument must not block a caller's command, and every payload already says `probe.degraded`. The scope is that one
+  command: `note insert`, `options set`, `session read` and the exports keep working with a dialog up — measured with
+  the export dialog on screen, `note insert --dry-run` returned its plan and `options set` answered `kOK` with
+  `execution: queued`. `command send --dry-run` is not guarded either: it sends nothing, and it is what a caller
+  reaches for while Dorico is stuck. The reasoning is in `DialogModel.CommandSendGuard`, in the README and in
+  `CONTRIBUTING.md`.
+- **`project layout-defaults (--part-layouts | --layout <id>) [--expect-score n]`**: the measured route for the
+  engraving checklist's part-layout item. It raises 全部声部布局选项 (`Project.Layout.AllPartOptions`, every part layout
+  selected) or 布局选项 for one layout (`Project.Layout.Options?LayoutIDArray=<id>`), presses `重置到保存的默认值`
+  (`resetToSavedDefaults`) in the dialog it just raised, and reports the panel as it is afterwards. It leaves the
+  dialog open on purpose: its 关闭/应用 buttons have no unique automation id in Qt — measured, their element ids moved
+  between two reads of the same dialog once its page changed — and the payload names them as they are.
+- **`dorico.layout-options`** in `PanelCatalogue`: the 布局选项 dialog, measured (162 elements; the option pages and
+  the layout list's 64 rows, 74 option controls, and the four default buttons `saveAsDefault` /
+  `resetToSavedDefaults` / `resetToFactory` / `removeSavedDefaults`). It gets a constant id that survives a document
+  rename, and working its elements no longer needs `--allow-unknown-dialog`.
+- **Every panel read says how many nodes the walk visited** (`visited`), and when it kept fewer it says why
+  (`walkNote`); **`ui panels --raw` lists the whole walk** under `nodes`, each node with its `role`, `controlType`,
+  `name`, `automationId`, `depth` and **`kept`**. Measured on the library manager: 28 nodes for 5 elements. That
+  difference is exactly what a "there is no such control" conclusion used to hide, and it is now a field.
+- **26 more checks in `VocabularyCheck`**: the modal guard's rule (the code, the exit code, `error.data` and its
+  identity fields, the override, the null cases — including a dialog object that cannot be named, which must not
+  refuse), the walk-count rule (`visited`, `walkNote`, the "walk kept everything" case, and the node payload with its
+  `kept` flag and named roles), and the two new catalogue entries.
+
+### Changed
+- **`Ui/ControlTypes.Role` names every control type a real window uses.** `Window`, `ScrollBar`, `MenuBar`, `ToolBar`,
+  `Custom`, `Header` and `HeaderItem` fell through to `controlType-<number>`; the raw node walk made that visible on
+  its first run (a window node read as `controlType-50032`).
+
+### Fixed
+- **A panel read no longer hides a full window behind a short element list.** Measured: the library manager's tree is
+  28 nodes, 5 of them actionable, and its 此工程 rows, its 显示 filter, its 搜索 field and its `.dorico` drop target
+  are not in the tree at all — so `elementCount: 5` read as "an empty dialog" and stayed that way for a release. The
+  read now reports the walk's own count and, when it dropped nodes, says what they were.
+
+### Documented, not fixed
+- **A `.dorico` file cannot reach the library manager's drop target without a mouse.** Measured three ways: nothing in
+  the dialog's UI Automation tree raises a file picker; the window carries no `WS_EX_ACCEPTFILES` (its extended style
+  is `0x00000100`, `WS_EX_WINDOWEDGE`), so the legacy `WM_DROPFILES` protocol is not the one it registered for — and a
+  posted `WM_DROPFILES` changed nothing on screen; and no command in the catalogue sets a project as the comparison
+  source (`Library` is `Project.ImportLibrary`, `Project.ExportLibrary`,
+  `Project.ShowLibraryImportExportDialog`, and the import picker filters to `*.doricolib`). The maintainer's route is
+  therefore a documented manual recipe — 库管理 → 比较: `Dorico 工程` → drop → `显示: 不同` → mark → `应用` — and the
+  tool's part is reading the library on both sides of it: the dialog's 集合 rows are the protocol's 50 collections, so
+  `library collections` and `library entities` report the same data, and `file read` reads the file. Invoking one of
+  the 13 unnamed `CollectionListDelegate` groups the tree does carry changes nothing (measured twice).
+- **`options set --type layout --layout N` writes to the layout that is current, not to N.** Measured: the request
+  carried `layoutIDs` with the id asked for and, in a second run, the singular `layoutID` as well, and Dorico executed
+  `Project.Layout.SetOptions?…&LayoutIDArray=<the current layout>` — layout 0 while the full score was current, layout
+  2 once `Window.SwitchToLayout` had made Flute 1 current. The write landed on the current layout both times and the
+  command's own read-back said so (`verified.<path>.ok: false`). The protocol has no working layout target for a write;
+  the README now gives the route that works (make the layout current first) instead of the claim that used to be there.
+- **The library manager's content is readable; its rows are not.** Its 选项 and 集合 columns, its 此工程 list, its
+  filter, its search field and its drop target have no UI Automation node, and the 13 Groups that are there have an
+  empty name, an empty value and an `Invoke` that does nothing. What the collections *mean* is available
+  (`library collections` — 50 — and `library entities`), which is what makes a comparison made by hand checkable by
+  name afterwards.
+
 ## [0.1.0] - 2026-10-11
 
 The first release: a stateless JSON CLI that lets an agent or a script steer a running Dorico, and a from-scratch

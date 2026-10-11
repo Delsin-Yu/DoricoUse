@@ -147,6 +147,25 @@ the payload adds. Do not add paging to this layer without a measurement that a l
 the four lists read so far do not, on themselves, on any ancestor, or on a row — see the row-ceiling section of the
 README for the counts and for the range-value experiment on the only scrollbars that exist.
 
+**A read that drops nodes must say how many it walked.** `PanelModel.Elements` publishes `visited` (the walk's node
+count) on every read and adds a `walkNote` when the walk kept fewer, and `ui panels --raw` publishes the whole walk
+under `nodes` with each node's `kept`. That exists because a short element list was twice read as "that window has
+nothing in it": measured, the library manager's tree is 28 nodes for 5 elements, and what the difference hides is
+both structure (panes, labels, groups) and content the accessibility tree simply does not carry — its rows, its 显示
+filter, its 搜索 field and its `.dorico` drop target. When you conclude "there is no such control", read `--raw`
+first: `kept: false` on a node that *is* the control is a different answer from the control being absent, and only
+one of the two is the reader's fault. (`ListItem` being 50029 is the other half of the same lesson.)
+
+**`command send` refuses while a blocking dialog is up, and the rule is in the pure half.** `DialogModel.CommandSendGuard`
+takes the `dialog` object and the override flag and returns the refusal or nothing, so `VocabularyCheck` asserts the
+code, the exit code and the shape of `error.data` without a dialog. Three things about it are deliberate: its scope is
+that one command (this tool's own composed commands — `note insert`, `options set`, `session read`, the exports — keep
+working with a dialog up, because refusing them would break the read behind every verification and the export that
+raised the dialog); it turns on the **window** and not on the UI Automation read, so a dialog whose content cannot be
+read still refuses; and a **degraded** probe proceeds, because a broken instrument must not block a caller's command —
+`probe.degraded` says what happened on every payload. `command send --dry-run` is not guarded either: it sends
+nothing, and it is what a caller reaches for while Dorico is stuck behind a dialog.
+
 **The document window is a panel with a constant id.** `dorico.document-window` is not in `PanelCatalogue`, because
 that table matches on a caption glob and the document window's caption is the document's name (plus a `*` once it is
 unsaved). Measured: the same window answered to two different `unknown.<hash>` ids as its title changed. The
@@ -286,6 +305,17 @@ Contributions welcome, in rough order of value:
    measurement before it could be promised — a Qt delegate that exposes a value pattern on the row itself (a list
    row *does* expose one; nothing has shown that writing there edits the row), and the scripting layer, which
    enumerates every player and layout but does not act on the Setup trees.
+
+6. **A layout option write cannot name its layout.** Measured on 6.2.30: the protocol's `setoptions` ignores both
+   `layoutIDs` and the singular `layoutID`, and Dorico executes `Project.Layout.SetOptions` with
+   `LayoutIDArray=<the layout that is current>` — so `options set --layout N` is only honest after
+   `Window.SwitchToLayout` has made N current. The workaround is documented in the README; the request shape Dorico
+   really reads was not found here, and guessing at it is not a contribution.
+
+7. **The library manager's applied comparison.** Its content is reachable (`library collections`, `library entities`)
+   but its rows are not, so a project cannot be set as the comparison source without a mouse: the drop target has no
+   UI Automation node, the window is not a legacy drop target, and no command in the catalogue sets one. A route that
+   works is a measurement away, and until there is one the recipe is manual.
 
 ## Releasing
 
