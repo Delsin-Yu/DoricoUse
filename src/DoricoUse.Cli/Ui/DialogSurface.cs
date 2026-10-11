@@ -116,6 +116,36 @@ internal static class DialogSurface
     public static JsonObject? Current() => Describe(DialogProbe.Probe(), raw: false, out _);
 
     /// <summary>
+    /// The refusal a <c>command send</c> owes before it posts anything, or null when the command may be sent.
+    /// </summary>
+    /// <param name="allowModalDialog">True when the caller passed <c>--allow-modal-dialog</c>.</param>
+    /// <remarks>
+    /// <para>
+    /// This is the one place the send path asks about dialogs, and it is deliberately narrow: the guard's rule is in
+    /// <see cref="DialogModel.CommandSendGuard"/> (pure, and checked without Windows), and all this adds is the
+    /// probe behind it and the UI Automation read that names the dialog — a read that is paid only when a modal
+    /// window is really up, which is the refusal case.
+    /// </para>
+    /// <para>
+    /// A degraded probe reports no modal window, and that is what this turns on. A probe that could not run must not
+    /// turn into a refusal: the caller's command would then be blocked by a broken instrument rather than by Dorico,
+    /// and <c>probe.degraded</c> is already on every payload to say so. The alternative — refusing when the probe is
+    /// unsure — would make this guard a wall the moment the window enumeration hiccups.
+    /// </para>
+    /// </remarks>
+    public static DialogModel.ModalRefusal? ModalGuard(bool allowModalDialog)
+    {
+        var presence = DialogProbe.Probe();
+
+        if (presence.Dialog is null)
+        {
+            return null;
+        }
+
+        return DialogModel.CommandSendGuard(Describe(presence, raw: false, out _), allowModalDialog);
+    }
+
+    /// <summary>
     /// Probes while a caller is waiting for something else, at most once every <see cref="PeekInterval"/>. Once a
     /// dialog has been seen it is kept, because what a wait loop has to report is that a dialog <b>was</b> there.
     /// </summary>

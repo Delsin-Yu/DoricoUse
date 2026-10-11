@@ -3,6 +3,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using DoricoUse.Cli.Dorico;
 using DoricoUse.Cli.Ipc;
+using DoricoUse.Cli.Ui;
 
 namespace DoricoUse.Cli.Commands;
 
@@ -61,6 +62,14 @@ internal static class CommandCommands
                 + "nothing: no host is started and Dorico is not contacted.",
         };
 
+        var allowModalDialog = new Option<bool>("--allow-modal-dialog")
+        {
+            Description = "Send even while a blocking dialog is up in Dorico. Without it the command is refused "
+                + "with ModalDialogUp and nothing is sent, because a command sent in that state is queued rather "
+                + "than run, and a command that raises a dialog in that state has crashed Dorico here twice. Pass "
+                + "it only when you mean the command to go out with a modal up.",
+        };
+
         var expectScore = CommandRoot.ExpectScoreOption();
 
         var command = new Command(
@@ -68,7 +77,8 @@ internal static class CommandCommands
             "Send one Dorico command. The status is read back afterwards, because Dorico answers kOK even for "
             + "commands that then fail. Enum-looking parameter values are checked against the vocabulary "
             + "extracted from Dorico's binary, when one has been extracted on this machine; without one they are "
-            + "sent unchecked, and the payload says so.")
+            + "sent unchecked, and the payload says so. While a blocking dialog is up the send is refused with "
+            + "ModalDialogUp unless --allow-modal-dialog is passed.")
         {
             name,
             parameters,
@@ -77,6 +87,7 @@ internal static class CommandCommands
             noVerify,
             allowUnknownEnum,
             dryRun,
+            allowModalDialog,
             expectScore,
         };
 
@@ -99,6 +110,21 @@ internal static class CommandCommands
             if (parse.GetValue(dryRun))
             {
                 return DryRun(commandName, values, lookedAt);
+            }
+
+            // The guard, and the reason it is here rather than in the host: a refusal must send nothing at all, so
+            // it has to happen before the request that would post the command. It comes after --dry-run on purpose
+            // - a dry run sends nothing, starts no host and must stay usable while Dorico is stuck behind a dialog,
+            // which is exactly when a caller wants to check a command line. UnsafeSurface and the vocabulary checks
+            // run first for the same reason: a local usage error is answered without touching Dorico.
+            var modal = DialogSurface.ModalGuard(parse.GetValue(allowModalDialog));
+
+            if (modal is not null)
+            {
+                throw new CliException(DialogModel.ModalDialogUpCode, modal.Message, DialogModel.RefusalExitCode)
+                {
+                    Details = modal.Data,
+                };
             }
 
             var args = new JsonObject

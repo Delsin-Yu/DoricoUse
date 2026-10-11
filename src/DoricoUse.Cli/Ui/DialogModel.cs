@@ -646,6 +646,102 @@ internal static class DialogModel
         "PickerNotSettable",
     ];
 
+    /// <summary>
+    /// The stable code <c>command send</c> refuses with while a blocking dialog is up.
+    /// </summary>
+    /// <remarks>
+    /// Its own code and not one of <see cref="RefusalCodes"/>: those are about a dialog's own elements, and this one
+    /// is about whether a command may be posted at all. The scope is deliberately the one command — see
+    /// <see cref="CommandSendGuard"/>.
+    /// </remarks>
+    public const string ModalDialogUpCode = "ModalDialogUp";
+
+    /// <summary>The option a caller passes to send anyway.</summary>
+    public const string ModalGuardOverride = "--allow-modal-dialog";
+
+    /// <summary>Why a command was refused, and the facts an agent parses instead of the sentence.</summary>
+    /// <param name="Message">The sentence a human reads.</param>
+    /// <param name="Data">The <c>error.data</c> object: the dialog's identity and the override's name.</param>
+    internal sealed record ModalRefusal(string Message, JsonObject Data);
+
+    /// <summary>
+    /// The refusal <c>command send</c> owes while a blocking dialog is up, or null when the command may be sent.
+    /// </summary>
+    /// <param name="dialog">
+    /// The <c>dialog</c> object of the probe that ran just before the send, or null. Null is the fact that nothing
+    /// is modal — and it is also what a <b>degraded</b> probe reports, because that probe found no modal window
+    /// either. Refusing on a broken probe would make a working Dorico unusable for a reason that has nothing to do
+    /// with Dorico, so a degraded probe proceeds and every payload already says <c>probe.degraded</c>.
+    /// </param>
+    /// <param name="allowModalDialog">True when the caller passed <see cref="ModalGuardOverride"/>.</param>
+    /// <remarks>
+    /// <para>
+    /// The reason this exists is a measurement, made twice on Dorico 6.2.30: a command that <b>raises</b> a dialog
+    /// while a dialog is already up terminates the process. `Project.Player.SetAsSoloist` with its optional
+    /// <c>Set</c> omitted killed it once, and `Project.PlayerRenameShowDialog?PlayerID=0` sent while the rename
+    /// dialog was open killed it again — both times the log's last line is that command's <c>Executing</c> line with
+    /// no <c>notifyPostCommandExecute</c> after it, and a minidump is written. A modal also stalls Dorico's whole
+    /// command queue, so even a harmless command sent in that state does not run when it was asked to.
+    /// </para>
+    /// <para>
+    /// <b>The scope is this one command.</b> <c>note insert</c>, <c>options set</c>, <c>session read</c> and the two
+    /// exports post their own composed sequences, and those were measured to queue harmlessly and to be the way a
+    /// live read and an export watch work at all; refusing them while a dialog is up would break the read behind
+    /// every verification and the export that raised the dialog in the first place. What is dangerous is an
+    /// <i>arbitrary</i> command, and that is exactly what <c>command send</c> is — so the guard sits there, and it
+    /// sits before anything reaches the host.
+    /// </para>
+    /// </remarks>
+    public static ModalRefusal? CommandSendGuard(JsonNode? dialog, bool allowModalDialog)
+    {
+        if (allowModalDialog || dialog is not JsonObject up)
+        {
+            return null;
+        }
+
+        var id = (string?)up["id"];
+
+        if (string.IsNullOrEmpty(id))
+        {
+            // A dialog object without an id is not something a refusal can name, and refusing on it would be a
+            // refusal an agent cannot act on. Nothing is reported about a window in that state, so there is nothing
+            // to refuse for.
+            return null;
+        }
+
+        var title = (string?)up["title"] ?? id;
+        var kind = (string?)up["kind"] ?? KindUnknown;
+        var windowClass = (string?)up["class"];
+        var pressWith = (string?)up["pressWith"];
+
+        var data = new JsonObject
+        {
+            ["dialog"] = new JsonObject
+            {
+                ["id"] = id,
+                ["title"] = title,
+                ["kind"] = kind,
+                ["class"] = windowClass,
+                ["pressWith"] = pressWith,
+            },
+            ["override"] = ModalGuardOverride,
+            ["reason"] = "Measured twice on Dorico 6.2.30: a command that raises a dialog while a dialog is already "
+                + "up kills the process (the log's last line is its Executing line with no notifyPostCommandExecute "
+                + "after it, and a minidump is written). A command sent while a modal is up also does not run when it "
+                + "was asked to: measured, a NoteInput.Enter posted behind the export dialog waited 8 s for that "
+                + "command to finish, and the whole point of `execution` on a payload is that the caller cannot tell "
+                + "a run from a queue. `command send` therefore refuses before anything reaches Dorico.",
+        };
+
+        var message = $"Dorico has a blocking dialog up: {title} ({id}). A command that raises a dialog while one is "
+            + "already up has killed Dorico here twice, and a command sent while a modal is up runs late at best, so "
+            + "nothing was sent. Answer the dialog first"
+            + (pressWith is null ? string.Empty : $" ({pressWith})")
+            + $", or pass {ModalGuardOverride} when you mean to send it anyway.";
+
+        return new ModalRefusal(message, data);
+    }
+
     /// <summary>The exit code a refusal carries. A refusal is the caller's fault, so it is always 1.</summary>
     public const int RefusalExitCode = 1;
 
