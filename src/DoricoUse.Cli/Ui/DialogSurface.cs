@@ -75,7 +75,13 @@ internal static class DialogSurface
     /// True when the payload already carries <c>panels</c>: <c>ui panels</c> reads UI Automation behind them, which
     /// is the better answer, and this one costs only Win32.
     /// </param>
-    public static JsonObject Extras(bool dialogOwned = false, bool panelsOwned = false)
+    /// <param name="ownedDialog">
+    /// The <c>dialog</c> object the payload already carries, when it carries one. It is passed in rather than
+    /// re-probed so that <c>blockedByDialog</c> can be answered for <c>ui dialog</c> and <c>ui press</c> too, whose
+    /// own dialog is the better read: the field is about <b>that</b> dialog, so the dialog it was read from has to be
+    /// the one the payload prints.
+    /// </param>
+    public static JsonObject Extras(bool dialogOwned = false, bool panelsOwned = false, JsonNode? ownedDialog = null)
     {
         var extras = new JsonObject();
         var execution = LogQueue.Verdict(LogQueue.DefaultBudget);
@@ -87,6 +93,8 @@ internal static class DialogSurface
 
         if (dialogOwned && panelsOwned)
         {
+            AddBlocked(extras, execution, ownedDialog);
+
             return extras;
         }
 
@@ -96,7 +104,14 @@ internal static class DialogSurface
 
         if (!dialogOwned)
         {
-            extras["dialog"] = Describe(presence, raw: false, out _);
+            var dialog = Describe(presence, raw: false, out _);
+
+            extras["dialog"] = dialog;
+            AddBlocked(extras, execution, dialog);
+        }
+        else
+        {
+            AddBlocked(extras, execution, ownedDialog);
         }
 
         if (!panelsOwned)
@@ -109,6 +124,37 @@ internal static class DialogSurface
         }
 
         return extras;
+    }
+
+    /// <summary>
+    /// Says whether this invocation's own command raised the dialog the payload carries — the fact that makes
+    /// <c>execution.state</c> unreadable, because Dorico posts commands without executing them while it is up.
+    /// </summary>
+    /// <param name="extras">The payload's extras, which the two fields are added to.</param>
+    /// <param name="execution">The <c>execution</c> object that was reported, or null when this invocation has
+    /// nothing to say about Dorico's queue.</param>
+    /// <param name="dialog">The dialog the payload carries, or null.</param>
+    /// <remarks>
+    /// Only reported beside an <c>execution</c> field: the field exists to qualify that verdict, and a payload that
+    /// posted nothing has no verdict to qualify. It is reported as a boolean rather than only when true, so that a
+    /// caller can assert the field is there instead of inferring its absence — an absent key and a false one would
+    /// otherwise be the same thing to a reader that is not careful.
+    /// </remarks>
+    private static void AddBlocked(JsonObject extras, JsonObject? execution, JsonNode? dialog)
+    {
+        if (execution is null)
+        {
+            return;
+        }
+
+        var blocked = DialogModel.RaisedByThisInvocation(dialog);
+
+        extras["blockedByDialog"] = blocked;
+
+        if (blocked)
+        {
+            extras["blockedByDialogNote"] = DialogModel.BlockedByDialogNote;
+        }
     }
 
     /// <summary>The dialog that is up right now, or null, without waiting.</summary>
@@ -196,13 +242,18 @@ internal static class DialogSurface
     /// <param name="allowDestructive">True when <c>--allow-destructive</c> was passed.</param>
     /// <param name="path">A value to write into a picker's file-name box first, or null.</param>
     /// <param name="timeoutMs">How long to wait for the named dialog to appear, in milliseconds.</param>
+    /// <param name="commitInput">
+    /// True when <c>--commit-input</c> was passed: a text field the caller names is written through the value pattern
+    /// and then typed into with real input. A button has nothing to commit, so it is refused there.
+    /// </param>
     public static JsonObject Press(
         string dialogId,
         string buttonId,
         bool allowUnknownDialog,
         bool allowDestructive,
         string? path,
-        int timeoutMs)
+        int timeoutMs,
+        bool commitInput = false)
     {
         var presence = WaitForDialog(timeoutMs);
         var window = presence.Dialog
@@ -298,7 +349,22 @@ internal static class DialogSurface
 
             if (description.Buttons.All(candidate => !string.Equals(candidate.Id, buttonId, StringComparison.Ordinal)))
             {
-                return PressControl(window, description, read, buttonId, path, allowUnknownDialog, started);
+                return PressControl(window, description, read, buttonId, path, allowUnknownDialog, commitInput, started);
+            }
+
+            if (commitInput)
+            {
+                // A button press is a pattern call and has no text to commit. Refusing here rather than ignoring the
+                // flag is the same rule as everywhere else: a caller that asked for committed input must never be
+                // told `ok` after only a pattern call.
+                throw new CliException(
+                    "InvalidArgument",
+                    $"--commit-input sends real input into a text field, and '{buttonId}' is a button of "
+                    + $"'{description.Id}'. Use it with --element <field id> and --value <text>.",
+                    1)
+                {
+                    Details = new JsonObject { ["dialog"] = description.Id, ["button"] = buttonId },
+                };
             }
 
             var button = DialogModel.Authorize(description, buttonId, allowUnknownDialog, allowDestructive);
@@ -367,6 +433,7 @@ internal static class DialogSurface
         string controlId,
         string? value,
         bool allowUnknownDialog,
+        bool commitInput,
         long started)
     {
         var controls = PanelModel.Describe(read.Elements);
@@ -418,6 +485,14 @@ internal static class DialogSurface
         }
 
         var target = controls[index];
+
+        // A dialog's control is refused when it is disabled, for the same measured reason a panel's is: a pattern
+        // call on a disabled element answers success and changes nothing.
+        if (!target.Enabled)
+        {
+            throw PanelModel.RefuseDisabled(description.Id, target.Id, target.Name, target.Role);
+        }
+
         var action = PanelModel.Action(read.Elements[index]);
 
         if (action == PanelAction.None)
@@ -439,7 +514,14 @@ internal static class DialogSurface
             };
         }
 
-        var worked = ElementActions.Perform(read.ElementHandles[index], action, target, value, description.Id);
+        var worked = ElementActions.Perform(
+            read.ElementHandles[index],
+            action,
+            target,
+            value,
+            description.Id,
+            commitInput,
+            window.Handle);
 
         // The same evidence rule as a button press: the action's own answer is not the proof, the re-probe is -
         // and the re-probe now carries the control's own value, which is what makes a write verifiable at all.
@@ -447,7 +529,14 @@ internal static class DialogSurface
 
         worked["stateAfter"] = PanelModel.ControlAfter(after, controlId);
         worked["ms"] = (long)Stopwatch.GetElapsedTime(started).TotalMilliseconds;
-        worked["note"] = "The action's own answer is not evidence. `stateAfter` and the `dialog` field beside it are "
+        worked["note"] = commitInput
+            ? "The action's own answer is not evidence. `stateAfter` and the `dialog` field beside it are a second "
+                + "read of the same window, in the same invocation, and that is what proves it happened - for a "
+                + "write, `stateAfter.value` is the text the field really holds now, not the text that was sent. "
+                + "`written` says the value pattern took the text and `committed` says the real-input pass ran and the "
+                + "field read back what was typed; a Qt field can hold a written value while its dialog still counts "
+                + "as unmodified."
+            : "The action's own answer is not evidence. `stateAfter` and the `dialog` field beside it are "
             + "a second read of the same window, in the same invocation, and that is what proves it happened - for a "
             + "write, `stateAfter.value` is the text the field really holds now, not the text that was sent.";
 

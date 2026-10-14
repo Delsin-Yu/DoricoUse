@@ -368,15 +368,15 @@ internal static class NoteCommands
             {
                 // The parameter the value ends up in; the binary spells it out as
                 // NoteInput.NoteValue?LogDuration=kCrotchet.
-                EnumVocabulary.Refuse("--duration", "LogDuration", durationValue, allowUnknown);
-                lookedAt.Add(("LogDuration", durationValue, EnumVocabulary.Check(durationValue)));
+                EnumVocabulary.Refuse("--duration", "LogDuration", durationValue, allowUnknown, "NoteInput.NoteValue");
+                lookedAt.Add(("LogDuration", durationValue, EnumVocabulary.Check("LogDuration", durationValue, "NoteInput.NoteValue")));
                 args["duration"] = durationValue;
             }
 
             if (!string.IsNullOrWhiteSpace(gridValue))
             {
-                EnumVocabulary.Refuse("--grid", "RhythmicGridResolutionValue", gridValue, allowUnknown);
-                lookedAt.Add(("RhythmicGridResolutionValue", gridValue, EnumVocabulary.Check(gridValue)));
+                EnumVocabulary.Refuse("--grid", "RhythmicGridResolutionValue", gridValue, allowUnknown, null);
+                lookedAt.Add(("RhythmicGridResolutionValue", gridValue, EnumVocabulary.Check("RhythmicGridResolutionValue", gridValue, null)));
                 args["grid"] = gridValue;
             }
 

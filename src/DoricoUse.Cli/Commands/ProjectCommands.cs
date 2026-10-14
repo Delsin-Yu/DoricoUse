@@ -40,9 +40,13 @@ internal static class ProjectCommands
     /// <c>file read --layout</c>, not for a button's acknowledgement.
     /// </para>
     /// <para>
-    /// The dialog is left open. Its 关闭 and 应用 buttons have no unique automation id in Qt — measured, their
-    /// element ids are derived from their position and moved between two reads of the same dialog once its page
-    /// changed — so this command does not press one on the caller's behalf; the payload names them as they are.
+    /// The dialog is then closed by this command, by 关闭 and never by 应用. Its close and apply buttons have no
+    /// unique automation id in Qt — measured 2026-10-13, 关闭 was <c>button-98</c> in one read and its id moves when
+    /// the dialog's page changes — so the close is a fresh read matched on the label (exact and unique) rather than
+    /// an id remembered from an earlier payload. The reset itself needs no 应用 press: its effect reaches the
+    /// document immediately (measured: two dirtied part layouts restored while the dialog was still up). A close
+    /// that cannot be matched presses nothing and says so in <c>closed</c>, because pressing the first button of a
+    /// dialog this tool does not fully understand is how a 应用 gets pressed by accident.
     /// </para>
     /// </remarks>
     private static Command BuildLayoutDefaults()
@@ -133,12 +137,22 @@ internal static class ProjectCommands
             var worked = PanelSurface.Act(PanelCataloguedLayoutOptions, ResetToSavedDefaultsElement, null, allowUnknownDialog: false);
             var element = NodeRead.Obj(worked, "worked");
 
+            // The panel as it was before the close: the payload a caller verifies the reset against, and the one the
+            // close is about to make meaningless. It is read here rather than after the close for exactly that
+            // reason.
+            var beforeClose = NodeRead.Arr(worked, "panels") is { Count: > 0 } panels ? panels[0]?.DeepClone() : null;
+
+            // And now the dialog is closed, by label, in a fresh read: the reset above leaves it up, and a caller
+            // that has to close it itself is a caller that may press the wrong button.
+            var closed = PanelSurface.PressByLabel(PanelCataloguedLayoutOptions, CloseLabel);
+
             var result = new JsonObject
             {
                 ["scope"] = allParts ? "part-layouts" : "layout",
                 ["layout"] = allParts ? null : one!.Value,
                 ["raised"] = new JsonObject { ["name"] = raiseName, ["ack"] = ack },
-                ["panel"] = NodeRead.Arr(worked, "panels") is { Count: > 0 } panels ? panels[0]?.DeepClone() : null,
+                ["panel"] = beforeClose,
+                ["closed"] = closed,
                 ["pressed"] = element?.DeepClone(),
                 ["what"] = "重置到保存的默认值 (resetToSavedDefaults) restores the layout options of the layouts the "
                     + "dialog is open for to the defaults saved in the user's library, and its effect reaches the "
@@ -147,8 +161,12 @@ internal static class ProjectCommands
                     + "full score, which was not in the dialog's selection, at its own value.",
                 ["verifyWith"] = "dorico-use options get --type layout --layout <id> --filter *   (live), or save the "
                     + "project and read the file: dorico-use file read --path <project.dorico> --limit 0 --layout",
-                ["note"] = "The dialog is left open: its 关闭/应用 buttons are positional ids this build will not press "
-                    + "for you. The panel above names them as they are right now.",
+                ["note"] = "The dialog is closed again by this command: 关闭 is matched by its label in a fresh "
+                    + "read, because its element id is positional and moves when the page changes, and 应用 is never "
+                    + "pressed — the reset needs no apply. `closed.pressed` says what was pressed, `closed.attempts` "
+                    + "how many reads it took, and `closed.reason` why nothing was pressed when that is what "
+                    + "happened. The `panel` above is the dialog as it was before the close, which is the read the "
+                    + "reset is verified against.",
             };
 
             return new JsonObject { ["layoutDefaults"] = result };
@@ -162,6 +180,13 @@ internal static class ProjectCommands
 
     /// <summary>The measured reset button, which is the one control in that dialog with a unique automation id.</summary>
     private const string ResetToSavedDefaultsElement = "resetToSavedDefaults";
+
+    /// <summary>
+    /// The label of the dialog's close button. A label rather than an id, and read for the reason
+    /// <see cref="PanelSurface.PressByLabel"/> gives: measured 2026-10-13, that dialog's 关闭 and 应用 have no unique
+    /// automation id in Qt and their positional ids move when the page changes.
+    /// </summary>
+    private const string CloseLabel = "关闭";
 
     /// <summary>
     /// The players of the open project. There is no protocol request for them, so this reads the running document

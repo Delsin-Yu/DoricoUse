@@ -162,7 +162,16 @@ internal static class DialogReader
         if (controlType == ControlTypes.Button)
         {
             state.Buttons.Add(new ButtonCandidate(
-                new DialogButtonInput(name, automationId, IsInvokable(element), bounds.Left, bounds.Top),
+                new DialogButtonInput(
+                    name,
+                    automationId,
+                    IsInvokable(element),
+                    bounds.Left,
+                    bounds.Top,
+                    // The dialog's buttons carry `enabled` too: a disabled button is the cheapest proof that the
+                    // window is not ready for what the caller asked - measured 2026-10-13, 应用 on the 工程信息
+                    // dialog - and pressing one used to answer ok:true for an invoke that did nothing.
+                    Enabled: UiaCalls.IsEnabled(element)),
                 element));
 
             // Deliberately not descending: a button's children are its label, and the label is already its name.
@@ -191,7 +200,8 @@ internal static class DialogReader
                 Top: bounds.Top,
                 ValueReadOnly: elementState.ValueReadOnly,
                 Container: row ? container : null,
-                ContainerScrollable: row && containerScrollable));
+                ContainerScrollable: row && containerScrollable,
+                Enabled: UiaCalls.IsEnabled(element)));
 
             state.ElementHandles.Add(element);
             kept = true;

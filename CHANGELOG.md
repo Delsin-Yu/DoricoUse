@@ -312,9 +312,10 @@ defaults" is, and what must stop `command send` from repeating the two crashes.
 - **`project layout-defaults (--part-layouts | --layout <id>) [--expect-score n]`**: the measured route for the
   engraving checklist's part-layout item. It raises 全部声部布局选项 (`Project.Layout.AllPartOptions`, every part layout
   selected) or 布局选项 for one layout (`Project.Layout.Options?LayoutIDArray=<id>`), presses `重置到保存的默认值`
-  (`resetToSavedDefaults`) in the dialog it just raised, and reports the panel as it is afterwards. It leaves the
-  dialog open on purpose: its 关闭/应用 buttons have no unique automation id in Qt — measured, their element ids moved
-  between two reads of the same dialog once its page changed — and the payload names them as they are.
+  (`resetToSavedDefaults`) in the dialog it just raised, and reports the panel as it is afterwards. (The dialog used
+  to be left open on purpose, because its 关闭/应用 buttons have no unique automation id in Qt — measured, their
+  element ids moved between two reads of the same dialog once its page changed; it now closes it itself, by label.)
+  See the round below.
 - **`dorico.layout-options`** in `PanelCatalogue`: the 布局选项 dialog, measured (162 elements; the option pages and
   the layout list's 64 rows, 74 option controls, and the four default buttons `saveAsDefault` /
   `resetToSavedDefaults` / `resetToFactory` / `removeSavedDefaults`). It gets a constant id that survives a document
@@ -417,6 +418,81 @@ and Dorico's error message box is catalogued instead of being reported as unknow
   window being disabled* and not of the class. The same sentence has been on the crash reporter since it was
   catalogued. `blocksQueue` itself is right (`documentEnabled: false` or the class, and only the queue measurement in
   `execution` settles it); the sentence is the part that overstates how it was decided.
+
+### The dogfood run's tool-side items: a record cap that hid a field, a dialog that faked a success, and real input (round 6)
+
+Everything here comes from the engraving job's own report (`§15`, `§16`, `§21`), where each item is a measurement
+made while driving this tool against a real project.
+
+### Added
+- **`file read --tree --tree-fields <n|all>`, and `--tree-limit` bounds records only.** Measured: with
+  `--tree-limit 2` every event showed its first two fields, so a reader concluded that
+  `GradualTempoChangeEventDefinition` has no `duration` — it has one, and the note events of the committed fixture
+  carry it too. A record's field list is the shape of that record, so it is reported whole unless the caller says
+  otherwise, and the payload carries `fieldLimit` beside `limit` because they are two numbers now.
+- **`blockedByDialog` on every payload that carries `execution`.** True when the dialog the payload reports is one
+  *this invocation* raised (`openMs == 0`, i.e. no earlier invocation had seen that window). Measured: a
+  `command send` of `MouseEdit.ChangeEventPositionOrDuration?NewDuration=4` answered `kOK`, `execution.state` read
+  `ran` — the log shows the posting and the execution — and nothing in the document changed, because the send had
+  raised Dorico's `dorico.error` box and every later command was posted and not executed. The field is always there
+  (false included, so a caller can assert its presence), and `blockedByDialogNote` spells out what it voids.
+- **`enabled` and `invokable` on every element** of `ui panels`, `ui dialog` and their re-reads (`stateAfter`,
+  `dialog.controls`), and `enabled` on a dialog's buttons. `enabled` is UI Automation's own `IsEnabled` — the fact
+  the window states for itself as `button "应用" [disabled]` while this tool could not — and a
+  disabled target is now refused with **`ElementDisabled`** (exit 1) instead of answering `ok: true` for an invoke
+  that does nothing.
+- **`ui press --commit-input`**: after the value-pattern write, the control is clicked and the text goes in as real
+  keystrokes (`SendInput`), because a Qt field accepts a value-pattern write without emitting the change signal its
+  dialog listens for — measured on the 工程信息 dialog, the write read back while 应用 stayed disabled and the value
+  reverted. The payload separates the two claims: `written` (the value pattern took the text), `commit` (the click,
+  the key count, the value read back afterwards and whether it matches) and `committed` (both). It needs an
+  interactive desktop, needs `--value` (`--path` is refused), is refused for anything that is not a text field
+  (`InvalidArgument`), and exits 2 with `InputNotCommitted` when the input pass cannot run at all — carrying the
+  write that did happen, so a caller cannot read it as "nothing was written".
+- **`command send --wait-for-completion [--completion-timeout-ms n]`**: waits, bounded (default 90 s), for this
+  command's own `notifyPostCommandExecute` line in `%APPDATA%\Steinberg\Dorico *\application.log` — the recipe the
+  report's runbook used by hand — and reports `completion` with `completed`, `timedOut`, `waitedMs`, `budgetMs`,
+  `posted` and `completedLines`. Measured command times span 4.4 s (`Instrument.MoveToPlayer`) to 54 s against 25 s
+  for `Players.DeleteEmpty`, so a caller that sleeps a fixed amount either comes back early or wastes the
+  difference. A completion line whose logged name refines the command's (`File.Export.Text` for `File.Export`, which
+  is the line in `docs/scripting.md`) counts as that command; the reverse does not.
+- **`project layout-defaults` closes the dialog it raised**: 关闭 is matched by its label in a fresh read
+  (`PanelSurface.PressByLabel`), never 应用, and the payload's `closed` says what was pressed, how many reads it took
+  and why nothing was pressed when the label was missing or shared. The exact, unique label match is the rule, so an
+  ambiguous label presses nothing rather than the first candidate.
+- **The enum check is command-aware.** `Type` was one global row of seven accidentals, so
+  `EventEdit.ChangeProperty?Type=…` and `UI.InvokePropertyChangeValue?Type=…` — whose `Type` is a property name, and
+  which are the route the report used to set an event's length — were refused. A parameter whose meaning depends on
+  the command is checked only for the commands it was measured on (`NoteInput.SetAccidental` for the accidentals),
+  a value for any other command is reported as `not checked for this command`, and the refusal still names
+  `--allow-unknown-enum`. `vocabulary.commandScoped` lists which parameters are command-scoped.
+- **35 more checks in `VocabularyCheck`** (462 `ok`, 0 failed): a disabled button refused with `ElementDisabled` (and
+  the enabled one beside it still pressable), the same refusal for a panel element, `--commit-input` applicability
+  and its refusal, `enabled`/`invokable` in both element payloads and in a dialog's buttons,
+  `blockedByDialog`'s four cases (its own dialog, one that was already up, one the store could not describe, none at
+  all), the completion wait (a line arriving on a named poll, the refinement rule and its reverse, a timeout that
+  still reports the posting, and an invocation that sent nothing by name), and the command-scoped `Type`.
+- **Checks in `ProjectFileCheck`**: the committed fixture pins that one listed record still carries every field of
+  that record (and `duration` among them) one record cap down, that `--tree-fields` is the cap that does truncate
+  them and says so, and — on the reference corpus — that a tempo event's fields include `duration` whatever the
+  record limit is.
+
+### Changed
+- **`--tree-limit`'s own description and the README say what it bounds** (records: the matched nodes and the children
+  of each) and point at `--tree-fields` for the other thing.
+- The two refusals that used to say "this build never clicks a coordinate" — the value write's and a dialog
+  control's — are unchanged in the paths they describe, and `--commit-input` is the one place anything is clicked or
+  typed, always opt-in, and the deviation from the older "no synthetic input" rule is named in the README.
+
+### Documented, not fixed
+- **`--commit-input` has not been run against a live Dorico here.** The measurement that justifies it is the failure
+  it works around (a value-pattern write a Qt field accepts without telling its dialog), and the shape of the pass —
+  click the control, Ctrl+A, type — is the one the report used through another tool. Until a live run exists, the
+  payload's own report (`ran`, `foreground`, `valueAfter`, `valueMatches`) is the only claim it makes.
+- **`command send --wait-for-completion` reads a delta of a file other writers share.** A completion line for the
+  same command name from another invocation that overlaps this one would satisfy the wait, and the count of
+  like-named lines is not tracked because one `command send` sends one command. `posted` and `waitedMs` are what a
+  caller checks.
 
 ## [0.1.0] - 2026-10-11
 

@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json.Nodes;
+using DoricoUse.Cli.Dorico;
 using DoricoUse.Cli.Json;
 
 namespace DoricoUse.Cli.Ui;
@@ -16,12 +17,17 @@ namespace DoricoUse.Cli.Ui;
 /// <param name="Invokable">True when the element exposes a pattern that can press it (invoke, toggle or a default action).</param>
 /// <param name="Left">Screen x of the element's bounding rectangle, for the position fallback id.</param>
 /// <param name="Top">Screen y of the element's bounding rectangle, for the position fallback id.</param>
+/// <param name="Enabled">
+/// The button's own UI Automation <c>IsEnabled</c>. Measured 2026-10-13: pressing a disabled button reports success
+/// and changes nothing, so this is the fact that turns that into a refusal.
+/// </param>
 internal sealed record DialogButtonInput(
     string Name,
     string? AutomationId,
     bool Invokable,
     int Left = 0,
-    int Top = 0);
+    int Top = 0,
+    bool Enabled = true);
 
 /// <summary>
 /// Everything measured about one dialog, in plain data: no Win32 handle, no COM pointer, nothing Windows-shaped,
@@ -73,7 +79,8 @@ internal sealed record DialogButtonDescription(
     int Index,
     string Role,
     bool Safe,
-    bool Invokable);
+    bool Invokable,
+    bool Enabled = true);
 
 /// <summary>A dialog, described for the payload.</summary>
 internal sealed record DialogDescription(
@@ -290,6 +297,7 @@ internal static class DialogModel
                 ["role"] = button.Role,
                 ["safe"] = button.Safe,
                 ["invokable"] = button.Invokable,
+                ["enabled"] = button.Enabled,
             };
 
             if (button.Alias is not null)
@@ -424,7 +432,8 @@ internal static class DialogModel
                 Index: index,
                 Role: catalogued?.Role ?? RoleUnknown,
                 Safe: catalogued?.Safe ?? false,
-                Invokable: button.Invokable));
+                Invokable: button.Invokable,
+                Enabled: button.Enabled));
         }
 
         return described;
@@ -658,6 +667,15 @@ internal static class DialogModel
                 });
         }
 
+        // Disabled before unsafe: a disabled button is refused whatever the catalogue calls it, because the honest
+        // answer to "press this" is that the window will not let it be pressed - not that the button is destructive.
+        // Measured 2026-10-13 on the 工程信息 dialog: 应用 was disabled (its `IsEnabled` false) while the dialog had
+        // no edit of its own, and pressing it would have reported success and done nothing.
+        if (!button.Enabled)
+        {
+            throw PanelModel.RefuseDisabled(dialog.Id, button.Id, button.Name, button.Role);
+        }
+
         if (!button.Safe && !allowDestructive)
         {
             throw Refuse(
@@ -695,6 +713,11 @@ internal static class DialogModel
     }
 
     /// <summary>The codes <c>ui press</c> can refuse with, for the check that every one of them is exit 1.</summary>
+    /// <remarks>
+    /// <c>ElementDisabled</c> is in the list because it is a refusal a panel element gets as well as a button —
+    /// <see cref="PanelModel.RefuseDisabled"/> builds it for both, so a caller sees one code and one sentence
+    /// wherever the disabled element lives.
+    /// </remarks>
     public static IReadOnlyList<string> RefusalCodes { get; } =
     [
         "DialogNotFound",
@@ -704,6 +727,7 @@ internal static class DialogModel
         "UnknownDialog",
         "DestructiveRefused",
         "PickerNotSettable",
+        "ElementDisabled",
     ];
 
     /// <summary>
@@ -804,6 +828,41 @@ internal static class DialogModel
 
     /// <summary>The exit code a refusal carries. A refusal is the caller's fault, so it is always 1.</summary>
     public const int RefusalExitCode = 1;
+
+    /// <summary>
+    /// Whether the dialog a payload carries is one <b>this invocation</b> raised, which is what makes a command's
+    /// own success claim unreadable.
+    /// </summary>
+    /// <param name="dialog">The <c>dialog</c> object of the payload, or null.</param>
+    /// <remarks>
+    /// <para>
+    /// The test is the payload's own dialog with <c>openMs == 0</c>: the state file under
+    /// <c>%LOCALAPPDATA%\dorico-use</c> records when each dialog handle was first seen, so a window no earlier
+    /// invocation has seen is one that appeared during this one. Measured 2026-10-13: <c>command send</c> of
+    /// <c>MouseEdit.ChangeEventPositionOrDuration?NewDuration=4</c> answered <c>kOK</c>, the payload's
+    /// <c>execution.state</c> read <c>ran</c> (the log shows the posting and the execution), and nothing in the
+    /// document changed — Dorico had put up its <c>dorico.error</c> box, <c>openMs 0</c>, and every later command
+    /// was posted and not executed. Without this field the payload claims a command ran while nothing ran, which is
+    /// exactly what an agent cannot afford.
+    /// </para>
+    /// <para>
+    /// A dialog the state store could not describe carries no <c>openMs</c> and answers false here: unknown is not
+    /// raised-by-this-invocation, and a caller that needs certainty has the dialog's own <c>openMs</c> in front of
+    /// it.
+    /// </para>
+    /// </remarks>
+    public static bool RaisedByThisInvocation(JsonNode? dialog)
+        => dialog is JsonObject && NodeRead.Long(dialog, "openMs") == 0;
+
+    /// <summary>
+    /// What <c>blockedByDialog: true</c> means, spelled out beside the field itself rather than left to the README.
+    /// </summary>
+    public const string BlockedByDialogNote =
+        "This invocation's own command raised this dialog (openMs 0 = nothing before it had seen that window), and "
+        + "while it is up Dorico posts commands without executing them: measured 2026-10-13, the send that raised "
+        + "dorico.error still reported execution.state `ran` while the document did not change and every later "
+        + "command was queued. So read `execution` as void here: answer the dialog (see the dialog's pressWith) and "
+        + "verify the effect, or send it again once the dialog is gone.";
 
     /// <summary>The exit code a probe failure carries: the runtime failed, the caller did not.</summary>
     public const int ProbeFailureExitCode = 2;

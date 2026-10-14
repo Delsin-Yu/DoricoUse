@@ -142,8 +142,14 @@ internal static partial class ProjectFileView
         /// <summary>How many levels of child nodes a tree dump shows. Null is the default.</summary>
         public int? Depth { get; init; }
 
-        /// <summary>How many occurrences, fields, children or names a tree dump lists. Null is the default, -1 everything.</summary>
+        /// <summary>How many occurrences and children a tree dump lists. Null is the default, -1 everything.</summary>
         public int? TreeLimit { get; init; }
+
+        /// <summary>
+        /// How many fields of each record a tree dump lists. Null is the default — which is every one of them, so
+        /// that a record's shape is never reported short.
+        /// </summary>
+        public int? TreeFieldLimit { get; init; }
     }
 
     /// <summary>How many slurs, articulations, ties, beams or techniques the report carries unless asked for more.</summary>
@@ -152,10 +158,21 @@ internal static partial class ProjectFileView
     /// <summary>How many dynamics the report carries unless the caller asks for more.</summary>
     public const int DefaultDynamicLimit = 100;
 
-    /// <summary>How deep a tree dump goes, and how many occurrences, fields and children it lists.</summary>
+    /// <summary>How deep a tree dump goes, and how many occurrences and children it lists.</summary>
     public const int DefaultDepth = 2;
 
     public const int DefaultOccurrenceLimit = 8;
+
+    /// <summary>
+    /// How many fields of each record a tree dump lists by default: every one of them.
+    /// </summary>
+    /// <remarks>
+    /// Not a number, and that is the correction: the record cap used to bound the fields too, and measured
+    /// 2026-10-13 a reader passing <c>--tree-limit 2</c> saw two fields of each <c>GradualTempoChangeEventDefinition</c>
+    /// — the fields it saw came before <c>duration</c> — and concluded the event had no duration field at all. A
+    /// record's field list is the shape of that record, so it is reported whole unless the caller says otherwise.
+    /// </remarks>
+    public const int DefaultFieldLimit = -1;
 
     /// <summary>How many node names the "what does this file hold?" census lists by default.</summary>
     public const int DefaultCensusLimit = 200;
@@ -965,7 +982,8 @@ internal static partial class ProjectFileView
 
         var depth = options.Depth ?? DefaultDepth;
         var limit = options.TreeLimit ?? DefaultOccurrenceLimit;
-        var subtree = ProjectFileTreeReader.Subtree(data, query, depth, limit);
+        var fieldLimit = options.TreeFieldLimit ?? DefaultFieldLimit;
+        var subtree = ProjectFileTreeReader.Subtree(data, query, depth, limit, fieldLimit);
 
         var occurrences = new JsonArray();
 
@@ -995,6 +1013,11 @@ internal static partial class ProjectFileView
             ["truncated"] = subtree.Truncated,
             ["depth"] = depth,
             ["limit"] = limit,
+            // The record cap and the field cap are two numbers because they answer two questions. `limit` bounds the
+            // records (the matched nodes, and the children of each), `fieldLimit` bounds the fields of each record and
+            // is -1 by default. They were one number, which is what hid a field from a reader who passed a small
+            // --tree-limit; see ProjectFileTreeReader.Subtree.
+            ["fieldLimit"] = fieldLimit,
             ["valueChars"] = ProjectFileTreeReader.ValueChars,
             // What the walk looked at, not what the file holds: a matched node whose depth or size cap is reached is
             // skipped whole, so these are the counts the caps allow. `--tree *` counts the whole tree.
@@ -1154,8 +1177,8 @@ internal static partial class ProjectFileView
     }
 
     /// <summary>
-    /// Parses <c>--tree-limit</c> and <c>--dynamics-limit</c>: a count, or <c>all</c>/<c>-1</c> for no cap at all.
-    /// An empty value keeps the default, which is not the same number in every mode.
+    /// Parses <c>--tree-limit</c>, <c>--tree-fields</c> and <c>--dynamics-limit</c>: a count, or <c>all</c>/<c>-1</c>
+    /// for no cap at all. An empty value keeps the default, which is not the same number in every mode.
     /// </summary>
     public static int? ParseOptionalLimit(string? text, string option)
     {

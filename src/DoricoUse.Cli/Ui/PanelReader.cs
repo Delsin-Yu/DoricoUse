@@ -148,7 +148,11 @@ internal static class PanelReader
                 Top: bounds.Top,
                 ValueReadOnly: state.ValueReadOnly,
                 Container: row ? here : null,
-                ContainerScrollable: row && scrollable));
+                ContainerScrollable: row && scrollable,
+                // One more COM getter per kept element, and the one that says whether acting here would do anything:
+                // measured 2026-10-13, a field took a written value while the dialog's 应用 stayed disabled, and
+                // nothing else in the element list could tell a caller that.
+                Enabled: UiaCalls.IsEnabled(element)));
 
             handles.Add(element);
             kept = true;

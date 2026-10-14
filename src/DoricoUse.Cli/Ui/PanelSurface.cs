@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Globalization;
 using System.Text.Json.Nodes;
+using DoricoUse.Cli.Dorico;
 using DoricoUse.Cli.Json;
 
 namespace DoricoUse.Cli.Ui;
@@ -149,7 +150,16 @@ internal static class PanelSurface
     /// <param name="elementId">The <c>element.id</c> the caller named.</param>
     /// <param name="value">Text to write into the element, when it has a value pattern.</param>
     /// <param name="allowUnknownDialog">True when <c>--allow-unknown-dialog</c> was passed.</param>
-    public static JsonObject Act(string panelId, string elementId, string? value, bool allowUnknownDialog)
+    /// <param name="commitInput">
+    /// True when <c>--commit-input</c> was passed: after the value write, click the control and type the text as
+    /// real input. See <see cref="InputSimulator"/> for why a value-pattern write is not enough for a Qt field.
+    /// </param>
+    public static JsonObject Act(
+        string panelId,
+        string elementId,
+        string? value,
+        bool allowUnknownDialog,
+        bool commitInput = false)
     {
         var presence = DialogProbe.Probe();
         var window = (presence.All ?? [])
@@ -229,6 +239,14 @@ internal static class PanelSurface
 
             var element = described[index];
             var input = read.Elements[index];
+
+            // A disabled target is refused before any pattern is called, exactly as a panel element is: measured
+            // 2026-10-13, a pattern call on a disabled element reports success and changes nothing.
+            if (!element.Enabled)
+            {
+                throw PanelModel.RefuseDisabled(panelId, element.Id, element.Name, element.Role);
+            }
+
             var action = PanelModel.Action(input);
 
             if (action == PanelAction.None)
@@ -252,13 +270,27 @@ internal static class PanelSurface
 
             // The action itself is the dialog surface's action too: one implementation, so an element behaves the
             // same wherever it lives. What is added here is what a panel's payload says around it.
-            var performed = ElementActions.Perform(read.Handles[index], action, element, value, panelId);
+            var performed = ElementActions.Perform(
+                read.Handles[index],
+                action,
+                element,
+                value,
+                panelId,
+                commitInput,
+                window.Handle);
             performed["panel"] = panelId;
 
             performed["ms"] = (long)Stopwatch.GetElapsedTime(started).TotalMilliseconds;
-            performed["note"] = "The action's own answer is not evidence — measured, a press that destroys its own "
-                + "window reported an error after it had worked. `stateAfter` and the `panels` array below are a "
-                + "second read of the same window, in the same invocation, which is the evidence.";
+            performed["note"] = commitInput
+                ? "The action's own answer is not evidence — measured, a press that destroys its own window "
+                    + "reported an error after it had worked. `stateAfter` and the `panels` array below are a second "
+                    + "read of the same window, in the same invocation, which is the evidence. `written` and "
+                    + "`committed` say whether the text only went in through the value pattern or also arrived as real "
+                    + "input; whether the window then accepted it is what `stateAfter` and the window's own buttons "
+                    + "say."
+                : "The action's own answer is not evidence — measured, a press that destroys its own window "
+                    + "reported an error after it had worked. `stateAfter` and the `panels` array below are a "
+                    + "second read of the same window, in the same invocation, which is the evidence.";
 
             // One read again, and it answers both questions: what the element says now, and what the panel is now. A
             // separate `stateAfter` read would be a third snapshot of a window that may already differ from the one
@@ -283,6 +315,117 @@ internal static class PanelSurface
             PanelReader.ReleaseAll(read.Handles);
         }
     }
+
+    /// <summary>
+    /// Presses the one button of a panel whose label is this, re-reading the id from a fresh read because the id
+    /// itself is not stable.
+    /// </summary>
+    /// <param name="panelId">The <c>panel.id</c> the caller named.</param>
+    /// <param name="label">The button's label, verbatim — <c>关闭</c> for the 布局选项 dialog.</param>
+    /// <param name="allowUnknownDialog">True when <c>--allow-unknown-dialog</c> was passed.</param>
+    /// <returns>
+    /// The press's own payload, with the id it used, how many reads it took, and — when the button could not be
+    /// matched — <c>pressed: null</c> and the reason, because a caller that asked for a dialog to be closed must be
+    /// able to tell "closed" from "no such button here" without reading the window's whole element list.
+    /// </returns>
+    /// <remarks>
+    /// Measured 2026-10-13: <c>project layout-defaults</c> left the 布局选项 dialog up, and its 关闭/应用 buttons
+    /// have no unique automation id in Qt — 关闭 was <c>button-98</c> in one read — so an id remembered from a
+    /// previous payload is a guess. The label is what is stable, and the match is exact and unique
+    /// (<see cref="PanelModel.ButtonByLabel"/>), so an ambiguous or missing label presses nothing. The caller
+    /// decides which label; this never presses a button it was not asked for, and in particular never 应用.
+    /// </remarks>
+    public static JsonObject PressByLabel(string panelId, string label, bool allowUnknownDialog = false)
+    {
+        ArgumentNullException.ThrowIfNull(panelId);
+        ArgumentNullException.ThrowIfNull(label);
+
+        for (var attempt = 1; attempt <= 2; attempt++)
+        {
+            var presence = DialogProbe.Probe();
+            var window = (presence.All ?? [])
+                .FirstOrDefault(candidate => string.Equals(
+                    PanelModel.PanelId(
+                        candidate.Title,
+                        candidate.WindowClass,
+                        PanelModel.KindUnknown,
+                        presence.Document != nint.Zero && candidate.Handle == presence.Document),
+                    panelId,
+                    StringComparison.Ordinal));
+
+            if (window is null)
+            {
+                return Miss(panelId, label, attempt, "no visible window of Dorico has that id");
+            }
+
+            var read = PanelReader.Read(window.Handle);
+
+            try
+            {
+                var described = PanelModel.Describe(read.Elements);
+                var target = PanelModel.ButtonByLabel(described, label);
+
+                if (target is null)
+                {
+                    var sameLabel = described.Count(element => string.Equals(element.Name, label, StringComparison.Ordinal));
+
+                    return Miss(
+                        panelId,
+                        label,
+                        attempt,
+                        sameLabel == 0
+                            ? $"no button of '{window.Title}' is labelled '{label}'"
+                            : $"{sameLabel} elements of '{window.Title}' are labelled '{label}', so pressing one "
+                                + "would be a guess");
+                }
+
+                try
+                {
+                    var result = Act(panelId, target.Id, null, allowUnknownDialog);
+
+                    result["match"] = new JsonObject
+                    {
+                        ["label"] = label,
+                        ["element"] = target.Id,
+                        ["role"] = target.Role,
+                        ["attempts"] = attempt,
+                        ["note"] = "The button was matched by its label in a fresh read of the window, because this "
+                            + "build's own ids for the 布局选项 dialog's close and apply buttons are positional and "
+                            + "move when the page changes.",
+                    };
+
+                    return result;
+                }
+                catch (CliException ex) when (ex.Code == "ElementNotFound" && attempt == 1)
+                {
+                    // The id moved between this read and the press's own read: read again and press the label's new
+                    // id. One retry only - more would be a loop around a window that is changing under the tool.
+                }
+            }
+            finally
+            {
+                PanelReader.ReleaseAll(read.Handles);
+            }
+        }
+
+        return Miss(panelId, label, 2, "the button's id moved between two reads of the window");
+    }
+
+    /// <summary>
+    /// What a by-label press reports when it found nothing to press: the same shape a successful one has, so a
+    /// caller reads `pressed` and not the absence of a field.
+    /// </summary>
+    private static JsonObject Miss(string panelId, string label, int attempts, string reason)
+        => new()
+        {
+            ["panel"] = panelId,
+            ["label"] = label,
+            ["pressed"] = null,
+            ["attempts"] = attempts,
+            ["reason"] = reason,
+            ["note"] = "Nothing was pressed. A by-label press only presses an exact, unique label match, so a label "
+                + "that is missing or shared presses nothing rather than the first candidate.",
+        };
 
     /// <summary>
     /// Reads the panel once more, in the same invocation, to see what the action did: the element's own new state,

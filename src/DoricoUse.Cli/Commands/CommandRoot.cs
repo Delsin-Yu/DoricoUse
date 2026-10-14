@@ -126,10 +126,18 @@ internal static class CommandRoot
         {
             var payload = action().GetAwaiter().GetResult();
 
+            // A payload that carries its own `dialog` (ui dialog, ui press) is the better read, and the extras are
+            // given it: `blockedByDialog` is a statement about that dialog, so it must be read from the same object
+            // the payload prints rather than from a second probe of a window that may already have changed.
+            _ = payload.TryGetPropertyValue("dialog", out var dialog);
+
             return ResponseWriter.Success(
                 command,
                 payload,
-                DialogSurface.Extras(payload.ContainsKey("dialog"), payload.ContainsKey("panels")));
+                DialogSurface.Extras(
+                    payload.ContainsKey("dialog"),
+                    payload.ContainsKey("panels"),
+                    dialog));
         }
         catch (Exception ex)
         {

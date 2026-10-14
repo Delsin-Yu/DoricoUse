@@ -144,8 +144,8 @@ internal static class OptionsCommands
                     continue;
                 }
 
-                EnumVocabulary.Refuse("--value", path, value, parse.GetValue(allowUnknownEnum));
-                lookedAt.Add((path, value, EnumVocabulary.Check(value)));
+                EnumVocabulary.Refuse("--value", path, value, parse.GetValue(allowUnknownEnum), null);
+                lookedAt.Add((path, value, EnumVocabulary.Check(path, value, null)));
             }
 
             var args = new JsonObject

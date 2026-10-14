@@ -46,6 +46,16 @@ internal static class LogQueue
     private static bool started;
     private static string? failure;
 
+    /// <summary>
+    /// Whether <see cref="Begin"/> has taken the log's offset, under the name the completion wait reads it by.
+    /// </summary>
+    /// <remarks>
+    /// The same flag <c>started</c> has always been, spelled for its reader: the wait for a command's completion
+    /// line has to know the delta's origin exists, and a field named after the verdict alone read as if only the
+    /// verdict could use it.
+    /// </remarks>
+    private static bool startedWaiting => started;
+
     /// <summary>How long to wait for the <c>Posting</c> line of the command this invocation sent.</summary>
     /// <remarks>
     /// Measured on 2026-10-11, on the reproduction of the bug this replaces: the offset was taken at
@@ -462,7 +472,173 @@ internal static class LogQueue
         return pending;
     }
 
-    private static bool WasPosted(string[] lines, string name) => lines.Any(line => Name(line, PostingMarker) == name);    private static bool WasExecuted(string[] lines, string name) => lines.Any(line => Name(line, ExecutingMarker) == name);
+    private static bool WasPosted(string[] lines, string name) => lines.Any(line => Name(line, PostingMarker) == name);
+
+    private static bool WasExecuted(string[] lines, string name) => lines.Any(line => Name(line, ExecutingMarker) == name);
+
+    /// <summary>
+    /// Waits, bounded, for one command's own completion line in Dorico's log, and reports how long it waited and
+    /// whether it timed out.
+    /// </summary>
+    /// <param name="name">The command name this invocation sent, or null when it sent none.</param>
+    /// <param name="budget">How long to wait at most.</param>
+    /// <param name="wait">How to spend one <see cref="PollInterval"/> between two reads of the log.</param>
+    /// <remarks>
+    /// <para>
+    /// This is the recipe the dogfood run used by hand, made a flag. Measured 2026-10-13: a command's own cost is
+    /// not guessable — <c>Instrument.MoveToPlayer</c> took 4.4 s and <c>Players.DeleteEmpty</c> 25 s in the same
+    /// session, against 54 s for a long export — so a caller that picks a fixed sleep either waits too little or
+    /// wastes the difference. Dorico's log names the moment for it:
+    /// <c>notifyPostCommandExecute: &lt;name&gt;?&lt;params&gt; (&lt;ms&gt; ms)</c>, which is the line a manual
+    /// runbook counted before and after the command. The delta starts at <see cref="Begin"/>'s offset, so only
+    /// lines this invocation produced are considered.
+    /// </para>
+    /// <para>
+    /// Two limits are stated rather than hidden. The delta is a window on a file a person and other agents also
+    /// write to, so a completion line for the same command name from another invocation that overlaps this one
+    /// would satisfy the wait; and the count of like-named lines is not tracked, because one <c>command send</c>
+    /// sends one command. <c>posted</c> and the <c>waitedMs</c> beside <c>completed</c> are what a caller checks.
+    /// </para>
+    /// </remarks>
+    public static JsonObject WaitForCompletion(string? name, TimeSpan budget, Action<TimeSpan> wait)
+    {
+        var started = Stopwatch.GetTimestamp();
+
+        if (!startedWaiting || logPath is null || failure is not null)
+        {
+            return Completion(
+                name,
+                completed: false,
+                timedOut: name is null,
+                waited: Stopwatch.GetElapsedTime(started),
+                budget,
+                posted: false,
+                completions: 0,
+                failure ?? "No Dorico log was found, so no completion line can be waited for.");
+        }
+
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            // Nothing was sent by name (`note insert` posts a sequence from the host), so there is no line for this
+            // command to wait for. Saying so beats waiting the whole budget for an answer that cannot come.
+            return Completion(
+                name,
+                completed: false,
+                timedOut: true,
+                waited: Stopwatch.GetElapsedTime(started),
+                budget,
+                posted: false,
+                completions: 0,
+                "This invocation sent no command by name, so there is no completion line of its own to wait for.");
+        }
+
+        var deadline = DateTime.UtcNow + budget;
+        string[] lines;
+
+        while (true)
+        {
+            try
+            {
+                lines = ReadFrom(logPath, startOffset);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                return Completion(
+                    name,
+                    completed: false,
+                    timedOut: true,
+                    waited: Stopwatch.GetElapsedTime(started),
+                    budget,
+                    posted: false,
+                    completions: 0,
+                    $"The Dorico log could not be read ({ex.Message}).");
+            }
+
+            var completions = CompletionLines(lines, name);
+
+            if (completions > 0 || DateTime.UtcNow >= deadline)
+            {
+                return Completion(
+                    name,
+                    completed: completions > 0,
+                    timedOut: completions == 0,
+                    waited: Stopwatch.GetElapsedTime(started),
+                    budget,
+                    posted: WasPosted(lines, name),
+                    completions,
+                    null);
+            }
+
+            wait(PollInterval);
+        }
+    }
+
+    /// <summary>The <c>completion</c> object of a <c>command send --wait-for-completion</c> payload.</summary>
+    private static JsonObject Completion(
+        string? name,
+        bool completed,
+        bool timedOut,
+        TimeSpan waited,
+        TimeSpan budget,
+        bool posted,
+        int completions,
+        string? failure)
+    {
+        var payload = new JsonObject
+        {
+            ["command"] = name,
+            ["completed"] = completed,
+            ["timedOut"] = timedOut,
+            ["waitedMs"] = (long)waited.TotalMilliseconds,
+            ["budgetMs"] = (long)budget.TotalMilliseconds,
+            ["posted"] = posted,
+            ["completedLines"] = completions,
+            ["log"] = logPath,
+            ["note"] = completed
+                ? "Dorico's log gained this command's own `notifyPostCommandExecute` line, so the command finished. "
+                    + "`waitedMs` is how long that took from the moment this invocation started watching."
+                : timedOut
+                    ? "No completion line for this command appeared inside the budget. A long command can still be "
+                        + "running: the log is the witness, and `execution` on this payload says what it shows about "
+                        + "the queue. `posted: false` means the log did not even gain the command's Posting line, "
+                        + "which is what a refused command looks like."
+                    : "The wait ended without a completion line and without a timeout, which no measured path does.",
+        };
+
+        if (failure is not null)
+        {
+            payload["failure"] = failure;
+        }
+
+        return payload;
+    }
+
+    /// <summary>How many completion lines this delta holds for one command.</summary>
+    /// <remarks>
+    /// The logged name may be a refinement of the one the caller sent — Dorico writes
+    /// <c>notifyPostCommandExecute: File.Export.Text?...</c> for the command the catalogue calls <c>File.Export</c>
+    /// (the line in <c>docs/scripting.md</c> is the measurement) — so a logged name that extends the requested one
+    /// with a dot-qualified part counts as that command. The opposite direction is not accepted: a logged
+    /// <c>File.Export</c> is not evidence that <c>File.Export.Text</c> ran.
+    /// </remarks>
+    private static int CompletionLines(string[] lines, string name)
+    {
+        var count = 0;
+
+        foreach (var line in lines)
+        {
+            var logged = Name(line, CompletedMarker);
+
+            if (logged is not null
+                && (logged.Equals(name, StringComparison.Ordinal)
+                    || logged.StartsWith(name + ".", StringComparison.Ordinal)))
+            {
+                count++;
+            }
+        }
+
+        return count;
+    }
 
     /// <summary>
     /// True when Dorico's own log names the command in its queue (<c>Queue after push: {…}</c>).
@@ -508,6 +684,18 @@ internal static class LogQueue
     private const string PostingMarker = "Posting command (requested): ";
 
     private const string ExecutingMarker = "Executing command: ";
+
+    /// <summary>
+    /// The line Dorico writes when a command has finished, which is what <c>--wait-for-completion</c> waits for:
+    /// <c>notifyPostCommandExecute: File.Export.Text?...&amp;Show=false (1894 ms)</c>.
+    /// </summary>
+    /// <remarks>
+    /// Distinct from <see cref="ExecutingMarker"/> and stronger than it: a command that starts executing is not a
+    /// command that finished, which is exactly the shape of the 4.4 s to 54 s commands the report measured. The name
+    /// is read the same way a posting's is — up to the first space or '?' — so the parameters after it do not have
+    /// to be parsed.
+    /// </remarks>
+    private const string CompletedMarker = "notifyPostCommandExecute: ";
 
     /// <summary>Dorico's own name for its queue, written after a push: <c>Queue after push: {…}</c>.</summary>
     private const string QueueMarker = "Queue after push:";

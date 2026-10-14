@@ -91,23 +91,23 @@ surface. See `CONTRIBUTING.md`.
 | `session events [--limit 20] [--payload]` | What Dorico pushed unprompted while nobody was asking. |
 | `session probe [--rounds 3] [--observe-ms 1500]` | Diagnostics for the connection itself. It talks to Dorico directly, not through the host. |
 | `host start [--address] [--client-name]` / `host status` / `host stop` / `host restart` | The long-lived process that owns the connection. |
-| `command send --name <Name> [--param K=V]... [--wait-ms n] [--no-verify] [--allow-modal-dialog]` | Send a Dorico command. The status is read back afterwards. **Refused with `ModalDialogUp` (exit 1) while a blocking dialog is up** unless `--allow-modal-dialog` says you mean it. |
+| `command send --name <Name> [--param K=V]... [--wait-ms n] [--no-verify] [--allow-modal-dialog] [--wait-for-completion] [--completion-timeout-ms n]` | Send a Dorico command. The status is read back afterwards. **Refused with `ModalDialogUp` (exit 1) while a blocking dialog is up** unless `--allow-modal-dialog` says you mean it; `--wait-for-completion` waits for the command's own line in Dorico's log instead of guessing a sleep. **Every payload carries `blockedByDialog`** beside `execution`, so a send that raised a dialog cannot read as a success. |
 | `command list [--family X] [--filter "*Glob*"] [--limit 100]` | Search the catalogue of 1090 commands. |
 | `command info --name <Name>` | One entry: display name and the parameters it accepts. |
 | `project flows [--raw]` / `project layouts [--kind full-score\|part] [--raw]` | Flow and layout IDs, which several options need. |
 | `project players [--expect-score n]` | The players of the **open** document. There is no protocol request for players, so this is a live read through the scripting layer: it reports each player's index, the text Dorico describes it with, and which members the layer refuses. |
-| `project layout-defaults (--part-layouts \| --layout n) [--expect-score n]` | Restore the layouts' options to the user's saved defaults: raises 布局选项 for the part layouts (or for one layout) and presses 重置到保存的默认值. Measured route for engraving checklist item 11; leaves the dialog open, and the document is what verifies it. |
+| `project layout-defaults (--part-layouts \| --layout n) [--expect-score n]` | Restore the layouts' options to the user's saved defaults: raises 布局选项 for the part layouts (or for one layout), presses 重置到保存的默认值, then closes the dialog itself by 关闭 — matched on its label because its id is positional — and never 应用. Measured route for engraving checklist item 11; the document is what verifies it. |
 | `options get --type engraving\|notation\|layout [--layout n] [--flow n] [--filter glob] [--limit n]` | The option paths and their current values (1565 engraving options in the reference project). |
 | `options set --type ... --value path=value... [--layout n] [--flow n] [--no-verify]` | Set option values, then read them back to prove them. **A layout write lands on the layout that is current**, whatever `--layout` says: measured, the protocol ignores the target. Make the layout current first with `Window.SwitchToLayout`. |
 | `library collections` / `library entities --collection <name>` | The 50 library collections and their entities. These are also what the library manager's 集合 rows stand for, which is how an import made by hand is checked. |
 | `playback techniques` / `properties get` | Expression maps and drum kit note maps. The `properties get` command reads what it can from the selection. |
 | `note insert ...` | Enter notes, chords, tuplets and rests. `--from-start` writes from the top, and `--read` proves the result (see below). |
-| `file read --path <project.dorico> [--limit n\|all] [--measure a-b] [--player <glob>] [--tree <name\|*>] [--dynamics] [--lyrics] [--slurs] [--articulations] [--ties] [--beams] [--techniques] [--layout] [--mark-limit n]` | Read a project file from disk: notes, dynamics, slurs, articulations, ties, beams, techniques, layout, or any subtree. No Dorico needed. |
+| `file read --path <project.dorico> [--limit n\|all] [--measure a-b] [--player <glob>] [--tree <name\|*>] [--depth n] [--tree-limit n] [--tree-fields n] [--dynamics] [--lyrics] [--slurs] [--articulations] [--ties] [--beams] [--techniques] [--layout] [--mark-limit n]` | Read a project file from disk: notes, dynamics, slurs, articulations, ties, beams, techniques, layout, or any subtree. No Dorico needed. |
 | `export musicxml [--path <watch dir>] [--wait-ms n]` | Export MusicXML. **Needs a button pressed in Dorico's export dialog** — `ui press` does it, and the payload names the button (see below). |
 | `export text --path <file.csv>` | Export project text/comments as CSV. Fully unattended. |
 | `ui dialog [--raw]` | The modal dialog Dorico has up, verbatim: its title, its body text and every button with a stable id. `dialog` is null when nothing is modal. Windows only. |
 | `ui panels [--panel <id>] [--raw]` | Every window Dorico has up besides its document window, and — when `--panel` names one — every element an action could target, with its role, **its current value**, its state, the container it came from and the pattern an action would use. Every read also says how many nodes the walk visited (`visited`) and, when it kept fewer, why a short list is not a small window (`walkNote`); `--raw` lists every node with `kept` marking the difference. A read that realised list rows also reports the row ceiling: see [Modeless panels](#modeless-panels). Windows only. |
-| `ui press --dialog <id> --button <id> \| --panel <id> --element <id> [--value <t>] [--allow-destructive] [--allow-unknown-dialog] [--path <p>] [--timeout-ms n]` | Work one element: press a button of the dialog that is up, or toggle a check box, choose a tab, select a list or tree item, expand, or write a text field. The payload says what is up afterwards **and what the element holds now** (`worked.stateAfter`), which is how a write is verified. Windows only. See [Modal dialogs](#modal-dialogs) and [Modeless panels](#modeless-panels). |
+| `ui press --dialog <id> --button <id> \| --panel <id> --element <id> [--value <t>] [--allow-destructive] [--allow-unknown-dialog] [--path <p>] [--timeout-ms n] [--commit-input]` | Work one element: press a button of the dialog that is up, or toggle a check box, choose a tab, select a list or tree item, expand, or write a text field. The payload says what is up afterwards **and what the element holds now** (`worked.stateAfter`), which is how a write is verified; **a disabled target is refused with `ElementDisabled`** instead of reporting a press that did nothing, and `--commit-input` sends the text as real input too (`written` vs `committed`). Windows only. See [Modal dialogs](#modal-dialogs) and [Modeless panels](#modeless-panels). |
 | `version` | This build: assembly version, whether it is Native AOT, where its state lives, and the protocol constants. It starts no host and needs no Dorico. |
 
 There is deliberately **no** command that sends an arbitrary protocol message. One existed during development, and
@@ -188,11 +188,41 @@ closed the export dialog. That blind spot is why every payload carries two more 
   outcome and is reported as one. Both waits are bounded — a second for the `Posting` line, then a second for the
   `Executing` one — so `queued` means "posted, and no `Executing` line within a second", and `unknown` means the
   log showed neither, which is what a missing log or a second Dorico installation looks like.
+- **`blockedByDialog` sits next to `execution`, and it is the field that stops a payload claiming a success that
+  did not happen.** It is `true` when the dialog the payload carries is one *this invocation* raised: the state file
+  records when each window handle was first seen, so `openMs: 0` is "nothing before me had seen that window".
+  Measured: `command send --name MouseEdit.ChangeEventPositionOrDuration --param NewDuration=4` answered `kOK`,
+  `execution.state` read `ran` — the log shows the posting *and* the execution — and nothing in the document
+  changed, because the send had put Dorico's `dorico.error` box up and every command after it was posted and not
+  executed. Read it as: **`execution` is void while this is true.** The field is present (as `false`) whenever
+  `execution` is, so a caller can assert it rather than infer its absence, and `blockedByDialogNote` says this in one
+  sentence. Answer the dialog (`dialog.pressWith`) and verify the effect, or send the command again.
+
+  ```json
+  {"execution":{"state":"ran","evidence":"MouseEdit.ChangeEventPositionOrDuration: ran - …","log":"…","postings":5},
+   "blockedByDialog":true,
+   "blockedByDialogNote":"This invocation's own command raised this dialog (openMs 0 = nothing before it had seen that window), and while it is up Dorico posts commands without executing them: …",
+   "dialog":{"id":"dorico.error","title":"Dorico","description":"错误发生","openMs":0,"instance":1,"hwnd":"0x00870A48",
+             "pressWith":"dorico-use ui press --dialog dorico.error --button dismiss"}}
+  ```
 - **`blocksQueue` is a hint from the window class only**, never the queue fact: the modeless library manager
   (`Qt6101QWindowIcon`) is a window a user can see while Dorico keeps working 31 ms per command, and it is reported
   as not blocking. `execution` is the measurement.
 - **The text is verbatim.** The title, the body and the button labels are the strings the dialog really shows, in
   whatever language and encoding. Nothing is translated or summarised; only the **ids** are normalised.
+- **A disabled target is refused, not pressed.** Every element of `ui panels`, `ui dialog` and their re-reads
+  carries **`enabled`** (UI Automation's own `IsEnabled`) and **`invokable`** (whether it exposes an invoke pattern),
+  and a dialog's buttons carry `enabled` too. Measured: `ui press` on a disabled element answered `ok: true` with an
+  invoke that changed nothing, while the same window says `button "应用" [disabled]` to any other reader. A press
+  aimed at one is now refused with `ElementDisabled`, exit 1, before any pattern is called — `error.data` carries the
+  element, its name, its role and `enabled: false`. `enabled` is also in `worked.stateAfter` and `dialog.controls`,
+  because a press that enables 应用 is exactly the transition a caller is waiting for.
+
+  ```bash
+  dorico-use ui panels --panel dorico.document-window
+  #   {"id":"applyButton","role":"button","name":"应用","index":12,"state":null,"action":"invoke",
+  #    "enabled":false,"invokable":true}
+  ```
 - **The ids are stable and derived.** A button id comes from the catalogue, then from a unique automation-id tail,
   then from the classic Win32 control id (`1` is accept and `2` is cancel in a `#32770` dialog), then from a unique
   label, then from the button's position. The id reported in one invocation works in the next, unlike a positional
@@ -254,8 +284,9 @@ dorico-use ui press --dialog dorico.export-musicxml --button accept     # or --b
   build refuses to guess about. Where the line is drawn, in one sentence: **a button may be refused; a control may
   be worked.**
 - **There is no third way to press a button.** Invoke, then toggle, then the legacy accessibility default action;
-  an element with none of the three is refused with `ButtonNotInvokable`. This build never posts a mouse event and
-  never clicks a coordinate.
+  an element with none of the three is refused with `ButtonNotInvokable`. A button press never posts a mouse event
+  and never clicks a coordinate — the one place anything is clicked or typed is `--commit-input` on a text field,
+  opt-in and described under [Edit fields and list rows in a dialog](#edit-fields-and-list-rows-in-a-dialog).
 
 Everything here is **Windows only**, and it is in every build: there is no compiler switch (see
 [Build](#build)). The captions and labels above are what a Chinese Dorico shows, and on another UI language the same
@@ -303,6 +334,30 @@ dorico-use command send --name Project.PlayerRenameShowDialog --param PlayerID=0
   behind every verification and the export that raised the dialog in the first place. `command send --dry-run` is not
   guarded either: it sends nothing, starts no host, and is exactly what a caller wants while Dorico is stuck.
 
+#### Waiting for a command to finish
+
+A command's cost is not guessable: measured in one session, `Instrument.MoveToPlayer` took 4.4 s,
+`Players.DeleteEmpty` 25 s and a long export 54 s. `--wait-ms` is a sleep, so it either comes back before the work is
+done or wastes the difference. Dorico's log names the moment instead —
+`notifyPostCommandExecute: <name>?<params> (<ms> ms)` — so:
+
+```bash
+dorico-use command send --name Players.DeleteEmpty --wait-for-completion --completion-timeout-ms 60000
+#   "completion":{"command":"Players.DeleteEmpty","completed":true,"timedOut":false,"waitedMs":25064,
+#                 "budgetMs":60000,"posted":true,"completedLines":1,
+#                 "log":"C:\\Users\\<you>\\AppData\\Roaming\\Steinberg\\Dorico 6\\application.log","note":"…"}
+```
+
+- **The baseline is this invocation's own offset** in `application.log`, taken when the command starts, so the wait
+  only ever matches lines this invocation produced. The bounded default is 90 s — above the longest command measured —
+  and a timeout reports `completed: false, timedOut: true` with the time it really waited, because a command can still
+  be running after the bound. `posted: false` is what a command Dorico refused looks like.
+- **A completion line that refines the name counts** (`File.Export.Text` for `File.Export`, which is the line in
+  `docs/scripting.md`); the reverse does not, so a shorter logged name is never evidence that a longer command ran.
+- **Two limits, stated**: the log is a file other invocations share, so a completion line for the same command name
+  from an overlapping invocation would satisfy the wait, and like-named lines are not counted because one
+  `command send` sends one command.
+
 #### The codes `ui press` refuses with
 | Code (exit 1) | When |
 |---|---|
@@ -313,6 +368,7 @@ dorico-use command send --name Project.PlayerRenameShowDialog --param PlayerID=0
 | `UnknownDialog` | not in the catalogue and no `--allow-unknown-dialog` |
 | `DestructiveRefused` | the button is not catalogued as safe and no `--allow-destructive` |
 | `PickerNotSettable` | no value pattern on the file-name box, so `--path` cannot be written into it |
+| `ElementDisabled` | the target's UI Automation `IsEnabled` is false, so a pattern call would report success and change nothing |
 
 A probe or press failure is exit 2 (`DialogProbeFailed`, `PressFailed`), never a refusal: a refusal is the caller's
 fault and a runtime failure is not.
@@ -508,10 +564,46 @@ field is never repurposed.
 
 ```bash
 dorico-use ui press --dialog unknown.1e4222903d39 --element shortNameLineEdit --value "Probe."
-#   worked.action "value", worked.value "Probe."  (the string that was sent)
-#   worked.stateAfter {"state":"value","value":"Probe.","valueReadOnly":false,"role":"edit","name":"短名："}
+#   worked.action "value", worked.written true, worked.committed false, worked.value "Probe."  (the string sent)
+#   worked.stateAfter {"state":"value","value":"Probe.","valueReadOnly":false,"enabled":true,"invokable":false,
+#                      "role":"edit","name":"短名："}
 #   the second read is the evidence; the first is only what was asked for
 ```
+
+**Written is not the same as committed, and `--commit-input` is the difference.** The value pattern is a
+programmatic set: a Qt field takes it without emitting the change signal its dialog listens for. Measured on the
+工程信息 dialog (step 3 of the engraving checklist): `ui press --panel <it> --element titleLineEdit --value
+狸猫的五十种变化` wrote the text, the field read it back verbatim, `应用` stayed **disabled** and the value reverted
+when the dialog was left — a false success of exactly the kind `execution` and `blockedByDialog` exist to prevent.
+The route the run used by hand was real input, so that is now a flag:
+
+```bash
+dorico-use ui press --panel <工程信息> --element titleLineEdit --value "狸猫的五十种变化" --commit-input
+#   worked.written   true                       the value pattern took the text
+#   worked.commit    {"ran":true,"cursor":{"x":812,"y":540},"clicks":1,"keys":22,"wasInFront":false,
+#                     "foreground":true,"valueAfter":"狸猫的五十种变化","valueMatches":true,"ms":412}
+#   worked.committed true                       the pass ran and the field read back what was typed
+```
+
+- **What it does**: writes through the value pattern as always, then clicks the control's centre, sends `Ctrl+A` and
+  sends the text as `KEYEVENTF_UNICODE` keystrokes — all through `SendInput`, the same route a person's mouse and
+  keyboard take. The field cannot tell it from an edit, which is the point.
+- **The payload separates the two claims**: `written` (the value pattern took the text), `commit` (the pass's own
+  report — the click's coordinates, how many key events `SendInput` accepted, whether the window really came forward,
+  the value read back afterwards and whether it matches) and `committed` (the pass ran *and* the field reads back what
+  was typed). Without `--commit-input`, `written: true, committed: false` is what a caller gets.
+- **It is refused where it means nothing**: without `--value` (`InvalidArgument`), with `--path` (a picker fill is not
+  a measured real-input route here), for a dialog **button**, and for any element whose action is not `value` — code
+  `InvalidArgument`, exit 1, because this build will not click a coordinate it has not measured a text field at. When
+  the pass cannot run at all — an element with no bounding rectangle, a window out of this process's reach,
+  `SendInput` refusing the click — the answer is `InputNotCommitted`, **exit 2**, and `error.data` carries
+  `written: true` with the pass's report, so a caller cannot read it as "nothing was written".
+- **It needs an interactive desktop**: it moves the pointer, brings the window forward and types at whatever has
+  focus. That is the deliberate exception to this tool's "no synthetic input" rule, and it is opt-in for exactly that
+  reason: nothing else in this build clicks a coordinate or types a keystroke.
+- **Unverified against Dorico here.** No live run of this pass was measured in this round; what was measured is the
+  failure it works around, and the shape of the pass is the one the run used through another tool. Read
+  `commit.foreground` and `commit.valueMatches` first when it does not do what was asked.
 
 #### A file picker, and the library import it is for
 
@@ -654,7 +746,9 @@ One command does the whole route:
 dorico-use project layout-defaults --part-layouts --expect-score 2
 #   -> {"layoutDefaults":{"scope":"part-layouts","raised":{"name":"Project.Layout.AllPartOptions","ack":"kOK"},
 #        "panel":{"id":"dorico.layout-options",…},"pressed":{"element":"resetToSavedDefaults",
-#        "name":"重置到保存的默认值",…}}}
+#        "name":"重置到保存的默认值",…},
+#        "closed":{"pressed":{"element":"button-98","name":"关闭",…},"match":{"label":"关闭","element":"button-98",
+#                  "attempts":1,"note":"…"}}}}
 dorico-use project layout-defaults --layout 3 --expect-score 2      # one layout instead of all of them
 ```
 
@@ -664,9 +758,13 @@ layouts, and **one press** of `重置到保存的默认值` took both back to 4.
 which was not in the dialog's selection, kept its own 8.8. 重置到出厂值 produced the same 4.96 on that document, so
 the two buttons are indistinguishable there; nothing in this round saved a user default (`saveAsDefault` writes to the
 user's library, which is not this tool's to change), so "saved defaults" and "factory defaults" are only shown to
-agree on this project. The dialog's own 关闭/应用 buttons have **no unique automation id** in Qt — measured, their
-element ids moved between two reads of the same dialog once its page changed — which is why the command presses only
-`resetToSavedDefaults` and leaves the dialog open.
+agree on this project.
+
+The command then **closes the dialog itself**, and never with 应用. Its 关闭/应用 buttons have **no unique
+automation id** in Qt — measured, their element ids moved between two reads of the same dialog once its page changed
+(关闭 was `button-98` in one read) — so the close is a fresh read matched on the **label**: exact and unique, and an
+ambiguous or missing label presses nothing at all rather than the first candidate. The reset needs no 应用 press: its
+effect reaches the document immediately.
 
 The press is not the proof. **Verify with the document**, which is what the payload's `verifyWith` line says:
 
@@ -835,6 +933,20 @@ the parse ends exactly on the last byte. Notes come out as `flow → blocks → 
 NoteEventDefinition{eventID, pitch, position, duration}`. Position and duration are exact rationals in crotchets.
 The stave is resolved through `stream → flowPlayer → voiceStreamInfos/staveStreamInfos`. Dynamics come from
 `DynamicGroupEventDefinition` plus its immediate, gradual and force marks.
+
+`--tree-limit` bounds **records** — how many nodes matched the name, and how many children of each — and never a
+record's fields; `--tree-fields` is the cap for those, and its default is every one of them. The two used to be one
+number, and measured 2026-10-13 that is what made a reader report that `GradualTempoChangeEventDefinition` has no
+`duration` field: `--tree-limit 2` showed the first two fields of each event, and `duration` comes after them. A
+record's field list is the shape of that record, so it is reported whole unless you ask otherwise, and the payload
+carries both numbers:
+
+```bash
+dorico-use file read --path <project.dorico> --limit 0 --tree NoteEventDefinition --tree-limit 1
+#   "limit":1,"fieldLimit":-1   -> one note event, all seven of its fields, "duration" among them
+dorico-use file read --path <project.dorico> --limit 0 --tree NoteEventDefinition --tree-limit 1 --tree-fields 2
+#   "limit":1,"fieldLimit":2    -> the same event, two fields, and its own "truncated": true
+```
 
 The option `--tree` is the escape hatch for everything else. The value `*` is a census of every node kind and leaf
 key. A name dumps each occurrence with its root path and fields, and a miss returns the nearest names.
@@ -1075,6 +1187,14 @@ Nothing has to be installed, extracted or kept up to date for this to work.
 this build has never heard of is far more likely to be something a newer Dorico accepts than a typo, and refusing
 it would break working commands. The payload always says what happened: `vocabulary.source` is `"built in"`, and
 `vocabulary.lookedAt` lists each value that was checked and the verdict.
+
+**A parameter whose meaning depends on the command is checked per command** (`vocabulary.commandScoped` lists
+them). `Type` is one: it is the seven accidentals to `NoteInput.SetAccidental`, and it is a **property name** to
+`EventEdit.ChangeProperty` and `UI.InvokePropertyChangeValue` — measured 2026-10-13, those two were refused unless
+the caller's property name happened to be an accidental, and a property name is exactly what they take. The
+property commands' `Type` is therefore looked at and deliberately not judged (`not checked for this command` in
+`lookedAt`), a command this build has never measured a `Type` on is left to Dorico, and a misspelt accidental is
+still refused for the one command that takes one — with `--allow-unknown-enum` in the message, as before.
 
 **Unpublished commands.** `docs/hidden-commands.md` diffs the binary's command-name pool against the live
 catalogue: **1191 names in the application, 1029 of them published, 162 not**. That includes `File.New` (Ctrl+N),

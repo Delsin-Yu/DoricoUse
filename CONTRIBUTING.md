@@ -124,7 +124,13 @@ really exposes.
 **An element's action comes from its own patterns**, in this order: toggle, selection, expand or collapse, invoke,
 value. Measured, a Qt check box exposes an invoke pattern *and* a toggle pattern, and invoking it does not always
 change its state, while toggling does — which is why toggle is asked for first. An element with none of them is
-refused with `ElementNotActionable`; there is no coordinate clicking and no synthetic typing anywhere in this build.
+refused with `ElementNotActionable`. A **disabled** element (UI Automation `IsEnabled` false) is refused too, with
+`ElementDisabled`, because a pattern call on one reports success and changes nothing — measured 2026-10-13. There is
+no coordinate clicking and no synthetic typing anywhere in this build **except** `Ui/InputSimulator.cs`, which
+`ui press --commit-input` reaches for and nothing else does: a Qt text field accepts a value-pattern write without
+telling its dialog, so that one opt-in pass clicks the control and types the text through `SendInput`, and the
+payload says which of the two happened (`written` vs `committed`). Keep it that way: a click or a keystroke a caller
+did not ask for is a bug, whatever it fixes.
 
 **Which control types are elements lives in `Ui/ControlTypes.cs`, a pure file, and that is a bug fix as much as a
 design.** `ListItem` was written as `50029` in the Windows half for a whole release; `50029` is `DataItem`, and
@@ -173,6 +179,12 @@ constant comes from `PanelModel.DocumentWindowId`, and the probe decides *which*
 window of Dorico's process, the largest by its **restored** rectangle, because `GetWindowRect` on a minimized window
 answers the 158x26 icon rectangle. If you change that resolution, take all three measurements again: nothing else up,
 the library manager up, and the document window minimized.
+
+**The three fields that answer "would acting here do anything" are `enabled`, `invokable` and, on a payload that
+posted a command, `blockedByDialog`.** They are additive and always present (the two element fields on every element,
+the third whenever `execution` is), because each of them exists to stop a false success: a disabled 应用 that read as
+a live target, an invoke pattern that does nothing, and a `command send` whose own dialog left `execution.state`
+reading `ran` while nothing executed. A caller must never have to infer any of them from a missing field.
 
 **A dialog's non-button controls are called `controls`, and `--raw`'s `elements` was left alone.** A panel publishes
 its actionable elements as `elements`; a dialog has published the whole tree it walked as `elements` under `--raw`

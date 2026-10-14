@@ -58,6 +58,13 @@ internal sealed record WindowFacts(
 /// Whether that ancestor exposes the scroll pattern. Measured false on every list view this build has read, which
 /// is why the read cannot page to the rows the viewport hides.
 /// </param>
+/// <param name="Enabled">
+/// The element's own UI Automation <c>IsEnabled</c>. It is the cheapest answer to "would an action here do
+/// anything", and it was missing: measured 2026-10-13 on the 工程信息 dialog, the value-pattern write into 标题 read
+/// back verbatim while 应用 stayed disabled and the write was reverted, and nothing in the element list said so —
+/// any accessibility reader shows `button "应用" [disabled]` for that window. False means an action is
+/// refused with <c>ElementDisabled</c> rather than reported as an invoke that did nothing.
+/// </param>
 internal sealed record PanelElementInput(
     int ControlType,
     string Name,
@@ -71,7 +78,8 @@ internal sealed record PanelElementInput(
     int Top = 0,
     bool? ValueReadOnly = null,
     string? Container = null,
-    bool ContainerScrollable = false);
+    bool ContainerScrollable = false,
+    bool Enabled = true);
 
 /// <summary>One element as the payload reports it, with the id an agent passes back to <c>ui press --element</c>.</summary>
 /// <param name="Id">The stable id, derived from the same rules the dialog buttons use.</param>
@@ -102,6 +110,12 @@ internal sealed record PanelElementInput(
 /// </param>
 /// <param name="ValueReadOnly">Whether the value pattern is read-only, or null when there is none.</param>
 /// <param name="Container">The id or label of the row container this element belongs to, or null.</param>
+/// <param name="Enabled">The element's own UI Automation <c>IsEnabled</c>; false is what <c>ui press</c> refuses.</param>
+/// <param name="Invokable">
+/// True when the element exposes an invoke pattern. Reported for every element, not only for a dialog's buttons
+/// (which have carried it since the dialog layer was written), because "there is a pressable pattern here" and
+/// "would a press do anything" are two different facts and a caller needs both.
+/// </param>
 internal sealed record PanelElementDescription(
     string Id,
     string Role,
@@ -113,7 +127,9 @@ internal sealed record PanelElementDescription(
     string? Value = null,
     string? ValueFrom = null,
     bool? ValueReadOnly = null,
-    string? Container = null);
+    string? Container = null,
+    bool Enabled = true,
+    bool Invokable = false);
 
 /// <summary>One node of a panel's accessibility tree, kept or not, for <c>ui panels --raw</c>.</summary>
 /// <remarks>
@@ -364,7 +380,9 @@ internal static class PanelModel
                 Value: element.Value,
                 ValueFrom: element.Value is null ? null : ValueFromValuePattern,
                 ValueReadOnly: element.Value is null ? null : element.ValueReadOnly,
-                Container: element.Container));
+                Container: element.Container,
+                Enabled: element.Enabled,
+                Invokable: element.Invokable));
         }
 
         return described;
@@ -372,6 +390,130 @@ internal static class PanelModel
 
     /// <summary>The pattern name a reported value came from. See <see cref="PanelElementDescription.ValueFrom"/>.</summary>
     public const string ValueFromValuePattern = "valuePattern";
+
+    /// <summary>
+    /// The code <c>ui press</c> refuses a disabled target with, and a code of its own rather than a generic one.
+    /// </summary>
+    /// <remarks>
+    /// Measured 2026-10-13: pressing an element whose <c>IsEnabled</c> is false reports <c>ok: true</c> with an
+    /// invoke pattern that does nothing — the tool said it worked and the window did not change. A disabled target is
+    /// a refusal the caller can act on (wait, select the row the dialog wants, or stop asking), so it is reported as
+    /// itself and never as a press that happened. Exit 1, like every other refusal: the caller named something it may
+    /// not work.
+    /// </remarks>
+    public const string DisabledCode = "ElementDisabled";
+
+    /// <summary>
+    /// The refusal for an element that is up but disabled: refused before any pattern is called, so nothing is
+    /// half-done.
+    /// </summary>
+    /// <param name="where">The panel or dialog id the element belongs to.</param>
+    /// <param name="id">The element's id.</param>
+    /// <param name="name">The element's label, verbatim.</param>
+    /// <param name="role">The element's role.</param>
+    public static CliException RefuseDisabled(string where, string id, string name, string role)
+    {
+        ArgumentNullException.ThrowIfNull(where);
+        ArgumentNullException.ThrowIfNull(id);
+
+        return new CliException(
+            DisabledCode,
+            $"Element '{id}' ('{name}') of '{where}' is disabled (UI Automation IsEnabled false), so it was not "
+            + "acted on: a pattern call on a disabled element reports success and changes nothing, which is the "
+            + "false `ok: true` this refusal replaces. Read `enabled` on the element list to see which targets are "
+            + "live, and make the window enable this one first — measured 2026-10-13 on the 工程信息 dialog, 应用 "
+            + "stayed disabled until the row the dialog edits was selected.",
+            DialogModel.RefusalExitCode)
+        {
+            Details = new JsonObject
+            {
+                ["window"] = where,
+                ["element"] = id,
+                ["name"] = name,
+                ["role"] = role,
+                ["enabled"] = false,
+            },
+        };
+    }
+
+    /// <summary>
+    /// The one button of a window whose label is this, or null when there is none or more than one.
+    /// </summary>
+    /// <param name="elements">The elements of a fresh read, in read order.</param>
+    /// <param name="label">The label to match, verbatim as the window shows it.</param>
+    /// <remarks>
+    /// A label is a value and an id is an identity, and this exists for the one measured case where the identity is
+    /// not stable: the 布局选项 dialog's 关闭 and 应用 buttons have no unique automation id in Qt, so their element
+    /// ids are derived from their position and move when the dialog's page changes (measured 2026-10-13: 关闭 was
+    /// <c>button-98</c> in one read). A caller that means "close this dialog, whatever its close button is called
+    /// this time" therefore has to re-read and match on the label — and the two rules that keep that from becoming a
+    /// guess are here: the match is exact, and an ambiguous label matches nothing at all rather than the first one,
+    /// because pressing the wrong one of two same-labelled buttons is exactly the accident this is for.
+    /// </remarks>
+    public static PanelElementDescription? ButtonByLabel(IReadOnlyList<PanelElementDescription> elements, string label)
+    {
+        ArgumentNullException.ThrowIfNull(elements);
+        ArgumentNullException.ThrowIfNull(label);
+
+        PanelElementDescription? found = null;
+
+        foreach (var element in elements)
+        {
+            if (!string.Equals(element.Role, RoleButton, StringComparison.Ordinal)
+                || !string.Equals(element.Name, label, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            if (found is not null)
+            {
+                return null;
+            }
+
+            found = element;
+        }
+
+        return found;
+    }
+
+    /// <summary>The role a pressable button reports, which is what <see cref="ButtonByLabel"/> matches on.</summary>
+    public const string RoleButton = "button";
+
+    /// <summary>
+    /// Whether <c>--commit-input</c> applies to an action. Only a value write has text to commit.
+    /// </summary>
+    /// <remarks>
+    /// The rule lives here rather than beside the click it guards because it is a rule and not a Windows call: the
+    /// check project asserts it, and the click itself (<see cref="InputSimulator"/>) is the only thing that has to
+    /// be Windows-shaped.
+    /// </remarks>
+    public static bool CommitInputApplicable(PanelAction action) => action == PanelAction.Value;
+
+    /// <summary>The refusal for <c>--commit-input</c> aimed at something that is not a text field.</summary>
+    /// <param name="where">The panel or dialog id the element belongs to.</param>
+    /// <param name="element">The element the caller named.</param>
+    public static CliException RefuseCommitInput(string where, PanelElementDescription element)
+    {
+        ArgumentNullException.ThrowIfNull(element);
+
+        return new CliException(
+            "InvalidArgument",
+            $"--commit-input sends real input into a text field, and '{element.Id}' ('{element.Name}') is not one: its "
+            + $"action is {ActionText(element.Action)}, not value. Real input for anything else has not been measured "
+            + "here, so this build refuses rather than clicking at a coordinate on a guess.",
+            DialogModel.RefusalExitCode)
+        {
+            Details = new JsonObject
+            {
+                ["window"] = where,
+                ["element"] = element.Id,
+                ["action"] = element.Action,
+            },
+        };
+    }
+
+    /// <summary>The reported action of an element, or <c>none</c> when it exposes no pattern to act through.</summary>
+    private static string ActionText(string? action) => action ?? "none";
 
     /// <summary>
     /// The row containers an element list realised, with how many rows each one, and whether it could be scrolled.
@@ -505,6 +647,11 @@ internal static class PanelModel
                 ["valueReadOnly"] = described[index].ValueReadOnly,
                 ["toggle"] = index < inputs.Count ? inputs[index].ToggleState : null,
                 ["selected"] = index < inputs.Count ? inputs[index].Selected : null,
+                // `enabled` is part of the evidence because it is what a caller acts on next: a press that enables
+                // 应用 is exactly the transition the 工程信息 dialog needs, and a press that leaves everything
+                // disabled has to be visible as such rather than inferred from a missing change.
+                ["enabled"] = described[index].Enabled,
+                ["invokable"] = described[index].Invokable,
             };
         }
 
@@ -542,6 +689,10 @@ internal static class PanelModel
                 ["role"] = control["role"]?.DeepClone(),
                 ["name"] = control["name"]?.DeepClone(),
                 ["container"] = control["container"]?.DeepClone(),
+                // The same two facts a panel element's evidence carries: what the control is now, and whether it
+                // would be acted on at all.
+                ["enabled"] = control["enabled"]?.DeepClone(),
+                ["invokable"] = control["invokable"]?.DeepClone(),
             };
         }
 
@@ -731,6 +882,12 @@ internal static class PanelModel
                 ["index"] = element.Index,
                 ["state"] = element.State,
                 ["action"] = element.Action,
+                // The two facts that answer "would acting here do anything". `enabled` is UI Automation's own
+                // IsEnabled and `invokable` is the presence of an invoke pattern; both are reported for every
+                // element, because measured 2026-10-13 a value write that the field accepted was reverted by a
+                // dialog whose 应用 stayed disabled, and the element list could not say so.
+                ["enabled"] = element.Enabled,
+                ["invokable"] = element.Invokable,
             };
 
             if (element.Value is not null)

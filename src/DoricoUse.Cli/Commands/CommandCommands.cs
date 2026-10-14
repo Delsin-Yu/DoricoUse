@@ -12,6 +12,17 @@ namespace DoricoUse.Cli.Commands;
 /// </summary>
 internal static class CommandCommands
 {
+    /// <summary>
+    /// How long <c>--wait-for-completion</c> waits unless the caller says otherwise.
+    /// </summary>
+    /// <remarks>
+    /// Above the longest command the report measured (54 s for a long export, 25 s for <c>Players.DeleteEmpty</c>),
+    /// because a bound below a real command's cost would report a timeout for work that is still running. It is
+    /// still a bound: a command that never finishes - or one whose completion line cannot be attributed - has to
+    /// come back with an answer rather than hang a caller.
+    /// </remarks>
+    private const int DefaultCompletionTimeoutMs = 90_000;
+
     public static Command Build()
     {
         var command = new Command("command", "Send Dorico commands and search its command catalogue.");
@@ -62,6 +73,20 @@ internal static class CommandCommands
                 + "nothing: no host is started and Dorico is not contacted.",
         };
 
+        var waitForCompletion = new Option<bool>("--wait-for-completion")
+        {
+            Description = "Wait until Dorico's log shows this command's own `notifyPostCommandExecute` line, and "
+                + "report how long that took. Measured: command times span 4.4 s to 54 s (Instrument.MoveToPlayer "
+                + "4.4 s, Players.DeleteEmpty 25 s), so a fixed sleep is a guess; the log is the witness. The payload "
+                + "gains `completion` with `completed`, `timedOut` and `waitedMs`.",
+        };
+
+        var completionTimeout = new Option<int>("--completion-timeout-ms")
+        {
+            Description = "How long --wait-for-completion waits at most, in milliseconds.",
+            DefaultValueFactory = _ => DefaultCompletionTimeoutMs,
+        };
+
         var allowModalDialog = new Option<bool>("--allow-modal-dialog")
         {
             Description = "Send even while a blocking dialog is up in Dorico. Without it the command is refused "
@@ -87,6 +112,8 @@ internal static class CommandCommands
             noVerify,
             allowUnknownEnum,
             dryRun,
+            waitForCompletion,
+            completionTimeout,
             allowModalDialog,
             expectScore,
         };
@@ -105,7 +132,7 @@ internal static class CommandCommands
 
             // Before anything else touches the host: an unknown enum value would be accepted with kOK and
             // silently turned into another value inside Dorico, which is the failure this exists to prevent.
-            var lookedAt = CheckValues(values, parse.GetValue(allowUnknownEnum));
+            var lookedAt = CheckValues(values, parse.GetValue(allowUnknownEnum), commandName);
 
             if (parse.GetValue(dryRun))
             {
@@ -127,6 +154,9 @@ internal static class CommandCommands
                 };
             }
 
+            var wantsCompletion = parse.GetValue(waitForCompletion);
+            var completionMs = (long)Math.Clamp(parse.GetValue(completionTimeout), 250, 600_000);
+
             var args = new JsonObject
             {
                 ["name"] = commandName,
@@ -141,8 +171,15 @@ internal static class CommandCommands
 
             CommandRoot.AddExpectScore(args, parse.GetValue(expectScore));
 
-            // The host may exchange twice with Dorico (command, then status) plus the requested wait.
+            // The host may exchange twice with Dorico (command, then status) plus the requested wait, plus the
+            // bound the completion wait was given: the protocol call must not time out while this invocation is
+            // deliberately waiting for Dorico's log.
             var budget = (timeout * 2) + TimeSpan.FromMilliseconds(waitMs);
+
+            if (wantsCompletion)
+            {
+                budget += TimeSpan.FromMilliseconds(completionMs);
+            }
 
             var payload = await HostClient
                 .CallAsync(HostProtocol.OpCommand, args, budget, CancellationToken.None)
@@ -151,6 +188,17 @@ internal static class CommandCommands
             if (lookedAt.Count > 0)
             {
                 payload["vocabulary"] = EnumVocabulary.Describe(lookedAt);
+            }
+
+            if (wantsCompletion)
+            {
+                // After the send and after the status read, and before this payload's own `execution` is gathered:
+                // the wait reads the same delta the verdict reads, from the offset Begin() took at the start of the
+                // invocation, so neither consumes the other's lines.
+                payload["completion"] = LogQueue.WaitForCompletion(
+                    commandName,
+                    TimeSpan.FromMilliseconds(completionMs),
+                    Thread.Sleep);
             }
 
             return payload;
@@ -166,7 +214,8 @@ internal static class CommandCommands
     /// </summary>
     private static List<(string Key, string Value, VocabularyVerdict Verdict)> CheckValues(
         JsonObject values,
-        bool allowUnknown)
+        bool allowUnknown,
+        string command)
     {
         var lookedAt = new List<(string Key, string Value, VocabularyVerdict Verdict)>();
 
@@ -178,8 +227,11 @@ internal static class CommandCommands
                 continue;
             }
 
-            EnumVocabulary.Refuse("--param", key, value, allowUnknown);
-            lookedAt.Add((key, value, EnumVocabulary.Check(value)));
+            // The command name goes in: a parameter like `Type` means one thing to NoteInput.SetAccidental and
+            // another to EventEdit.ChangeProperty, whose Type is a property name rather than one of the seven
+            // accidentals - refusing that was measured 2026-10-13 and is the bug this command-aware check fixes.
+            EnumVocabulary.Refuse("--param", key, value, allowUnknown, command);
+            lookedAt.Add((key, value, EnumVocabulary.Check(key, value, command)));
         }
 
         return lookedAt;

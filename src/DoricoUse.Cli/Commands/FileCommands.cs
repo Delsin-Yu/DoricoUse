@@ -112,9 +112,9 @@ internal static class FileCommands
         var tree = new Option<string?>("--tree")
         {
             Description = "Dump the decoded record tree: a node name (e.g. DynamicGroupElementDefinition) shows every "
-                + "node with that name, bounded by --depth and --tree-limit; '*' lists every name the file uses with "
-                + "how often. Nothing about the file is assumed — this is how to explore a shape this CLI has no code "
-                + "for.",
+                + "node with that name, bounded by --depth and --tree-limit, with every field of each one unless "
+                + "--tree-fields says otherwise; '*' lists every name the file uses with how often. Nothing about the "
+                + "file is assumed — this is how to explore a shape this CLI has no code for.",
         };
 
         var depth = new Option<string?>("--depth")
@@ -124,8 +124,16 @@ internal static class FileCommands
 
         var treeLimit = new Option<string?>("--tree-limit")
         {
-            Description = "How many occurrences, fields and children --tree lists per node: a count, or 'all'/'-1'. "
-                + "Default 8, or 200 names for '--tree *'.",
+            Description = "How many records --tree lists: the matched nodes, and how many children of each. A count, "
+                + "or 'all'/'-1'. Default 8, or 200 names for '--tree *'. It never bounds a record's fields - "
+                + "measured, one number bounding both is what made an event look like it had no duration field; "
+                + "use --tree-fields for that.",
+        };
+
+        var treeFields = new Option<string?>("--tree-fields")
+        {
+            Description = "How many fields of each record --tree lists: a count, or 'all'/'-1'. Default 'all', "
+                + "because a record's field list is that record's shape and a short one reads as a missing field.",
         };
 
         var command = new Command(
@@ -150,6 +158,7 @@ internal static class FileCommands
             tree,
             depth,
             treeLimit,
+            treeFields,
         };
 
         command.SetAction(parse => CommandRoot.RunAsync("file read", () =>
@@ -176,6 +185,7 @@ internal static class FileCommands
                 Tree = parse.GetValue(tree),
                 Depth = ProjectFileView.ParseDepth(parse.GetValue(depth)),
                 TreeLimit = ProjectFileView.ParseOptionalLimit(parse.GetValue(treeLimit), "--tree-limit"),
+                TreeFieldLimit = ProjectFileView.ParseOptionalLimit(parse.GetValue(treeFields), "--tree-fields"),
             };
 
             return Task.FromResult(ProjectFileView.Report(file, options));

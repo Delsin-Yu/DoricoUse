@@ -139,7 +139,9 @@ internal static class UiCommands
             Description = "Text to write into a text field through the UI Automation value pattern, e.g. a player's "
                 + "name in the rename dialog or a path in a file picker's `1148` name box. The element must expose "
                 + "the value pattern; otherwise the press is refused with ElementNotSettable, and this build never "
-                + "types at random.",
+                + "types at random. Add --commit-input when the window has to see the text as a real edit — a Qt "
+                + "field accepts this write without telling its dialog, so the field reads back the text while 应用 "
+                + "stays disabled and the value reverts.",
         };
 
         var allowDestructive = new Option<bool>("--allow-destructive")
@@ -168,12 +170,24 @@ internal static class UiCommands
             DefaultValueFactory = _ => DialogSurface.DefaultPressTimeoutMs,
         };
 
+        var commitInput = new Option<bool>("--commit-input")
+        {
+            Description = "After writing --value through the value pattern, click the control and type the text as "
+                + "real input (SendInput). A Qt field accepts a value-pattern write without emitting the change "
+                + "signal its dialog listens for: measured 2026-10-13 on the 工程信息 dialog, the write read back "
+                + "while 应用 stayed disabled and the value reverted. Needs --value, needs an interactive desktop "
+                + "(it brings the window forward and moves the pointer), and is refused for anything that is not a "
+                + "text field. The payload says which happened: `written`, `committed` and the `commit` report.",
+        };
+
         var command = new Command(
             "press",
             "Work one element: press a button of the dialog that is up after re-probing it (the dialog named must be "
             + "the one that is up, or the press refuses with WrongDialog), or toggle, choose, expand, press or fill "
             + "an element of a panel. The payload says what is up afterwards, which is the only evidence — a press "
-            + "that closes its own window can report an error after succeeding.")
+            + "that closes its own window can report an error after succeeding. A text field is written through the "
+            + "UI Automation value pattern, and --commit-input sends the text as real input as well, because a Qt "
+            + "field takes the first without telling its dialog.")
         {
             dialog,
             panel,
@@ -184,6 +198,7 @@ internal static class UiCommands
             allowUnknown,
             path,
             timeout,
+            commitInput,
         };
 
         command.SetAction(parse => CommandRoot.RunAsync("ui press", () =>
@@ -211,13 +226,37 @@ internal static class UiCommands
                     1);
             }
 
+            // --commit-input types a value, so it is meaningless without one; refusing here keeps the refusal the
+            // caller's own and keeps --path (a picker fill) out of a route whose control this build has not measured.
+            if (parse.GetValue(commitInput))
+            {
+                if (workspace is null)
+                {
+                    throw new CliException(
+                        "InvalidArgument",
+                        "--commit-input sends real input, so it needs --value <text> to send: there is nothing to "
+                        + "commit without one.",
+                        1);
+                }
+
+                if (!string.IsNullOrWhiteSpace(parse.GetValue(path)))
+                {
+                    throw new CliException(
+                        "InvalidArgument",
+                        "--commit-input works with --value <text>, not --path: real input into a picker's file-name "
+                        + "box has not been measured here, and the control it lands in would be a guess.",
+                        1);
+                }
+            }
+
             if (!string.IsNullOrWhiteSpace(panelId))
             {
                 return Task.FromResult(PanelSurface.Act(
                     panelId,
                     elementId,
                     workspace,
-                    parse.GetValue(allowUnknown)));
+                    parse.GetValue(allowUnknown),
+                    parse.GetValue(commitInput)));
             }
 
             return Task.FromResult(DialogSurface.Press(
@@ -226,7 +265,8 @@ internal static class UiCommands
                 parse.GetValue(allowUnknown),
                 parse.GetValue(allowDestructive),
                 workspace,
-                Math.Clamp(parse.GetValue(timeout), 0, 120_000)));
+                Math.Clamp(parse.GetValue(timeout), 0, 120_000),
+                parse.GetValue(commitInput)));
         }));
 
         return command;

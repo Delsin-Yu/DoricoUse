@@ -215,6 +215,28 @@ else
     var noteEvents = fixtureCensus.Names.FirstOrDefault(name => name.Name == "NoteEventDefinition");
     Check("the tree walker sees the same three note events", noteEvents?.Count == fixtureScore.Notes.Count, noteEvents?.Count.ToString());
 
+    // The record cap must not reach a record's fields, and the committed fixture is where that is pinned on every
+    // machine: measured 2026-10-13 with --tree-limit 2, a reader saw two fields of each event and reported that
+    // GradualTempoChangeEventDefinition has no `duration`, so one number bounding records and fields is the defect
+    // these two checks exist for. A note's `duration` is the field a caller reads for the same reason.
+    var oneNote = ProjectFileTreeReader.Subtree(manifest.ScoreData, "NoteEventDefinition", 0, 1);
+    var twoFields = ProjectFileTreeReader.Subtree(manifest.ScoreData, "NoteEventDefinition", 0, 1, 2);
+
+    Check(
+        "one record listed still carries every field of that record",
+        oneNote.Occurrences.Count == 1
+        && oneNote.Occurrences[0].Fields.Count == oneNote.Occurrences[0].FieldCount
+        && oneNote.Occurrences[0].Fields.Any(field => field.Key == "duration"),
+        string.Join(',', oneNote.Occurrences[0].Fields.Select(field => field.Key)));
+    Check(
+        "while --tree-fields is the cap that does truncate them, and says so",
+        twoFields.Occurrences.Count == 1
+        && twoFields.Occurrences[0].Fields.Count == 2
+        && twoFields.Occurrences[0].Truncated
+        && twoFields.Occurrences[0].FieldCount == oneNote.Occurrences[0].FieldCount
+        && twoFields.FieldLimit == 2,
+        $"{twoFields.Occurrences[0].Fields.Count} of {twoFields.Occurrences[0].FieldCount} fields");
+
     Console.WriteLine();
 }
 
@@ -1056,6 +1078,32 @@ else
     Check(
         "a limit bounds the dump and says it was truncated",
         bounded.Matched == 16002 && bounded.Returned == 3 && bounded.Occurrences.Count == 3 && bounded.Truncated);
+
+    // The defect this pins, measured 2026-10-13: `--tree-limit 2` bounded the fields per record as well as the
+    // records, so every event showed its first two fields and a reader concluded that
+    // GradualTempoChangeEventDefinition has no `duration` - which the tempo events of this very file do have. A
+    // record cap is a statement about records, and a field never goes missing because of one.
+    var narrowRecords = ProjectFileTreeReader.Subtree(data, "NoteEventDefinition", 0, 1);
+
+    Check(
+        "a record limit bounds records and never the fields of one",
+        narrowRecords.Occurrences.Count == 1
+        && narrowRecords.Occurrences[0].Fields.Count == narrowRecords.Occurrences[0].FieldCount,
+        $"{narrowRecords.Occurrences[0].Fields.Count} of {narrowRecords.Occurrences[0].FieldCount} fields");
+
+    // A tempo event is where the reader was misled: the fields before `duration` are the ones a record cap showed.
+    var tempoEvents = ProjectFileTreeReader.Subtree(data, "GradualTempoChangeEventDefinition", 0, 2);
+    var narrowTempo = ProjectFileTreeReader.Subtree(data, "GradualTempoChangeEventDefinition", 0, 2, 2);
+
+    Check(
+        "a tempo event's fields include its duration, whatever the record limit is",
+        tempoEvents.Occurrences.Count == 2
+        && tempoEvents.Occurrences.All(node => node.Fields.Any(field => field.Key == "duration")),
+        string.Join(',', tempoEvents.Occurrences.Count == 0 ? [] : tempoEvents.Occurrences[0].Fields.Select(field => field.Key)));
+    Check(
+        "while a field limit of its own does bound them, and says so",
+        narrowTempo.Occurrences.All(node => node.Fields.Count == 2 && node.Truncated),
+        narrowTempo.Occurrences.Count == 0 ? "none" : narrowTempo.Occurrences[0].Fields.Count.ToString());
 
     Check(
         "a deep dump stays bounded: every node reports its real child count",

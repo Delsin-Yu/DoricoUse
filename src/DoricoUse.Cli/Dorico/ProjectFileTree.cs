@@ -160,12 +160,20 @@ internal sealed record ProjectFileTreeCensus(
     IReadOnlyList<ProjectFileTreeNodeName> Names);
 
 /// <summary>Every node in the file whose name was asked for, up to the caller's caps.</summary>
+/// <param name="Limit">How many records were listed at most: matched nodes, and children of each matched node.</param>
+/// <param name="FieldLimit">
+/// How many fields of each record were listed at most, or -1 for all of them. A cap of its own because the record
+/// cap and the field cap are two different questions, and one number answering both is what made a reader conclude
+/// an event had no <c>duration</c> field: measured 2026-10-13, reading <c>GradualTempoChangeEventDefinition</c> with
+/// <c>--tree-limit 2</c> showed the first two fields of each event and hid <c>duration</c>, which the file does hold.
+/// </param>
 internal sealed record ProjectFileTreeSubtree(
     string Query,
     int Matched,
     int Returned,
     int Depth,
     int Limit,
+    int FieldLimit,
     int ValueChars,
     long Nodes,
     long Leaves,
@@ -185,11 +193,15 @@ internal sealed record ProjectFileTreeSubtree(
 /// shape back instead of asking for a new release.
 /// </para>
 /// <para>
-/// The output is bounded by construction: occurrences per name, fields per node, children per node and the length of
-/// a value are all capped, and the caps are reported as numbers so nothing has to be inferred. The tree itself is
-/// always walked in full, because the walk is what validates the stream: a candidate start position is accepted only
-/// if the walk ends exactly on the member's last byte, the root is a <c>kScore</c>, and every value index points into
-/// the pool. A file this walker cannot decode reports <c>UnsupportedScoreData</c>, never invented structure.
+/// The output is bounded by construction: occurrences per name, children per node and the length of a value are
+/// capped, and the caps are reported as numbers so nothing has to be inferred. A record's <b>fields</b> are the one
+/// thing not capped with the records: measured 2026-10-13, one number bounding both is what made a reader report
+/// that <c>GradualTempoChangeEventDefinition</c> has no <c>duration</c> field, because <c>--tree-limit 2</c> showed
+/// the first two fields of each event. <c>--tree-fields</c> bounds the fields, and its default is every one of them.
+/// The tree itself is always walked in full, because the walk is what validates the stream: a candidate start
+/// position is accepted only if the walk ends exactly on the member's last byte, the root is a <c>kScore</c>, and
+/// every value index points into the pool. A file this walker cannot decode reports <c>UnsupportedScoreData</c>,
+/// never invented structure.
 /// </para>
 /// </remarks>
 internal static class ProjectFileTreeReader
@@ -232,13 +244,30 @@ internal static class ProjectFileTreeReader
     /// Every node whose name is <paramref name="query"/> (case-insensitive, exact — no globbing), each with its path
     /// from the root and up to <paramref name="depth"/> levels of children.
     /// </summary>
-    public static ProjectFileTreeSubtree Subtree(byte[] data, string query, int depth, int limit)
+    /// <param name="limit">How many matched nodes to list, and how many children of each — the record cap.</param>
+    /// <param name="fieldLimit">
+    /// How many fields of each listed record to keep, or -1 for every one of them. It is separate from
+    /// <paramref name="limit"/> because a field is not a record: the two used to share one number, and measured
+    /// 2026-10-13 a reader who passed <c>--tree-limit 2</c> saw two fields per event and concluded that
+    /// <c>GradualTempoChangeEventDefinition</c> has no <c>duration</c>. It does.
+    /// </param>
+    public static ProjectFileTreeSubtree Subtree(byte[] data, string query, int depth, int limit, int fieldLimit = -1)
     {
         var walker = NewWalker(data);
         var occurrences = new List<ProjectFileTreeNode>();
         var tally = new Tally();
 
-        if (!walker.Scan((rootKey, count) => Match(walker, rootKey, count, string.Empty, query, depth, limit, occurrences, tally)))
+        if (!walker.Scan((rootKey, count) => Match(
+            walker,
+            rootKey,
+            count,
+            string.Empty,
+            query,
+            depth,
+            limit,
+            fieldLimit,
+            occurrences,
+            tally)))
         {
             throw Unsupported(walker);
         }
@@ -251,6 +280,7 @@ internal static class ProjectFileTreeReader
             returned,
             depth,
             limit,
+            fieldLimit,
             ValueChars,
             tally.Nodes,
             tally.Leaves,
@@ -325,6 +355,7 @@ internal static class ProjectFileTreeReader
         string query,
         int depth,
         int limit,
+        int fieldLimit,
         List<ProjectFileTreeNode> occurrences,
         Tally tally)
     {
@@ -338,7 +369,7 @@ internal static class ProjectFileTreeReader
 
             if (limit < 0 || occurrences.Count < limit)
             {
-                occurrences.Add(Capture(walker, count, parentPath, name, depth, limit));
+                occurrences.Add(Capture(walker, count, parentPath, name, depth, limit, fieldLimit));
             }
             else
             {
@@ -348,7 +379,16 @@ internal static class ProjectFileTreeReader
             return true;
         }
 
-        return Find(walker, count, parentPath.Length == 0 ? name : parentPath + "/" + name, query, depth, limit, occurrences, tally);
+        return Find(
+            walker,
+            count,
+            parentPath.Length == 0 ? name : parentPath + "/" + name,
+            query,
+            depth,
+            limit,
+            fieldLimit,
+            occurrences,
+            tally);
     }
 
     /// <summary>Finds every node with the query name, descending through everything that is not one.</summary>
@@ -359,6 +399,7 @@ internal static class ProjectFileTreeReader
         string query,
         int depth,
         int limit,
+        int fieldLimit,
         List<ProjectFileTreeNode> occurrences,
         Tally tally)
         => walker.Children(
@@ -369,7 +410,7 @@ internal static class ProjectFileTreeReader
 
                 return true;
             },
-            (_, key, children) => Match(walker, key, children, path, query, depth, limit, occurrences, tally));
+            (_, key, children) => Match(walker, key, children, path, query, depth, limit, fieldLimit, occurrences, tally));
 
     /// <summary>A matched node: its own fields, and its child nodes down to the depth budget.</summary>
     private static ProjectFileTreeNode Capture(
@@ -378,7 +419,8 @@ internal static class ProjectFileTreeReader
         string parentPath,
         string name,
         int depth,
-        int limit)
+        int limit,
+        int fieldLimit)
     {
         var path = parentPath.Length == 0 ? name : parentPath + "/" + name;
         var fields = new List<ProjectFileTreeField>();
@@ -392,7 +434,10 @@ internal static class ProjectFileTreeReader
             {
                 fieldCount++;
 
-                if (limit < 0 || fields.Count < limit)
+                // A field is not a record, so the record cap must not reach it: the number the caller gives for
+                // records is not a statement about how many fields to show, and truncating the two together is what
+                // hid `duration` from a reader who passed a small --tree-limit.
+                if (fieldLimit < 0 || fields.Count < fieldLimit)
                 {
                     fields.Add(new ProjectFileTreeField(walker.Name(key) ?? "(unnamed)", Trim(walker.Value(value))));
                 }
@@ -405,7 +450,7 @@ internal static class ProjectFileTreeReader
 
                 if (depth > 0 && (limit < 0 || children.Count < limit))
                 {
-                    children.Add(Capture(walker, inner, path, walker.Name(key) ?? "(unnamed)", depth - 1, limit));
+                    children.Add(Capture(walker, inner, path, walker.Name(key) ?? "(unnamed)", depth - 1, limit, fieldLimit));
                 }
                 else
                 {

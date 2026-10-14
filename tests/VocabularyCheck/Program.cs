@@ -37,7 +37,7 @@ foreach (var (key, values) in new[]
     ("NoteInputMode", EnumVocabulary.ValuesForKey("NoteInputMode")),
     ("WindowMode", EnumVocabulary.ValuesForKey("WindowMode")),
     ("RhythmicGridResolutionValue", EnumVocabulary.ValuesForKey("RhythmicGridResolutionValue")),
-    ("Type", EnumVocabulary.ValuesForKey("Type")),
+    ("Type", EnumVocabulary.ValuesForKey("Type", "NoteInput.SetAccidental")),
     ("OptionsType", EnumVocabulary.ValuesForKey("OptionsType")),
 })
 {
@@ -45,6 +45,67 @@ foreach (var (key, values) in new[]
     Check($"every {key} value looks like a Dorico spelling", values.All(EnumVocabulary.IsSpelling), string.Join(',', values));
     Check($"no {key} value is listed twice", values.Distinct(StringComparer.Ordinal).Count() == values.Count);
 }
+
+// A command-scoped parameter: `Type` means the seven accidentals to NoteInput.SetAccidental and a property name to
+// the two property commands, which is the difference measured 2026-10-13 - `EventEdit.ChangeProperty?Type=...` was
+// refused for not being an accidental, and a property name is exactly what that command wants.
+Check("Type is fixed by the command that takes it, not by the table", EnumVocabulary.CommandScopedKeys.Contains("Type"));
+Check(
+    "the accidentals are the set NoteInput.SetAccidental is checked against",
+    EnumVocabulary.ValuesForKey("Type", "NoteInput.SetAccidental").Count == 7
+        && EnumVocabulary.ValuesForKey("Type", "NoteInput.SetAccidental").Contains("kSharp"));
+
+foreach (var propertyCommand in new[] { "EventEdit.ChangeProperty", "UI.InvokePropertyChangeValue" })
+{
+    Check(
+        $"{propertyCommand}'s Type is a property name and is not checked against the accidentals",
+        EnumVocabulary.ValuesForKey("Type", propertyCommand).Count == 0
+            && EnumVocabulary.Check("Type", "kNoteSpelling", propertyCommand) == VocabularyVerdict.NotCheckedForCommand);
+}
+
+Check(
+    "a command this build has not measured Type on is left to Dorico rather than refused",
+    EnumVocabulary.Check("Type", "kNoteSpelling", "EventEdit.SomeFutureCommand") == VocabularyVerdict.NotCheckedForCommand
+        && EnumVocabulary.Check("Type", "kSharp", "EventEdit.SomeFutureCommand") == VocabularyVerdict.NotCheckedForCommand);
+Check(
+    "while a misspelt accidental is still unknown for the command that takes one",
+    EnumVocabulary.Check("Type", "kShorp", "NoteInput.SetAccidental") == VocabularyVerdict.Unknown
+        && EnumVocabulary.Check("Type", "kSharp", "NoteInput.SetAccidental") == VocabularyVerdict.Known);
+
+var propertyRefused = false;
+
+try
+{
+    // The route the report used to change an event's length: a property name as Type must get through.
+    EnumVocabulary.Refuse("--param", "Type", "kNoteSpelling", allowUnknown: false, command: "EventEdit.ChangeProperty");
+    EnumVocabulary.Refuse("--param", "Type", "kNoteSpelling", allowUnknown: false, command: "UI.InvokePropertyChangeValue");
+}
+catch (CliException)
+{
+    propertyRefused = true;
+}
+
+Check("and a property name is not refused for either property command", !propertyRefused);
+
+var accidentalRefused = false;
+var accidentalSaid = string.Empty;
+
+try
+{
+    EnumVocabulary.Refuse("--param", "Type", "kShorp", allowUnknown: false, command: "NoteInput.SetAccidental");
+}
+catch (CliException ex)
+{
+    accidentalRefused = true;
+    accidentalSaid = ex.Message;
+}
+
+Check("while a misspelt accidental is still refused for the command that takes one", accidentalRefused);
+Check(
+    "and the refusal names the command and keeps the --allow-unknown-enum way out",
+    accidentalSaid.Contains("NoteInput.SetAccidental", StringComparison.Ordinal)
+        && accidentalSaid.Contains("--allow-unknown-enum", StringComparison.Ordinal),
+    accidentalSaid);
 
 Console.WriteLine();
 Console.WriteLine("== the table and the code agree (this is what catches drift)");
@@ -437,18 +498,59 @@ var dead = Refusal(() => DialogModel.Authorize(withoutPattern, "cancel", allowUn
 Check("a button with no pressable pattern is refused", dead?.Code == "ButtonNotInvokable", dead?.Code ?? "nothing was thrown");
 Check("and error.data names the button", NodeRead.Str(dead?.Details, "button") == "cancel");
 
+// Measured 2026-10-13: `ui press` on an element whose UI Automation IsEnabled is false answered ok: true with an
+// invoke that did nothing. The window says so itself - any accessibility reader shows `button "应用"
+// [disabled]` from the same dialog - so the tool reads the same fact and refuses on it. The negative case is the
+// point of the check: a disabled target must not be pressed, whatever the catalogue thinks of it.
+var disabledDialog = DialogModel.Describe(Export() with
+{
+    Buttons =
+    [
+        new("应用", "DoricoQApplication.ScoreInfoDialog.applyButton", true, 10, 10, Enabled: false),
+        new("关闭", "DoricoQApplication.ScoreInfoDialog.closeButton", true, 90, 10),
+    ],
+});
+
+var disabled = Refusal(() => DialogModel.Authorize(disabledDialog, "applyButton", allowUnknownDialog: true, allowDestructive: true));
+
+Check(
+    "a disabled button is refused even when every flag that would let it through is passed",
+    disabled?.Code == PanelModel.DisabledCode,
+    disabled?.Code ?? "nothing was thrown");
+Check("and the refusal is the caller's fault, so exit 1", disabled?.ExitCode == 1, disabled?.ExitCode.ToString());
+Check("and error.data says the element is disabled", NodeRead.Bool(disabled?.Details, "enabled") == false);
+Check("and names the element", NodeRead.Str(disabled?.Details, "element") == "applyButton");
+Check("and the enabled button beside it still may be pressed", DialogModel.Authorize(disabledDialog, "closeButton", allowUnknownDialog: true, allowDestructive: true).Id == "closeButton");
+
+// The same rule for a panel element and for a dialog's controls, because one code and one sentence have to come out
+// wherever the disabled element lives.
+Check(
+    "the same refusal is built for a panel element",
+    PanelModel.RefuseDisabled("dorico.document-window", "applyButton", "应用", "button").Code == PanelModel.DisabledCode
+        && PanelModel.RefuseDisabled("dorico.document-window", "applyButton", "应用", "button").ExitCode == 1);
+Check(
+    "and --commit-input is only for a text field, which is a rule and not a click",
+    PanelModel.CommitInputApplicable(PanelAction.Value)
+        && !PanelModel.CommitInputApplicable(PanelAction.Invoke)
+        && !PanelModel.CommitInputApplicable(PanelAction.Select)
+        && PanelModel.RefuseCommitInput(
+            "dorico.document-window",
+            PanelModel.Describe([new PanelElementInput(ControlTypes.ListItem, "Piccolo", null, null, null, true, null, false)])[0]).Code
+            == "InvalidArgument");
+
 Console.WriteLine();
 Console.WriteLine("== the refusal codes and the exit codes they promise");
 
 foreach (var code in new[]
 {
     "DialogNotFound", "WrongDialog", "ButtonNotFound", "ButtonNotInvokable", "UnknownDialog", "DestructiveRefused", "PickerNotSettable",
+    "ElementDisabled",
 })
 {
     Check($"{code} is a refusal this build defines", DialogModel.RefusalCodes.Contains(code));
 }
 
-Check("and there are no others", DialogModel.RefusalCodes.Count == 7, string.Join(',', DialogModel.RefusalCodes));
+Check("and there are no others", DialogModel.RefusalCodes.Count == 8, string.Join(',', DialogModel.RefusalCodes));
 Check("a refusal exits 1, because it is the caller's fault", DialogModel.RefusalExitCode == 1);
 Check("a probe failure exits 2, because it is not", DialogModel.ProbeFailureExitCode == 2);
 
@@ -949,6 +1051,33 @@ Check("the panel payload reports the elements it read", NodeRead.Int(panelPayloa
 Check("the panel payload names the read's mechanism", NodeRead.Str(panelPayload, "textSource") == "uia");
 Check("the element cap is stated rather than applied in silence", NodeRead.Bool(panelPayload, "truncated") == false && PanelModel.MaxElements > 5, PanelModel.MaxElements.ToString());
 
+// `enabled` and `invokable`: the two facts that say whether acting here would do anything, and the pair whose
+// absence let a disabled 应用 look like a live target. Both are reported for every element, because measured
+// 2026-10-13 a value write the field accepted was reverted by a dialog whose apply button was disabled.
+var enabledPayload = PanelModel.ElementPayload(
+    PanelModel.Describe(
+    [
+        new(ControlTypes.Button, "应用", "DoricoQApplication.ScoreInfoDialog.applyButton", null, null, null, null, true, 10, 10, Enabled: false),
+        new(ControlTypes.Edit, "标题", "DoricoQApplication.ScoreInfoDialog.titleLineEdit", "", null, null, null, false, 10, 40),
+    ]),
+    out var enabledReturned);
+
+Check("every element carries `enabled`, and a disabled one says false", enabledReturned == 2
+    && NodeRead.Bool(enabledPayload[0], "enabled") == false
+    && NodeRead.Bool(enabledPayload[1], "enabled") == true);
+Check("every element carries `invokable`, not only a dialog's buttons", NodeRead.Bool(enabledPayload[0], "invokable") == true
+    && NodeRead.Bool(enabledPayload[1], "invokable") == false);
+Check("and a disable does not change the element's id or its action", NodeRead.Str(enabledPayload[0], "id") == "applyButton"
+    && NodeRead.Str(enabledPayload[0], "action") == "invoke", NodeRead.Str(enabledPayload[0], "id"));
+
+// A dialog's buttons carry `enabled` too, in the payload and in the description the policy reads.
+var disabledButtonPayload = DialogModel.Payload(disabledDialog, new DialogProbeInfo("win32+uia", 4), DialogHandle);
+var disabledButtons = NodeRead.Arr(disabledButtonPayload, "buttons");
+
+Check("a dialog's buttons carry `enabled` as well", disabledButtons is not null
+    && NodeRead.Bool(disabledButtons[0], "enabled") == false
+    && NodeRead.Bool(disabledButtons[1], "enabled") == true);
+
 var capped = PanelModel.Elements(
     new WindowFacts(0x1000, 1, nint.Zero, false, true, "Qt6101QWindowIcon", "库管理"),
     documentEnabled: true,
@@ -1205,6 +1334,30 @@ Check(
     "and a dialog object that cannot be named does not refuse either",
     DialogModel.CommandSendGuard(new JsonObject { ["title"] = "?" }, allowModalDialog: false) is null);
 
+Console.WriteLine("== blockedByDialog: the dialog this invocation's own send raised");
+
+// Measured 2026-10-13, and the reason the field exists: `command send` of
+// MouseEdit.ChangeEventPositionOrDuration?NewDuration=4 answered kOK, `execution.state` read `ran` - the log shows
+// the posting and the execution - and nothing in the document changed, because the send had raised Dorico's
+// `dorico.error` box (openMs 0, first seen by that invocation) and every later command was posted and not executed.
+// The payload has to say so next to `execution`, or it claims a command ran while nothing ran.
+var raisedBySelf = new JsonObject { ["id"] = "dorico.error", ["openMs"] = 0, ["instance"] = 1 };
+var raisedEarlier = new JsonObject { ["id"] = "dorico.error", ["openMs"] = 26_079, ["instance"] = 1 };
+var noOccurrence = new JsonObject { ["id"] = "dorico.error" };
+
+Check("a dialog this invocation was the first to see is its own", DialogModel.RaisedByThisInvocation(raisedBySelf));
+Check(
+    "and a dialog that was already up is not: openMs is what tells them apart",
+    !DialogModel.RaisedByThisInvocation(raisedEarlier));
+Check(
+    "and a store that could not say openMs is not read as 'just appeared'",
+    !DialogModel.RaisedByThisInvocation(noOccurrence));
+Check("and no dialog at all is not a blocked one", !DialogModel.RaisedByThisInvocation(null));
+Check(
+    "the sentence says what the field voids",
+    DialogModel.BlockedByDialogNote.Contains("openMs", StringComparison.Ordinal)
+        && DialogModel.BlockedByDialogNote.Contains("execution.state", StringComparison.Ordinal));
+
 Console.WriteLine("== a short element list is not a small window");
 
 // Measured, and the reason `visited` is on every panel read rather than under --raw: the library manager's UIA tree
@@ -1421,6 +1574,84 @@ Check(
     NodeRead.Str(someoneElses, "state") == "queued"
         && NodeRead.Str(someoneElses, "evidence")?.Contains("posted by the host", StringComparison.Ordinal) == true,
     NodeRead.Str(someoneElses, "evidence"));
+
+Console.WriteLine();
+Console.WriteLine("== waiting for a command's own completion line (--wait-for-completion)");
+
+// Measured 2026-10-13: a command's cost is not guessable in this session - Instrument.MoveToPlayer took 4.4 s,
+// Players.DeleteEmpty 25 s, a long export 54 s - so a caller that sleeps a fixed amount either comes back too early
+// or wastes the difference. Dorico's log names the moment: `notifyPostCommandExecute: <name>?...(<ms> ms)`. The wait
+// is driven here through the same seam the verdict uses, so the line arrives on the poll this check names rather
+// than on a timer nobody controls.
+ResetLog("2026-10-11 10:04:34.619 [info] Sync complete\n");
+
+var completionGain = LogGainsOnWait(
+    fixture,
+    (1, "2026-10-11 10:04:50.116 [info] Posting command (requested): Players.DeleteEmpty?RemovePlayersWithoutContent=true\n"),
+    (3, "2026-10-11 10:05:15.180 [info] notifyPostCommandExecute: Players.DeleteEmpty?RemovePlayersWithoutContent=true (25064 ms)\n"));
+
+var waited = LogQueue.WaitForCompletion("Players.DeleteEmpty", TimeSpan.FromSeconds(5), completionGain);
+
+Check(
+    "the command's own completion line ends the wait",
+    NodeRead.Bool(waited, "completed") == true && NodeRead.Bool(waited, "timedOut") == false,
+    waited.ToJsonString());
+Check("and it says the command was posted, not merely that a line matched", NodeRead.Bool(waited, "posted") == true);
+Check("and how long it waited", NodeRead.Long(waited, "waitedMs") is >= 0 && NodeRead.Long(waited, "waitedMs") < 5000, NodeRead.Long(waited, "waitedMs")?.ToString());
+Check("and the budget it was given", NodeRead.Long(waited, "budgetMs") == 5000, NodeRead.Long(waited, "budgetMs")?.ToString());
+Check("and the line it saw, counted", NodeRead.Int(waited, "completedLines") == 1, NodeRead.Int(waited, "completedLines")?.ToString());
+
+// The refinement rule: the log names the command the caller sent as a longer command for the export route (the
+// measured line in docs/scripting.md is File.Export.Text for the catalogue's File.Export), so the wait accepts a
+// dot-qualified extension of the name - and only in that direction.
+ResetLog("2026-10-11 10:04:34.619 [info] Sync complete\n");
+
+var exportGain = LogGainsOnWait(fixture, (1, "2026-10-11 10:04:40.000 [info] notifyPostCommandExecute: File.Export.Text?FilterID=PDFExportFilter (1894 ms)\n"));
+var exported = LogQueue.WaitForCompletion("File.Export", TimeSpan.FromSeconds(5), exportGain);
+
+Check(
+    "a completion line that refines the command name counts as that command",
+    NodeRead.Bool(exported, "completed") == true,
+    exported.ToJsonString());
+
+ResetLog("2026-10-11 10:04:34.619 [info] Sync complete\n");
+
+var shorterGain = LogGainsOnWait(fixture, (1, "2026-10-11 10:04:40.000 [info] notifyPostCommandExecute: File.Export (10 ms)\n"));
+var shorter = LogQueue.WaitForCompletion("File.Export.Text", TimeSpan.FromMilliseconds(400), shorterGain);
+
+Check(
+    "but a shorter logged name is not evidence that the longer command ran",
+    NodeRead.Bool(shorter, "completed") == false && NodeRead.Bool(shorter, "timedOut") == true,
+    shorter.ToJsonString());
+
+// A command that never finishes has to come back with an answer. The fixture gains its Posting line and nothing
+// else, which is what a command queued behind a modal dialog looks like in the log.
+ResetLog("2026-10-11 10:04:34.619 [info] Sync complete\n");
+GainLine("2026-10-11 10:04:50.116 [info] Posting command (requested): Instrument.MoveToPlayer?PlayerIDArray=1\n");
+
+var timedOut = LogQueue.WaitForCompletion("Instrument.MoveToPlayer", TimeSpan.FromMilliseconds(150), Thread.Sleep);
+
+Check(
+    "a command with no completion line times out, and says so",
+    NodeRead.Bool(timedOut, "completed") == false && NodeRead.Bool(timedOut, "timedOut") == true,
+    timedOut.ToJsonString());
+Check("and it still reports the posting it did see", NodeRead.Bool(timedOut, "posted") == true);
+Check("and the wait was really bounded by the budget", NodeRead.Long(timedOut, "waitedMs") < 3000, NodeRead.Long(timedOut, "waitedMs")?.ToString());
+Check(
+    "and the note tells a caller the command may still be running",
+    NodeRead.Str(timedOut, "note")?.Contains("still be", StringComparison.Ordinal) == true);
+
+// A `command send --wait-for-completion` for a command the host posted on its own has no name to wait for, and
+// waiting the whole budget for a line that cannot come would be the same guess the flag exists to remove.
+ResetLog("2026-10-11 10:04:34.619 [info] Sync complete\n");
+
+var unnamedFrom = Stopwatch.GetTimestamp();
+var unnamed = LogQueue.WaitForCompletion(null, TimeSpan.FromSeconds(5), Thread.Sleep);
+
+Check(
+    "an invocation that sent nothing by name times out at once instead of waiting",
+    NodeRead.Bool(unnamed, "completed") == false && Stopwatch.GetElapsedTime(unnamedFrom) < TimeSpan.FromSeconds(2),
+    unnamed.ToJsonString());
 
 try
 {
