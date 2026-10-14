@@ -32,8 +32,50 @@ Control API — see `README.md`.
   into while the verdict waits — the one way to measure the retry and the offset rule with no dialog to raise:
   the four verdicts, the offset at a line boundary and inside a line, and the payload that carries no `execution`
   field. With the old offset rule put back, they fail with the payload this release fixes.
+- **`event set --address (flow,block,event) --event-type k… --field duration|position --value <crotchets>
+  [--no-select] [--verify <saved.dorico>] [--record <name>] [--wait-for-completion] [--allow-modal-dialog]
+  [--expect-score n]`**: one field of **one event**, by address. A dogfood run had to do this by hand in three steps
+  and two of them failed: the block an `eventID` lives in had to be reverse-looked-up out of
+  `file read --tree block --depth 3`, and `MouseEdit.ChangeEventPositionOrDuration` had to be given **all four** of
+  its parameters — measured 2026-10-13, the same command with only `NewDuration=15` answered `kOK`, raised Dorico's
+  错误发生 box (`dialog: {id: dorico.error, openMs: 0}`), changed nothing, and then made every later command look like
+  it ran while it sat on that box's stalled queue. The four parameters are therefore composed by this command and
+  never by the caller — `Address=(0\,106\,120108)` (commas escaped, because the protocol joins parameters with
+  commas), `EventType`, `NewDuration`/`NewPosition`, `MouseEditWithSideEffect=false`, in the order the person's own
+  drag left them in `application.log` — the event is selected first unless `--no-select`, and a blocking dialog
+  refuses with `ModalDialogUp` before anything is sent, with `blockedByDialog` beside `execution` like `command send`.
+  An incomplete address is `InvalidAddress`, an unknown `--field` is `UnknownField`, and a missing `--event-type` or a
+  value that is not a number of crotchets is `InvalidArgument`; every one of them is decided locally, carries
+  `error.data`, and sends nothing. `--verify <saved.dorico>` decodes the copy named with the same reader `file read`
+  uses and reports `verified {wanted, actual, found, ok}` — the shape `options set` prints, with the comparison made
+  on the exact rational, so a file that writes `4` agrees with a caller who asked for `8/2`. Without it the payload
+  says `verified: null` and that a `File.Save` plus `file read --tree <RecordName> --tree-limit all` is the proof.
+  The relative `EventEdit.DurationLengthen`/`DurationShorten` route is **not** exposed: measured, its step is not
+  constant (0.5 crotchets on a tempo event, 1/6 on one trill) and a batch that assumed one step took m59 from 4 to
+  179/3 and m386 from 4 to 13.
+- **`event list --from <project.dorico> --record <k…Event|…Definition> [--measure a-b] [--flow n] [--limit n|all]`**:
+  every event of one record in a file, with the address `event set` needs — `flowID`, `eventBlockID`, `eventID`, the
+  position and the duration in crotchets, plus the derived measure and beat and the player, stave and voice the
+  block's stream belongs to. This is the run's step 1 (a reverse lookup done by eye) as one read; it wants no Dorico
+  and starts no host. Each row carries a `setWith` line with the address filled in, and a record the file has none of
+  answers with `records` — the names it does hold — so an empty list is never a blank one.
+- **`score.eventAddresses`** (opt-in, via the reader's new `collectEvents`): one entry per event of every block, with
+  its record name, its flow, its block, its id, its `position` and `duration` and the stream that names its
+  player/stave/voice. It is what makes the reverse lookup above a reading instead of a walk by hand. A pass read for
+  addresses holds addresses and not music — `score.notes` comes back empty — and that is asserted rather than left to
+  be discovered.
+- 92 more checks in `VocabularyCheck` over the event-edit composer, which is pure and needs no Dorico: the address
+  builder with its `\,` escaping (four accepted spellings), the composed route parameter by parameter against the
+  invocation that fixed m59's trill, the rule that no member can compose the edit from fewer than the four arguments,
+  every refusal path with its code and its exit code, the record-name mapping in both directions, and the `verified`
+  shape including the `4`/`8/2` case. Plus 20 more in `ProjectFileCheck`, driving `event list` on the committed
+  fixture: the three addresses, their positions, durations, measures, staves, the `setWith` lines, the
+  measure/flow/cap filters, the neighbourhood a miss answers with, and that an address pass reads addresses and not
+  notes.
 
 ### Changed
+- The `--wait-for-completion` default budget lives in `LogQueue.DefaultCompletionTimeoutMs` instead of in
+  `CommandCommands`, so `command send` and `event set` cannot drift apart on the number.
 - **The CLI project targets `net10.0-windows`.** Reading Dorico's dialogs and pressing their buttons uses Win32 and
   UI Automation, and there is no compiler switch: the capability is in every build. `version.compatibility` states
   that as a fact. A macOS port now has to exclude or replace that surface, which the README and `CONTRIBUTING.md`

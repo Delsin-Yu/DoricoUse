@@ -14,6 +14,7 @@ internal static class CommandRoot
         root.Subcommands.Add(SessionCommands.Build());
         root.Subcommands.Add(HostCommands.Build());
         root.Subcommands.Add(CommandCommands.Build());
+        root.Subcommands.Add(EventCommands.Build());
         root.Subcommands.Add(ProjectCommands.Build());
         root.Subcommands.Add(OptionsCommands.Build());
         root.Subcommands.Add(ScoreCommands.BuildLibrary());

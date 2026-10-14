@@ -1363,8 +1363,71 @@ internal static partial class ProjectFileScoreReader
                 return false;
             }
 
-            return WalkEvents(events, stream, flow);
+            // The one place the two readings of a block's events part company: an address pass reads them as what a
+            // command needs (the record name, the id, the position, the length), and the typed pass reads the music.
+            return _collectEvents
+                ? WalkEventAddresses(events, blockId, stream, streamKind, flow)
+                : WalkEvents(events, stream, flow);
         }
+
+        /// <summary>
+        /// Every event of one block, read as an address instead of as music.
+        /// </summary>
+        /// <remarks>
+        /// This is the walk that replaces the run's by-hand reverse lookup: it names each event's own record, its
+        /// <c>eventID</c>, its <c>position</c> and its <c>duration</c>, and it keeps the block it found it in and the
+        /// stream that block is placed on, which is what an address is made of. Everything else about the event is
+        /// skipped — a property table is not an address — but the skip reads every leaf through the value pool, so the
+        /// stream is still proved the same way it is by a full read.
+        /// </remarks>
+        private bool WalkEventAddresses(long count, long blockId, long stream, string? streamKind, FlowDraft flow)
+            => WalkChildren(
+                count,
+                null,
+                (key, childCount, _) =>
+                {
+                    _eventsSeen++;
+
+                    if (_eventAddresses.Count >= MaxEventAddresses)
+                    {
+                        return SkipChildren(childCount);
+                    }
+
+                    var address = new EventAddressDraft
+                    {
+                        Record = NameAt(key),
+                        FlowId = flow.Id,
+                        BlockId = blockId,
+                        Stream = stream,
+                        StreamKind = streamKind,
+                    };
+
+                    var read = WalkChildren(
+                        childCount,
+                        (field, value) =>
+                        {
+                            switch (NameAt(field))
+                            {
+                                case "eventID":
+                                    address.EventId = Number(value);
+                                    break;
+                                case "position":
+                                    address.Position = Value(value);
+                                    address.HasPosition = address.Position is not null;
+                                    break;
+                                case "duration":
+                                    address.Duration = Value(value);
+                                    break;
+                            }
+
+                            return true;
+                        },
+                        (_, inner, _) => SkipChildren(inner));
+
+                    _eventAddresses.Add(address);
+
+                    return read;
+                });
 
         private bool WalkEvents(long count, long stream, FlowDraft flow)
             => WalkChildren(

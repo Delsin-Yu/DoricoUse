@@ -68,7 +68,45 @@ internal sealed record ProjectFileScore(
     IReadOnlyList<ProjectFileTechniqueAppearance> TechniqueAppearances,
     ProjectFileLayoutData Layout,
     ProjectFileLyrics Lyrics,
-    int LastMeasure);
+    int LastMeasure,
+    IReadOnlyList<ProjectFileEventAddress> EventAddresses,
+    bool EventAddressesTruncated);
+
+/// <summary>
+/// One event of a flow, as the address a command needs rather than as music: the file's own record name for it, the
+/// flow and block it lives in, its <c>eventID</c>, and the two fields every event of one of these kinds states —
+/// <c>position</c> and <c>duration</c>, in crotchets, exactly as the file writes them.
+/// </summary>
+/// <remarks>
+/// This is the reverse lookup the dogfood run did by hand with <c>file read --tree block --depth 3</c>, made a
+/// reading: the block an event lives in is what <c>EventEdit.Select</c> and the <c>Address</c> parameter need, and
+/// nothing in the file says it beside the event. The address is the event's own triple
+/// (<c>flowID,eventBlockID,eventID</c>); <see cref="Measure"/> and <see cref="Beat"/> are derived from the metre,
+/// and the player, instrument, stave and voice come from the stream the block is placed on, so a reader can tell
+/// that the event at the address is the one they meant (m59's trill is the Piccolo's, not the Timpani's).
+/// </remarks>
+/// <param name="Record">The file's own node name for the event, e.g. <c>TrillEventDefinition</c>.</param>
+/// <param name="Stream">The stream the block's <c>blockInstance</c> names, or -1 when the file names none.</param>
+/// <param name="StreamKind">The block's <c>parentEventStreamType</c>, e.g. <c>kGlobalTimebaseStream</c>.</param>
+/// <param name="Position">The event's position in crotchets, or null when the event states none.</param>
+/// <param name="Duration">The event's duration in crotchets, or null when the event states none — a bar-division or
+/// tempo event has a position and no length, and null is that fact rather than a zero.</param>
+/// <param name="Measure">The measure the position falls in, or null when there is no position to place.</param>
+internal sealed record ProjectFileEventAddress(
+    string Record,
+    long FlowId,
+    long BlockId,
+    long Stream,
+    string? StreamKind,
+    long EventId,
+    string? Position,
+    string? Duration,
+    int? Measure,
+    string? Beat,
+    string? Player,
+    string? Instrument,
+    int? Stave,
+    int? Voice);
 
 /// <summary>
 /// Where a notated event sits, in the terms every event of a flow shares: its own position and sounding duration,

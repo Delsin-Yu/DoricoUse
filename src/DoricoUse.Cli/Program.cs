@@ -12,6 +12,7 @@ internal static class Program
         "session",
         "host",
         "command",
+        "event",
         "project",
         "options",
         "library",

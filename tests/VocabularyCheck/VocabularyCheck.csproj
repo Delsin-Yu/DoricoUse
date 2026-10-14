@@ -29,6 +29,14 @@
     <Compile Include="../../src/DoricoUse.Cli/Dorico/NodeRead.cs" />
     <Compile Include="../../src/DoricoUse.Cli/Dorico/DoricoProtocol.cs" />
     <Compile Include="../../src/DoricoUse.Cli/Dorico/UnsafeSurface.cs" />
+    <!--
+      The event-edit composer is pure in the same way the dialog model is: it turns four arguments into the command
+      Dorico receives and refuses everything else, with no host, no window and no file. It is asserted here because
+      the failure it exists to make impossible - an edit composed with fewer than its four measured parameters -
+      raised Dorico's error box in a live run, and a check that needs a live Dorico to see that is a check nobody
+      runs.
+    -->
+    <Compile Include="../../src/DoricoUse.Cli/Dorico/EventEditRequest.cs" />
     <Compile Include="../../src/DoricoUse.Cli/Json/JsonArr.cs" />
     <!--
       The dialog model is pure data and pure rules: no Win32, no UI Automation, nothing Windows-shaped, which is

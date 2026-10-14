@@ -1358,6 +1358,170 @@ Check(
     DialogModel.BlockedByDialogNote.Contains("openMs", StringComparison.Ordinal)
         && DialogModel.BlockedByDialogNote.Contains("execution.state", StringComparison.Ordinal));
 
+Console.WriteLine("== event set: the four parameters, and every way of not sending them");
+
+// The one measured absolute route, taken from the invocation that fixed m59's trill: that payload carried exactly
+// {"Address": "(0\,106\,120108)", "EventType": "kTrillEvent", "NewDuration": "15", "MouseEditWithSideEffect":
+// "false"} after the same triple had been selected. The composition is asserted parameter by parameter, because the
+// failure this command exists to remove is a caller composing that line by hand and leaving one out: measured,
+// MouseEdit.ChangeEventPositionOrDuration with only NewDuration answers kOK, raises Dorico's 错误发生 box, changes
+// nothing, and then makes every later command look like it ran while it sits on the stalled queue.
+
+var eventAddress = EventEditRequest.ParseAddress("(0,106,120108)");
+Check("an address parses to the three ids the run used", eventAddress == new EventAddress(0, 106, 120108), eventAddress.ToString());
+Check(
+    "and reads back the way the run wrote it",
+    EventEditRequest.AddressText(eventAddress) == "(0,106,120108)",
+    EventEditRequest.AddressText(eventAddress));
+Check(
+    "and the way the Address parameter carries it: commas escaped, because the protocol separates parameters with "
+        + "commas",
+    EventEditRequest.EscapedAddressText(eventAddress) == @"(0\,106\,120108)",
+    EventEditRequest.EscapedAddressText(eventAddress));
+
+foreach (var spelling in new[] { "(0,106,120108)", "0,106,120108", "( 0 , 106 , 120108 )", @"(0\,106\,120108)" })
+{
+    Check($"'{spelling}' is that same address", EventEditRequest.ParseAddress(spelling) == eventAddress);
+}
+
+var route = EventEditRequest.Compose(eventAddress, "kTrillEvent", "duration", "15", select: true);
+Check("the route is two commands, the select and then the edit", route.Count == 2, string.Join(" -> ", route.Select(step => step.Name)));
+Check("the first is EventEdit.Select", route[0].Name == EventEditRequest.SelectCommand);
+Check(
+    "with the same triple, under the parameter names the run's step 2 used",
+    string.Join(",", route[0].Parameters.Select(parameter => $"{parameter.Key}={parameter.Value}"))
+        == "FlowID=0,EventID=120108,EventBlockID=106",
+    string.Join(",", route[0].Parameters.Select(parameter => $"{parameter.Key}={parameter.Value}")));
+Check("the second is MouseEdit.ChangeEventPositionOrDuration", route[1].Name == "MouseEdit.ChangeEventPositionOrDuration");
+
+string[] Measured(EventEditStep step) => [.. step.Parameters.Select(parameter => $"{parameter.Key}={parameter.Value}")];
+
+Check(
+    "and it carries all four parameters the run measured, in the order its log line had them",
+    Measured(route[1]).SequenceEqual([@"Address=(0\,106\,120108)", "EventType=kTrillEvent", "NewDuration=15", "MouseEditWithSideEffect=false"]),
+    string.Join(",", Measured(route[1])));
+Check(
+    "position sends NewPosition and the other three with it",
+    Measured(EventEditRequest.Edit(eventAddress, "kGradualTempoChangeEvent", "position", "1042")).SequenceEqual(
+        [@"Address=(0\,106\,120108)", "EventType=kGradualTempoChangeEvent", "NewPosition=1042", "MouseEditWithSideEffect=false"]),
+    string.Join(",", Measured(EventEditRequest.Edit(eventAddress, "kGradualTempoChangeEvent", "position", "1042"))));
+
+Check(
+    "--no-select composes the edit alone",
+    EventEditRequest.Compose(eventAddress, "kTrillEvent", "duration", "15", select: false).Count == 1);
+
+// The claim is that no caller can leave a parameter out, so it is asserted as an absence: the only members that
+// build the edit take the address, the event type, the field and the value (and Compose one more, the select flag).
+// An overload that composed an edit from fewer would appear here and fail.
+var builders = typeof(EventEditRequest)
+    .GetMethods(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static)
+    .Where(method => method.Name is "Edit" or "Compose")
+    .ToArray();
+
+Check(
+    "the only way to build the edit takes all four arguments",
+    builders.Length == 2
+        && builders.All(method => method.GetParameters().Length == (method.Name == "Compose" ? 5 : 4)),
+    string.Join(", ", builders.Select(method => $"{method.Name}/{method.GetParameters().Length}")));
+
+foreach (var settable in EventEditRequest.Fields)
+{
+    var step = EventEditRequest.Edit(eventAddress, "kTrillEvent", settable, "11/2");
+
+    Check(
+        $"every value of --field composes the same four parameters ({settable})",
+        step.Parameters.Count == 4
+            && step.Parameters[0].Key == EventEditRequest.AddressParameter
+            && step.Parameters[1].Key == EventEditRequest.EventTypeParameter
+            && step.Parameters[3].Key == EventEditRequest.SideEffectParameter,
+        string.Join(",", Measured(step)));
+    Check(
+        $"and the side effect is always the value the drag wrote ({settable})",
+        step.Parameters[3].Value == EventEditRequest.SideEffectValue);
+}
+
+foreach (var (what, refusal) in new (string, CliException?)[]
+{
+    ("a missing address", Refusal(() => EventEditRequest.ParseAddress(null))),
+    ("an address with two parts", Refusal(() => EventEditRequest.ParseAddress("(0,106)"))),
+    ("an address with a word in it", Refusal(() => EventEditRequest.ParseAddress("(0,106,abc)"))),
+    ("an address with a negative id", Refusal(() => EventEditRequest.ParseAddress("(0,-1,5)"))),
+    ("a missing event type", Refusal(() => EventEditRequest.RequireEventType(null))),
+    ("an event type that is a record name", Refusal(() => EventEditRequest.RequireEventType("TrillEventDefinition"))),
+    ("a missing field", Refusal(() => EventEditRequest.RequireField(null))),
+    ("a field this command cannot set", Refusal(() => EventEditRequest.RequireField("pitch"))),
+    ("a missing value", Refusal(() => EventEditRequest.RequireValue(null))),
+    ("a negative value", Refusal(() => EventEditRequest.RequireValue("-1"))),
+    ("a value with a zero denominator", Refusal(() => EventEditRequest.RequireValue("11/0"))),
+    ("a decimal value", Refusal(() => EventEditRequest.RequireValue("2.5"))),
+})
+{
+    Check($"{what} is refused, not sent", refusal is not null);
+    Check("it exits 1, because a refusal is the caller's fault", refusal?.ExitCode == 1, refusal?.ExitCode.ToString());
+    Check("and it says nothing was sent", refusal?.Message.Contains("Nothing was sent", StringComparison.Ordinal) == true);
+    Check("and it carries error.data about the argument", refusal?.Details is not null, refusal?.Details?.ToJsonString());
+}
+
+Check(
+    "the address's own refusal has a code of its own, so a caller can tell it from a bad value",
+    Refusal(() => EventEditRequest.ParseAddress("(0,106)"))?.Code == "InvalidAddress");
+Check(
+    "and a field that is not a field has one of its own",
+    Refusal(() => EventEditRequest.RequireField("pitch"))?.Code == "UnknownField");
+Check(
+    "and the values a field may take are the two the report measured",
+    EventEditRequest.Fields.SequenceEqual(["duration", "position"], StringComparer.Ordinal),
+    string.Join(",", EventEditRequest.Fields));
+
+foreach (var (spelling, record) in new[]
+{
+    ("kTrillEvent", "TrillEventDefinition"),
+    ("kGradualTempoChangeEvent", "GradualTempoChangeEventDefinition"),
+    ("kNoteEvent", "NoteEventDefinition"),
+    ("kImmediateTempoChangeEvent", "ImmediateTempoChangeEventDefinition"),
+})
+{
+    Check($"{spelling} is {record} in the file", EventEditRequest.RecordName(spelling) == record, EventEditRequest.RecordName(spelling));
+    Check($"  and its spelling comes back from the record name", EventEditRequest.EventTypeFor(record) == spelling, EventEditRequest.EventTypeFor(record));
+}
+
+Check(
+    "a record name is accepted where the file's own name was already known",
+    EventEditRequest.RecordName("TrillEventDefinition") == "TrillEventDefinition");
+Check("a spelling that is not an event type is refused", Refusal(() => EventEditRequest.RecordName("kTrill"))?.Code == "InvalidArgument");
+Check("and a name that is neither spelling", Refusal(() => EventEditRequest.RecordName("Trill"))?.Code == "InvalidArgument");
+Check("and the inverse refuses a name the file does not use", Refusal(() => EventEditRequest.EventTypeFor("Trill"))?.Code == "InvalidArgument");
+Check(
+    "--record falls back to what --event-type implies",
+    EventEditRequest.RecordFor(null, "kTrillEvent") == "TrillEventDefinition"
+        && EventEditRequest.RecordFor("GradualTempoChangeEventDefinition", "kTrillEvent") == "GradualTempoChangeEventDefinition");
+
+// The read-back, in the shape `options set` prints: the four keys, and a comparison on the number rather than on
+// the spelling - the file writes a duration reduced, so 8/2 and 4 are the same four crotchets.
+var verified = EventEditRequest.Verified("15", "15", found: true, addressFound: true, "duration", "NewDuration", "TrillEventDefinition", 59, "1");
+Check(
+    "verified carries the four keys options set carries",
+    verified.ContainsKey("wanted") && verified.ContainsKey("actual") && verified.ContainsKey("found") && verified.ContainsKey("ok"));
+Check("and it is ok when the copy holds the value", NodeRead.Bool(verified, "ok") == true);
+Check("and it is not when the copy holds another", NodeRead.Bool(EventEditRequest.Verified("15", "13", true, true, "duration", "NewDuration", "TrillEventDefinition", 59, "1"), "ok") == false);
+Check(
+    "and it is not when the address is not in the copy at all",
+    NodeRead.Bool(EventEditRequest.Verified("15", null, found: false, addressFound: false, "duration", "NewDuration", "TrillEventDefinition", null, null), "ok") == false);
+Check(
+    "an address that holds another kind of event is told apart from one that holds nothing",
+    NodeRead.Bool(EventEditRequest.Verified("15", null, found: false, addressFound: true, "duration", "NewDuration", "TrillEventDefinition", 59, "1"), "addressFound") == true
+        && NodeRead.Bool(EventEditRequest.Verified("15", null, found: false, addressFound: false, "duration", "NewDuration", "TrillEventDefinition", null, null), "addressFound") == false);
+Check("and the entry names what was read: the measure, the beat and the record", NodeRead.Int(verified, "measure") == 59 && NodeRead.Str(verified, "beat") == "1" && NodeRead.Str(verified, "record") == "TrillEventDefinition");
+Check(
+    "the comparison is on the number: 4 and 8/2 are the same four crotchets",
+    EventEditRequest.SameRational("4", "8/2") && EventEditRequest.SameRational("11/2", "11/2") && EventEditRequest.SameRational("011/02", "11/2"));
+Check(
+    "and two different numbers are not the same, nor is nothing at all",
+    !EventEditRequest.SameRational("15", "13") && !EventEditRequest.SameRational("4", null) && !EventEditRequest.SameRational(null, "4"));
+Check(
+    "and a value that only looks like a fraction is not one",
+    !EventEditRequest.SameRational("2.5", "5/2") && !EventEditRequest.SameRational("11/0", "11"));
+
 Console.WriteLine("== a short element list is not a small window");
 
 // Measured, and the reason `visited` is on every panel read rather than under --raw: the library manager's UIA tree

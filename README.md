@@ -97,6 +97,8 @@ surface. See `CONTRIBUTING.md`.
 | `project flows [--raw]` / `project layouts [--kind full-score\|part] [--raw]` | Flow and layout IDs, which several options need. |
 | `project players [--expect-score n]` | The players of the **open** document. There is no protocol request for players, so this is a live read through the scripting layer: it reports each player's index, the text Dorico describes it with, and which members the layer refuses. |
 | `project layout-defaults (--part-layouts \| --layout n) [--expect-score n]` | Restore the layouts' options to the user's saved defaults: raises 布局选项 for the part layouts (or for one layout), presses 重置到保存的默认值, then closes the dialog itself by 关闭 — matched on its label because its id is positional — and never 应用. Measured route for engraving checklist item 11; the document is what verifies it. |
+| `event set --address (flow,block,event) --event-type k… --field duration\|position --value <crotchets> [--no-select] [--verify <saved.dorico>] [--record <name>] [--wait-for-completion] [--allow-modal-dialog] [--expect-score n]` | Set one field of **one event**, by address. The edit's four parameters are composed here and never by the caller (measured: the same command with only its new value answers `kOK`, raises Dorico's 错误发生 box and changes nothing, and that box stalls the whole queue), the event is selected first unless `--no-select`, and a blocking dialog refuses it with `ModalDialogUp`. See [Setting a field on one event](#setting-a-field-on-one-event). |
+| `event list --from <project.dorico> --record <k…Event\|…Definition> [--measure a-b] [--flow n] [--limit n\|all]` | Every event of one record in a project file, with the address `event set` needs — `flowID`, `eventBlockID`, `eventID`, the position and the duration in crotchets. This is the reverse lookup that used to be a `file read --tree block`. Reads a file: no Dorico, no host. |
 | `options get --type engraving\|notation\|layout [--layout n] [--flow n] [--filter glob] [--limit n]` | The option paths and their current values (1565 engraving options in the reference project). |
 | `options set --type ... --value path=value... [--layout n] [--flow n] [--no-verify]` | Set option values, then read them back to prove them. **A layout write lands on the layout that is current**, whatever `--layout` says: measured, the protocol ignores the target. Make the layout current first with `Window.SwitchToLayout`. |
 | `library collections` / `library entities --collection <name>` | The 50 library collections and their entities. These are also what the library manager's 集合 rows stand for, which is how an import made by hand is checked. |
@@ -854,6 +856,111 @@ dorico-use note insert --notes "C5 E5" --duration minim --dry-run         # the 
   that.
 - Microtones, grace notes and pasting from a file are not covered. The `command send` command reaches the commands
   behind them.
+
+### Setting a field on one event
+
+An event's length and where it starts are fields of the event, and the API can set them — but only through one
+command, given everything it wants. A dogfood run had to do it by hand and it took three steps, two of which were
+where it went wrong:
+
+```bash
+# 1. reverse-look-up the block an eventID lives in — the block is stated nowhere beside the event
+dorico-use file read --path <project.dorico> --limit 0 --tree block --depth 3 --tree-limit all
+# 2. select the event by address
+dorico-use command send --name EventEdit.Select --param FlowID=0 --param EventID=120108 --param EventBlockID=106
+# 3. set its duration — ALL FOUR parameters, or Dorico raises 错误发生
+dorico-use command send --name MouseEdit.ChangeEventPositionOrDuration \
+    --param 'Address=(0\,106\,120108)' --param EventType=kTrillEvent --param NewDuration=15 \
+    --param MouseEditWithSideEffect=false
+```
+
+Two of those steps are now one command, and the two failures cannot be repeated:
+
+```bash
+dorico-use event list --from <project.dorico> --record kTrillEvent        # step 1, as a listing
+dorico-use event set --address "(0,106,120108)" --event-type kTrillEvent --field duration --value 15
+dorico-use event set --address "(0,260,13)" --event-type kGradualTempoChangeEvent \
+    --field position --value 1042                                        # where it starts, in crotchets
+```
+
+- **The four parameters are composed by the tool, never by the caller.** Measured 2026-10-13:
+  `MouseEdit.ChangeEventPositionOrDuration` given only `NewDuration=15` answered `kOK`, raised Dorico's 错误发生 box
+  (`dialog: {id: dorico.error, openMs: 0}` — its own box), left the duration unchanged, and then made every later
+  command look like it ran while it sat on that box's stalled queue. The four parameters are the ones a person's own
+  drag left in `application.log`: `Address=(0\,106\,120108), EventType=kTrillEvent, NewDuration=15,
+  MouseEditWithSideEffect=false`, and that is exactly what this command sends, in that order.
+- **The address's commas are escaped as `\,`.** The protocol joins a command's parameters with commas, so an
+  unescaped address would arrive in three pieces; `(0\,106\,120108)` is the spelling the run's own working
+  invocation carried. The option accepts either spelling, with or without the parentheses, and quotes are only
+  needed because a shell reads `(`.
+- **`--field` is a closed set**: `duration` sends `NewDuration`, `position` sends `NewPosition`, and anything else is
+  refused with `UnknownField` before anything is sent. `--value` is in **crotchets** and may be a fraction (`11/2`),
+  because that is the unit the file states and a triplet is a fraction of one.
+- **The event is selected first** (`EventEdit.Select`, the same triple) unless `--no-select`, which is what the run's
+  working recipe did. The payload says which of the two happened, either way.
+- **Nothing is sent while a blocking dialog is up**: like `command send`, this refuses with `ModalDialogUp`, exit 1,
+  before the host is contacted — and every payload carries `blockedByDialog` next to `execution`, so an edit that
+  raised a dialog cannot read as an edit that worked.
+- **The refusals are all local**: an incomplete address (`InvalidAddress`), an unknown `--field` (`UnknownField`), a
+  missing `--event-type` or a value that is not a number of crotchets (`InvalidArgument`). Each carries `error.data`
+  naming the argument, what was expected and — for the address — an example, so nothing has to be inferred from the
+  sentence. `--event-type`'s *shape* is checked (`k` and a capital); its spelling is not, because this build's
+  vocabulary holds no event type and a spelling-shaped value it has never heard of is far more likely to be newer
+  than wrong.
+- **`--verify <saved.dorico>` is the read-back**, and it is the shape `options set` already prints:
+
+  ```json
+  {"verified":{"(0,106,120108)":{"wanted":"15","actual":"15","found":true,"ok":true,
+                                 "field":"duration","parameter":"NewDuration","record":"TrillEventDefinition",
+                                 "measure":59,"beat":"1","addressFound":true}},
+   "verifyFile":{"path":"…/copy.dorico","bytes":8552878,"lastSavedDate":"…"}}
+  ```
+
+  It decodes the copy with the same reader `file read` uses, finds the address in it, and compares the value **as an
+  exact rational**, so a file that writes `4` and a caller who asked for `8/2` agree. `found` says the address holds
+  an event of the record asked for; `addressFound` says it holds one at all, so "not there" and "there, but another
+  kind of event" cannot look the same.
+- **The copy has to be one that already holds the edit, so the second run is the confirmation** — and re-running an
+  absolute set is safe, because setting a field to the number it already holds is the same set. The recipe is: set →
+  `File.Save` (or `File.SaveAs` to a copy) → set again with `--verify <that copy>`. The run used exactly this shape
+  to confirm m16 before it touched anything else.
+- **Without `--verify` nothing is read back, and the payload says so** (`verified: null` plus `verifyNote`): a write
+  Dorico accepted is not a write it has saved, so the proof there is `File.Save` and then
+  `file read --tree <RecordName> --tree-limit all`. That is also why the two options of `file read` are worth
+  knowing here: `--tree-limit` bounds records and `--tree-fields` bounds a record's fields, and their defaults show a
+  record whole — the mistake that once made an event look like it had no `duration` at all.
+- **`--wait-for-completion` waits for the edit's own line** in Dorico's log, the way `command send` does: measured,
+  a command's cost is not guessable (4.4 s to 54 s in one session), and the select is over in milliseconds.
+- **The relative route is deliberately not here.** `EventEdit.DurationLengthen` / `DurationShorten` (and their
+  `…ByGrid` / `…ByValue` forms) are **forbidden for batch use**: measured, their step is not constant — 0.5 crotchets
+  on a tempo event and 1/6 on one trill — and a batch that assumed one step corrupted two trills, taking m59's
+  duration from 4 to 179/3 and m386's from 4 to 13. Use them only with a read-back after every single step, or not at
+  all; an absolute set has no step to be wrong about.
+- **What is not covered.** A line that hangs on two notes is not addressable this way: measured, neither
+  `NewDuration` nor `NewPosition` moves a glissando, and the route there is to delete the line and create it again
+  from the note it starts on (`Edit.Delete` after `EventEdit.Select`, then `NoteInput.CreateGlissando`). And the two
+  fields are the two that were measured: an event's other fields are reachable with `command send`, and not here.
+
+`event list` is that same address lookup as a read: it decodes a project file with no Dorico and no host, and prints
+one row per event of the record asked for — the file's own record name (`TrillEventDefinition` for `kTrillEvent`),
+the triple, the position and the duration in crotchets, the measure and beat with them, and which stream, player,
+stave and voice the block belongs to, so a reader can see the address is the Piccolo's trill and not the Timpani's.
+Each row carries a `setWith` line with the address filled in and the value left for the caller, because the address
+is the part that used to take a reverse lookup. A record the file has none of answers with `records`: the names it
+does hold and how often, so an empty list is never a blank one.
+
+```bash
+dorico-use event list --from <project.dorico> --record kGradualTempoChangeEvent
+# {"record":"GradualTempoChangeEventDefinition","eventType":"kGradualTempoChangeEvent","count":17,"returned":17,
+#  "events":[…,{"flowID":0,"eventBlockID":0,"eventID":11,"address":"(0,0,11)","streamKind":"kGlobalTimebaseStream",
+#               "measure":258,"beat":"1","position":"1028","duration":"2",
+#               "setWith":"dorico-use event set --address \"(0,0,11)\" --event-type kGradualTempoChangeEvent …"},…]}
+```
+
+The reference import holds **17** of those records, and the two events of m258 are the reason the count is not 16:
+the run measured that a rit. is a `RitardLine` with a real start and end, and this file's m258 carries two of them
+(one from beat 1, two crotchets long — `eid 11`, position 1028 — and one from beat 3, `eid 206534`), where the
+import had merged them into one event of four.
 
 ### Reading a score back
 

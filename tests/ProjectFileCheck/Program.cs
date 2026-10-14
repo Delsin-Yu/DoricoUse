@@ -237,6 +237,105 @@ else
         && twoFields.FieldLimit == 2,
         $"{twoFields.Occurrences[0].Fields.Count} of {twoFields.Occurrences[0].FieldCount} fields");
 
+    // ---------------------------------------------------------------- event addresses
+
+    // The reverse lookup a dogfood run did by hand: an event's block is stated nowhere beside the event, and both
+    // EventEdit.Select and the edit's own Address want the triple (flowID,eventBlockID,eventID). The address pass
+    // reads the blocks for it; the fixture's three notes live in two blocks (one per stave of the Piano), which is
+    // what makes it able to tell a per-stream block apart from the flow's own.
+    var addressed = ProjectFileReader.Open(fixture, collectEvents: true);
+
+    Check(
+        "a plain read collects no addresses: the list is empty rather than incomplete",
+        fixtureScore.EventAddresses.Count == 0);
+    Check("and an address pass collects one per event", addressed.Score.EventAddresses.Count == 3, addressed.Score.EventAddresses.Count.ToString());
+    Check(
+        "which is what the count of events the file holds says",
+        addressed.Score.EventAddresses.Count == fixtureCensus.Names.FirstOrDefault(name => name.Name == "NoteEventDefinition")?.Count);
+
+    // A score read for its addresses holds addresses and not music, and that is asserted rather than left to be
+    // discovered: the pass reads each event as the record name, the id, the position and the length it carries.
+    Check(
+        "an address pass reads addresses and not notes",
+        addressed.Score.Notes.Count == 0 && addressed.Score.EventAddresses.Count == 3,
+        $"notes {addressed.Score.Notes.Count}, addresses {addressed.Score.EventAddresses.Count}");
+    Check("and it says nothing was truncated", !addressed.Score.EventAddressesTruncated);
+
+    var byAddress = addressed.Score.EventAddresses.ToDictionary(item => (item.FlowId, item.BlockId, item.EventId));
+
+    Check(
+        "the three addresses are the ids the two readers agree on",
+        byAddress.ContainsKey((0, 3, 5)) && byAddress.ContainsKey((0, 3, 6)) && byAddress.ContainsKey((0, 5, 7)),
+        string.Join(", ", byAddress.Keys.Select(key => $"({key.FlowId},{key.BlockId},{key.EventId})")));
+
+    var firstAddressed = byAddress[(0, 3, 5)];
+    var bassAddressed = byAddress[(0, 5, 7)];
+
+    Check("every address names the record the file uses", addressed.Score.EventAddresses.All(item => item.Record == "NoteEventDefinition"));
+    Check(
+        "and carries the position and the duration in crotchets, as the file states them",
+        firstAddressed.Position == "0" && firstAddressed.Duration == "1" && byAddress[(0, 3, 6)].Position == "1",
+        $"{firstAddressed.Position}/{firstAddressed.Duration}");
+    Check(
+        "and the measure and beat derived from the metre",
+        addressed.Score.EventAddresses.All(item => item.Measure == 1) && firstAddressed.Beat == "1" && byAddress[(0, 3, 6)].Beat == "2");
+    Check(
+        "and the stream the block is placed on, which is what names the stave",
+        firstAddressed.Stream == 3 && firstAddressed.StreamKind == "kVoiceStream" && bassAddressed.Stream == 5);
+    Check(
+        "so the two notes on the upper stave and the one in the bass are told apart",
+        firstAddressed is { Player: "Piano", Stave: 1, Voice: 1 }
+            && bassAddressed is { Player: "Piano", Stave: 2, Voice: 2 },
+        $"{firstAddressed.Stave}/{bassAddressed.Stave}");
+    Check(
+        "and the order is by where they sound, then by flow, block and id",
+        addressed.Score.EventAddresses.Select(item => item.EventId).SequenceEqual([5L, 6L, 7L]),
+        string.Join(',', addressed.Score.EventAddresses.Select(item => item.EventId)));
+
+    // The payload `event list` prints, built here from the same function the command calls: the address each event
+    // needs, the line that uses it, and the neighbourhood when a record name matches nothing.
+    var listed = ProjectFileView.EventList(addressed, "NoteEventDefinition", "kNoteEvent", null, null, null, 200);
+
+    Check("the listing reports the record it was asked for, and the spelling for it", NodeRead.Str(listed, "record") == "NoteEventDefinition" && NodeRead.Str(listed, "eventType") == "kNoteEvent");
+    Check("with every match and nothing truncated", NodeRead.Int(listed, "count") == 3 && NodeRead.Int(listed, "returned") == 3 && NodeRead.Bool(listed, "truncated") == false);
+    Check(
+        "and one row per event, each with the address the command needs",
+        NodeRead.Arr(listed, "events")?.Count == 3
+        && NodeRead.Str(NodeRead.Arr(listed, "events")![0], "address") == "(0,3,5)"
+        && NodeRead.Str(NodeRead.Arr(listed, "events")![2], "address") == "(0,5,7)",
+        string.Join(',', NodeRead.Arr(listed, "events")!.Select(entry => NodeRead.Str(entry, "address"))));
+    Check(
+        "and each row carries the line that sets it, with the value left for the caller",
+        NodeRead.Str(NodeRead.Arr(listed, "events")![0], "setWith")
+            == "dorico-use event set --address \"(0,3,5)\" --event-type kNoteEvent --field duration --value <crotchets>",
+        NodeRead.Str(NodeRead.Arr(listed, "events")![0], "setWith"));
+
+    // A name that matched nothing answers with what the file does hold, the way `file read --tree` answers a name
+    // nobody has: the fixture has no trill at all, and an empty list alone would read as a broken lookup.
+    var noTrills = ProjectFileView.EventList(addressed, "TrillEventDefinition", "kTrillEvent", null, null, null, 200);
+
+    Check(
+        "a record the file has none of reports zero, and names the ones it does have",
+        NodeRead.Int(noTrills, "count") == 0
+        && NodeRead.Arr(noTrills, "records")?.Count == 1
+        && NodeRead.Str(NodeRead.Arr(noTrills, "records")![0], "record") == "NoteEventDefinition",
+        noTrills["records"]?.ToJsonString());
+
+    // The filters, which are the two the caller asked for: a measure range and a cap.
+    var secondBar = ProjectFileView.EventList(addressed, "NoteEventDefinition", "kNoteEvent", null, 2, 3, 200);
+
+    Check("a measure range with no event in it reports zero, and no unplaced events", NodeRead.Int(secondBar, "count") == 0 && secondBar["unplaced"] is null);
+
+    var capped = ProjectFileView.EventList(addressed, "NoteEventDefinition", "kNoteEvent", null, null, null, 2);
+
+    Check(
+        "a cap prints that many and says the rest were left out",
+        NodeRead.Int(capped, "returned") == 2 && NodeRead.Bool(capped, "truncated") == true && NodeRead.Int(capped, "limit") == 2);
+
+    var oneFlow = ProjectFileView.EventList(addressed, "NoteEventDefinition", "kNoteEvent", 1, null, null, 200);
+
+    Check("and a flow that has none reports zero", NodeRead.Int(oneFlow, "count") == 0);
+
     Console.WriteLine();
 }
 

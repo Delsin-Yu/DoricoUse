@@ -87,6 +87,18 @@ internal static class LogQueue
     /// </summary>
     public static readonly TimeSpan PassiveBudget = TimeSpan.FromMilliseconds(250);
 
+    /// <summary>
+    /// How long <c>--wait-for-completion</c> waits for a command's completion line unless the caller says otherwise.
+    /// </summary>
+    /// <remarks>
+    /// Above the longest command the report measured (54 s for a long export, 25 s for <c>Players.DeleteEmpty</c>),
+    /// because a bound below a real command's cost would report a timeout for work that is still running. It is
+    /// still a bound: a command that never finishes — or one whose completion line cannot be attributed — has to
+    /// come back with an answer rather than hang a caller. It lives here, beside the wait it is the default for, so
+    /// `command send` and `event set` cannot drift apart on the number.
+    /// </remarks>
+    public const int DefaultCompletionTimeoutMs = 90_000;
+
     private static readonly TimeSpan PollInterval = TimeSpan.FromMilliseconds(50);
 
     /// <summary>The log this invocation watches, or null when no Dorico log could be found.</summary>

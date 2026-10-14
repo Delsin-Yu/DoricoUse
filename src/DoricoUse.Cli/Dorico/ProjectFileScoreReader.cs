@@ -80,10 +80,46 @@ internal static partial class ProjectFileScoreReader
     ];
 
     /// <summary>
+    /// How many event addresses one collection keeps.
+    /// </summary>
+    /// <remarks>
+    /// A bound, not a guess about the music: the reference import holds 34284 note events, and an order of magnitude
+    /// more than that would be a file to report as truncated rather than one to hold in memory. Nothing measured is
+    /// anywhere near it, and the truncation is reported rather than silent — an empty or short list that stands for
+    /// "there is more" would be exactly the kind of quiet answer this reader exists to avoid.
+    /// </remarks>
+    private const int MaxEventAddresses = 1_000_000;
+
+    /// <summary>
     /// Reads the score out of a <c>score.dtn</c> member. Throws a <see cref="CliException"/> with the stable code
     /// <c>UnsupportedScoreData</c> when the bytes are not a score this reader understands.
     /// </summary>
-    public static ProjectFileScore Read(byte[] data)
+    public static ProjectFileScore Read(byte[] data) => Read(data, collectEvents: false);
+
+    /// <summary>
+    /// The same read, and — when <paramref name="collectEvents"/> — every event's address as well.
+    /// </summary>
+    /// <param name="collectEvents">
+    /// True to fill <see cref="ProjectFileScore.EventAddresses"/>: one entry per event of every block, with the
+    /// flow, the block, the stream and the record name that a command needs to address it.
+    /// </param>
+    /// <remarks>
+    /// The collection is opt-in because it is a fact <i>about</i> the events rather than a reading of them, and it
+    /// costs what the file holds: measured, the reference import has 34284 note events alone. A caller that does not
+    /// ask for the addresses gets an empty list, and a reader that wants them asks — <c>event list</c> is that
+    /// reader. The walk changes with it in one place only: the root's children that hold no part of an address
+    /// (layouts, the library, the score's own info) are skipped instead of walked, while the flows, their players
+    /// and their blocks are walked exactly as before. Every leaf is still read through the value pool even when
+    /// nobody looks at it, so the same validation still proves the stream.
+    /// <para>
+    /// <b>A score read this way holds addresses and not music.</b> The pass reads a block's events as the record
+    /// name, the id, the position and the length they carry, which is what an address is made of, so
+    /// <see cref="ProjectFileScore.Notes"/> and the other decoded lists come back empty — that is the trade the two
+    /// callers of this overload (an event listing and a read-back) make, and it is asserted rather than left to be
+    /// discovered. A caller that wants the notes reads without the flag.
+    /// </para>
+    /// </remarks>
+    public static ProjectFileScore Read(byte[] data, bool collectEvents)
     {
         if (data.Length < HeaderBytes + 4)
         {
@@ -112,7 +148,7 @@ internal static partial class ProjectFileScoreReader
             }
 
             var poolCount = ProjectFileBinary.CountTokens(data, poolStart, candidate);
-            var decoder = new Decoder(data, names, poolStart, poolCount);
+            var decoder = new Decoder(data, names, poolStart, poolCount, collectEvents);
 
             if (decoder.TryRead(candidate))
             {
@@ -246,6 +282,18 @@ internal static partial class ProjectFileScoreReader
         private readonly List<LyricEventDraft> _lyricEvents = [];
         private readonly List<TechniqueEventDraft> _techniqueEvents = [];
 
+        /// <summary>
+        /// Every event of every block, as an address, and only when the caller asked for them: this is what
+        /// <c>event list</c> reads, and it is empty for every other caller.
+        /// </summary>
+        private readonly List<EventAddressDraft> _eventAddresses = [];
+
+        /// <summary>How many event nodes the address walk saw, kept whether or not they were all held.</summary>
+        private long _eventsSeen;
+
+        /// <summary>Whether this pass collects event addresses as well as reading the music.</summary>
+        private readonly bool _collectEvents;
+
         /// <summary>The score library's own names: the playing techniques and their appearances.</summary>
         private readonly List<TechniqueDefinitionDraft> _techniqueDefinitions = [];
         private readonly List<TechniqueAppearanceDraft> _techniqueAppearances = [];
@@ -264,12 +312,13 @@ internal static partial class ProjectFileScoreReader
         private int _rootChildrenSeen;
         private string? _fileVersion;
 
-        public Decoder(byte[] data, IReadOnlyList<string> names, int poolStart, int poolCount)
+        public Decoder(byte[] data, IReadOnlyList<string> names, int poolStart, int poolCount, bool collectEvents)
         {
             _data = data;
             _names = names;
             _poolStart = poolStart;
             _poolCount = poolCount;
+            _collectEvents = collectEvents;
             _pool = [];
         }
 
@@ -575,6 +624,20 @@ internal static partial class ProjectFileScoreReader
 
             var kind = NameAt(nodeKey);
             CountRootChild(kind);
+
+            // An address-only pass walks the two root children an event's address is made of — the players, for the
+            // names of the streams, and the flows, which hold the blocks and their events — and skips the rest. The
+            // skip is not a weaker read: SkipChildren still reads every leaf through the value pool, and the walk
+            // still has to end exactly on the member's last byte with a kScore root, which is what proves the stream.
+            if (_collectEvents)
+            {
+                return kind switch
+                {
+                    "scorePlayers" => WalkPlayers(count),
+                    "flows" => WalkFlows(count),
+                    _ => SkipChildren(count),
+                };
+            }
 
             return kind switch
             {
@@ -951,7 +1014,71 @@ internal static partial class ProjectFileScoreReader
                             [.. frame.Size]))]))],
                     _layouts.Sum(layout => layout.FrameChainOverrides)),
                 lyrics,
-                lastMeasure);
+                lastMeasure,
+                EventAddresses(spans, names, instruments),
+                _eventsSeen > _eventAddresses.Count);
+        }
+
+        /// <summary>
+        /// The collected event addresses, in the order a reader wants them: by where they sound, then by flow, block
+        /// and id, so the list reads down the score and two runs of the same file produce the same lines.
+        /// </summary>
+        /// <remarks>
+        /// The measure and beat are the derivation every other event in this report uses; the player, instrument,
+        /// stave and voice come from the stream the event's block is placed on, resolved exactly as a note's are —
+        /// which is what lets a reader see that an address is the trill of the Piccolo and not the Timpani's.
+        /// An event with no position at all (a kind that states only a duration, or one whose leaf is absent) keeps
+        /// nulls, because "no position" and "position zero" are different facts.
+        /// </remarks>
+        private List<ProjectFileEventAddress> EventAddresses(
+            List<MeterSpan> spans,
+            Dictionary<long, string?> names,
+            Dictionary<(long Player, long Instrument), string?> instruments)
+        {
+            var addresses = new List<ProjectFileEventAddress>(_eventAddresses.Count);
+
+            var ordered = _eventAddresses
+                .OrderBy(draft => draft.HasPosition ? 0 : 1)
+                .ThenBy(draft => ScoreRational.Parse(draft.Position))
+                .ThenBy(draft => draft.FlowId)
+                .ThenBy(draft => draft.BlockId)
+                .ThenBy(draft => draft.EventId);
+
+            foreach (var draft in ordered)
+            {
+                int? measure = null;
+                string? beat = null;
+
+                if (draft.HasPosition)
+                {
+                    var located = Locate(spans, ScoreRational.Parse(draft.Position));
+
+                    measure = (int)located.Measure;
+                    beat = located.Beat.ToText();
+                }
+
+                _streamStaves.TryGetValue(draft.Stream, out var stave);
+
+                addresses.Add(new ProjectFileEventAddress(
+                    draft.Record ?? "(unnamed)",
+                    draft.FlowId,
+                    draft.BlockId,
+                    draft.Stream,
+                    draft.StreamKind,
+                    draft.EventId,
+                    draft.Position,
+                    draft.Duration,
+                    measure,
+                    beat,
+                    stave?.PlayerId is { } playerId ? names.GetValueOrDefault(playerId) : null,
+                    stave?.PlayerId is { } owner && stave.InstrumentId is { } instrument
+                        ? instruments.GetValueOrDefault((owner, instrument))
+                        : null,
+                    stave?.Stave,
+                    stave?.Voice));
+            }
+
+            return addresses;
         }
 
         /// <summary>The flow a slur's element table belongs to: the flow whose blocks hold the slur event.</summary>
@@ -1644,6 +1771,24 @@ internal static partial class ProjectFileScoreReader
         public long Group = -1;
         public long Stream = -1;
         public FlowDraft? Flow;
+    }
+
+    /// <summary>
+    /// One event as an address, before its measure and its stave are resolved. The two fields are kept as the text
+    /// the file wrote rather than as a rational, because that text is what the payload reports and what the caller's
+    /// own value will be compared against; <see cref="HasPosition"/> is what keeps "no position" apart from "zero".
+    /// </summary>
+    private sealed class EventAddressDraft
+    {
+        public string? Record;
+        public long FlowId = -1;
+        public long BlockId = -1;
+        public long Stream = -1;
+        public string? StreamKind;
+        public long EventId = -1;
+        public string? Position;
+        public string? Duration;
+        public bool HasPosition;
     }
 
     /// <summary>A note as it comes off the stream, before its bar and its stave are known.</summary>

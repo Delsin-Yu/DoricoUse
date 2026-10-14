@@ -1237,4 +1237,164 @@ internal static partial class ProjectFileView
 
         return (first, last);
     }
+
+    /// <summary>
+    /// The <c>event list</c> payload: every event of one record with the address a command needs for it.
+    /// </summary>
+    /// <param name="file">The project file, read with its event addresses collected.</param>
+    /// <param name="record">The file's own record name, e.g. <c>TrillEventDefinition</c>.</param>
+    /// <param name="eventType">The spelling <c>event set --event-type</c> takes for that record, for each line.</param>
+    /// <param name="flow">Only this flow, or null for all of them.</param>
+    /// <param name="firstMeasure">First measure of a range, or null.</param>
+    /// <param name="lastMeasure">Last measure of a range, or null.</param>
+    /// <param name="limit">How many events to print, or -1 for all of them.</param>
+    /// <remarks>
+    /// This is the answer to the run's step 1, which was a <c>file read --tree block --depth 3 --tree-limit all</c>
+    /// and then a lookup by eye: an event's block is not stated beside the event, and <c>EventEdit.Select</c> and
+    /// the edit's <c>Address</c> both want the triple. The record names are the file's own, so the walk needs no
+    /// model of any event kind: measured, the reference import holds <c>TrillEventDefinition</c> 37 times against 37
+    /// trill events in the live read, and <c>GradualTempoChangeEventDefinition</c> 16 times against 16 rit./accel.
+    /// marks. What is <b>not</b> here is a span that hangs on two notes: a glissando's length lives on the notes it
+    /// joins (the run measured that <c>NewDuration</c> and <c>NewPosition</c> do nothing for one), so its
+    /// <c>duration</c> is reported as the file states it and not as a claim about the line.
+    /// </remarks>
+    public static JsonObject EventList(
+        ProjectFile file,
+        string record,
+        string eventType,
+        int? flow,
+        int? firstMeasure,
+        int? lastMeasure,
+        int limit)
+    {
+        var matched = new List<ProjectFileEventAddress>();
+        var unplaced = 0;
+
+        foreach (var address in file.Score.EventAddresses)
+        {
+            if (!address.Record.Equals(record, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            if (flow is { } only && address.FlowId != only)
+            {
+                continue;
+            }
+
+            if (firstMeasure is { } first || lastMeasure is { } last)
+            {
+                // An event with no position cannot be in a measure, so a range excludes it — counted, because a
+                // filter that silently drops rows is how a missing event gets mistaken for a missing field.
+                if (address.Measure is not { } measure
+                    || (firstMeasure is { } from && measure < from)
+                    || (lastMeasure is { } to && measure > to))
+                {
+                    unplaced += address.Measure is null ? 1 : 0;
+                    continue;
+                }
+            }
+
+            matched.Add(address);
+        }
+
+        var returned = limit < 0 ? matched.Count : Math.Min(limit, matched.Count);
+        var events = new JsonArray();
+
+        foreach (var address in matched.Take(returned))
+        {
+            var text = $"({address.FlowId},{address.BlockId},{address.EventId})";
+
+            JsonArr.AddNode(events, new JsonObject
+            {
+                ["flowID"] = address.FlowId,
+                ["eventBlockID"] = address.BlockId,
+                ["eventID"] = address.EventId,
+                ["address"] = text,
+                ["record"] = address.Record,
+                ["stream"] = address.Stream < 0 ? null : JsonValue.Create(address.Stream),
+                ["streamKind"] = address.StreamKind,
+                ["player"] = address.Player,
+                ["instrument"] = address.Instrument,
+                ["stave"] = address.Stave is null ? null : JsonValue.Create(address.Stave.Value),
+                ["voice"] = address.Voice is null ? null : JsonValue.Create(address.Voice.Value),
+                ["measure"] = address.Measure is null ? null : JsonValue.Create(address.Measure.Value),
+                ["beat"] = address.Beat,
+                ["position"] = address.Position,
+                ["duration"] = address.Duration,
+                ["setWith"] = $"dorico-use event set --address \"{text}\" --event-type {eventType} "
+                    + "--field duration --value <crotchets>",
+            });
+        }
+
+        var payload = new JsonObject
+        {
+            ["file"] = new JsonObject
+            {
+                ["path"] = file.Path,
+                ["bytes"] = file.Bytes,
+                ["title"] = file.Metadata.Title,
+                ["lastSavedDate"] = file.Metadata.LastSavedDate,
+            },
+            ["record"] = record,
+            ["eventType"] = eventType,
+            ["flow"] = flow is null ? null : JsonValue.Create(flow.Value),
+            ["measure"] = firstMeasure is null && lastMeasure is null
+                ? null
+                : $"{firstMeasure ?? 1}-{lastMeasure ?? int.MaxValue}",
+            ["count"] = matched.Count,
+            ["returned"] = returned,
+            ["limit"] = limit,
+            ["truncated"] = returned < matched.Count,
+            ["addressesTruncated"] = file.Score.EventAddressesTruncated,
+            ["eventCount"] = file.Score.EventAddresses.Count,
+            ["events"] = events,
+            ["records"] = Records(file),
+            ["note"] = "Each event carries the triple `event set --address` wants, and its position and duration in "
+                + "crotchets exactly as the file states them. `setWith` is that command with the value left for you: "
+                + "the address is the part that used to take a reverse lookup. Quote the address in a shell - "
+                + "parentheses are syntax to bash - and add --expect-score <id> from `session status` before running "
+                + "it on a live document. The measure and beat are derived from the file's metre, like every other "
+                + "measure this tool reports.",
+        };
+
+        if (unplaced > 0)
+        {
+            payload["unplaced"] = unplaced;
+            payload["unplacedNote"] = "This many events of that record state no position, so a --measure range "
+                + "cannot place them and they were left out rather than guessed into a measure.";
+        }
+
+        return payload;
+    }
+
+    /// <summary>
+    /// How many events of every record the file holds, so a name that matched nothing is answered with the
+    /// neighbourhood instead of a blank — the same rule <c>file read --tree</c> follows for a name nobody has.
+    /// </summary>
+    private static JsonArray Records(ProjectFile file)
+    {
+        var counts = new Dictionary<string, int>(StringComparer.Ordinal);
+
+        foreach (var address in file.Score.EventAddresses)
+        {
+            counts[address.Record] = counts.GetValueOrDefault(address.Record) + 1;
+        }
+
+        var array = new JsonArray();
+
+        foreach (var (name, count) in counts
+            .OrderByDescending(pair => pair.Value)
+            .ThenBy(pair => pair.Key, StringComparer.Ordinal)
+            .Take(40))
+        {
+            JsonArr.AddNode(array, new JsonObject
+            {
+                ["record"] = name,
+                ["count"] = count,
+            });
+        }
+
+        return array;
+    }
 }

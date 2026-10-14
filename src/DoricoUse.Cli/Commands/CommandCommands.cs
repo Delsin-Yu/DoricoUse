@@ -12,17 +12,6 @@ namespace DoricoUse.Cli.Commands;
 /// </summary>
 internal static class CommandCommands
 {
-    /// <summary>
-    /// How long <c>--wait-for-completion</c> waits unless the caller says otherwise.
-    /// </summary>
-    /// <remarks>
-    /// Above the longest command the report measured (54 s for a long export, 25 s for <c>Players.DeleteEmpty</c>),
-    /// because a bound below a real command's cost would report a timeout for work that is still running. It is
-    /// still a bound: a command that never finishes - or one whose completion line cannot be attributed - has to
-    /// come back with an answer rather than hang a caller.
-    /// </remarks>
-    private const int DefaultCompletionTimeoutMs = 90_000;
-
     public static Command Build()
     {
         var command = new Command("command", "Send Dorico commands and search its command catalogue.");
@@ -84,7 +73,7 @@ internal static class CommandCommands
         var completionTimeout = new Option<int>("--completion-timeout-ms")
         {
             Description = "How long --wait-for-completion waits at most, in milliseconds.",
-            DefaultValueFactory = _ => DefaultCompletionTimeoutMs,
+            DefaultValueFactory = _ => LogQueue.DefaultCompletionTimeoutMs,
         };
 
         var allowModalDialog = new Option<bool>("--allow-modal-dialog")

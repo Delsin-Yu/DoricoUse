@@ -32,7 +32,19 @@ internal static class ProjectFileReader
 
     private const string ContainerMember = "META-INF/container.xml";
 
-    public static ProjectFile Open(string path)
+    public static ProjectFile Open(string path) => Open(path, collectEvents: false);
+
+    /// <summary>
+    /// The same read, with the events' addresses collected as well.
+    /// </summary>
+    /// <param name="collectEvents">
+    /// True to fill <c>score.eventAddresses</c>: one entry per event of every block, which is what a command needs
+    /// to address one. Only <c>event list</c> and <c>event set --verify</c> ask for it — measured, the reference
+    /// import has 34284 note events alone, and every other read would pay for a list it does not print. A score read
+    /// this way holds addresses and not music: the pass reads each event as its record name, its id, its position and
+    /// its length, so <c>score.notes</c> and the other decoded lists are empty. Nothing else in the payload changes.
+    /// </param>
+    public static ProjectFile Open(string path, bool collectEvents)
     {
         string full;
 
@@ -110,7 +122,7 @@ internal static class ProjectFileReader
             container,
             members,
             metadata,
-            ProjectFileScoreReader.Read(scoreData),
+            ProjectFileScoreReader.Read(scoreData, collectEvents),
             scoreData);
     }
 
